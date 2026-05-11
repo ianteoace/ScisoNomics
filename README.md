@@ -67,17 +67,19 @@ Los datos se almacenan en:
 Los logs técnicos del backend se guardan en:
 
 %LOCALAPPDATA%\ScisoNomics\logs
-Capturas
+## Capturas
 
-Agregar capturas de la aplicación.
+### Inicio
 
-Inicio
+![Inicio](./docs/screenshots/inicio.png)
 
-Movimientos
+### Movimientos
 
-Estadísticas
+![Movimientos](./docs/screenshots/movimientos.png)
 
-Exportación a Excel
+### Estadísticas
+
+![Estadísticas](./docs/screenshots/estadisticas.png)
 
 Instalación
 Ir a la sección Releases
