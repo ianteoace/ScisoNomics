@@ -458,6 +458,21 @@ async def restore_backup(file: UploadFile = File(...), service: FinanceService =
     return {"ok": True}
 
 
+@app.get("/backup/download")
+def download_backup(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    source = Path(service.db.db_path)
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="No existe la base de datos.")
+    filename = f"ScisoNomics_copia_seguridad_{datetime.now().strftime('%Y-%m-%d')}.db"
+    return FileResponse(
+        path=source,
+        filename=filename,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/export/excel")
 def export_excel(
     month: int | None = Query(default=None, ge=1, le=12),

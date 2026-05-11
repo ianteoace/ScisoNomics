@@ -1,104 +1,112 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
-import type { BackupState, SettingsInfo } from "../../../types/domain";
+import type { SettingsInfo } from "../../../types/domain";
 
 export default function ConfiguracionPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
-  const [backendStatus, setBackendStatus] = useState<"ok" | "error" | "idle">("idle");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [backups, setBackups] = useState<BackupState | null>(null);
+  const [loading, setLoading] = useState(true);
   const { showError, showSuccess } = useToast();
 
   async function load() {
+    setLoading(true);
     try {
-      setInfo(await api.settingsInfo());
-      setBackups(await api.backups());
-      setBackendStatus("ok");
+      const data = await api.settingsInfo();
+      setInfo(data);
     } catch (e: any) {
-      setBackendStatus("error");
-      showError(e.message || "No se pudo cargar configuración");
+      showError(e?.message || "No se pudo cargar la configuración.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
-  async function testBackend() {
+  async function handleCreateSecurityCopy() {
     try {
-      await api.settingsInfo();
-      setBackendStatus("ok");
-      showSuccess("Backend conectado");
-    } catch (e: any) {
-      setBackendStatus("error");
-      showError(e.message || "Backend no responde");
+      const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+      const datePart = getDatePart();
+      const suggestedName = `ScisoNomics_copia_seguridad_${datePart}.db`;
+
+      if (isTauri) {
+        const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
+        const selectedPath = await save({
+          defaultPath: suggestedName,
+          filters: [{ name: "Base de datos", extensions: ["db"] }],
+        });
+
+        if (!selectedPath) return;
+        const { blob } = await api.downloadBackup();
+        const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
+        showSuccess("Copia de seguridad creada correctamente.");
+        return;
+      }
+
+      const { blob } = await api.downloadBackup();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = suggestedName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      showSuccess("Copia de seguridad creada correctamente.");
+    } catch (error) {
+      console.error("Error creando copia de seguridad:", error);
+      showError("No se pudo crear la copia de seguridad.");
     }
   }
 
-  function openPath(path: string) {
-    window.open(`file:///${path.replace(/\\/g, "/")}`);
-  }
-
-  async function exportBackup() {
-    await api.createBackup();
-    setBackups(await api.backups());
-    showSuccess("Backup creado");
-  }
-
-  async function onRestore(fileName?: string) {
-    if (!fileName) return;
-    if (!confirm("Se restaurará el backup seleccionado y se creará una copia de seguridad previa. ¿Continuar?")) return;
-    try {
-      await api.restoreBackup(fileName);
-      showSuccess("Backup restaurado correctamente");
-      await load();
-    } catch (e: any) {
-      showError(e.message || "No se pudo restaurar el backup");
-    }
+  function getDatePart() {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, "0");
+    const dd = String(today.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
   }
 
   return (
-    <section className="card p-5 space-y-4">
-      <h2 className="text-xl font-bold">Configuración</h2>
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl border border-line p-3">
-          <p className="text-sm text-slate-400">Versión app</p>
-          <p className="font-semibold">{info?.version || "0.2.0"}</p>
+    <section className="space-y-4">
+      <header className="card p-5">
+        <h2 className="text-2xl font-bold">Configuración</h2>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Gestioná tu información y conservá tus datos de forma segura.
+        </p>
+      </header>
+
+      {loading ? <LoadingSkeleton rows={5} /> : null}
+
+      <section className="card p-5">
+        <h3 className="text-lg font-semibold">Copia de seguridad</h3>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Guarda una copia de tus datos actuales para conservarla o moverla a otra computadora.
+        </p>
+        <div className="mt-4">
+          <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
         </div>
-        <div className="rounded-xl border border-line p-3">
-          <p className="text-sm text-slate-400">Estado backend</p>
-          <p className={`font-semibold ${backendStatus === "ok" ? "text-emerald-300" : "text-rose-300"}`}>{backendStatus === "ok" ? "Conectado" : "Sin conexión"}</p>
-          <button className="btn mt-2" onClick={testBackend}>Probar conexión</button>
+      </section>
+
+      <section className="card p-5">
+        <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
+        <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
+          <p><strong>ScisoNomics</strong></p>
+          <p>Versión 1.1.0</p>
+          <p>Aplicación desktop para gestión de finanzas personales.</p>
+          <p>Tus datos se guardan localmente en tu equipo.</p>
+          <p className="text-slate-500 dark:text-slate-400">Next.js · Tauri · FastAPI · SQLite</p>
+          {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Aún no se encontró la base de datos local.</p> : null}
         </div>
-      </div>
-      <div className="rounded-xl border border-line p-3">
-        <p className="text-sm text-slate-400">Ruta base de datos</p>
-        <p className="text-sm break-all">{info?.db_path}</p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <button className="btn-secondary" onClick={() => info && openPath(info.data_dir)}>Abrir carpeta de datos</button>
-        <button className="btn-secondary" onClick={exportBackup}>Exportar backup</button>
-        <button className="btn-secondary" onClick={() => fileInputRef.current?.click()}>Restaurar backup</button>
-        {info?.logs_exists ? <button className="btn-secondary" onClick={() => openPath(info.logs_dir)}>Abrir carpeta de logs</button> : null}
-      </div>
-      <div className="rounded-xl border border-line p-3 space-y-2">
-        <p className="text-sm text-slate-400">Carpeta backups: {backups?.folder}</p>
-        <p className="text-sm text-slate-400">Cantidad: {backups?.count || 0}</p>
-        <select className="input" value={backups?.frequency || "desactivado"} onChange={async (e) => { await api.setBackupFrequency(e.target.value); setBackups(await api.backups()); }}>
-          <option value="desactivado">Desactivado</option>
-          <option value="diario">Diario</option>
-          <option value="semanal">Semanal</option>
-          <option value="mensual">Mensual</option>
-        </select>
-        {(backups?.items || []).slice(0, 10).map((b) => (
-          <div key={b.name} className="flex items-center justify-between rounded-lg border border-line p-2 text-xs">
-            <span>{b.name}</span>
-            <button className="btn-secondary" onClick={() => onRestore(b.name)}>Restaurar</button>
-          </div>
-        ))}
-      </div>
-      <input ref={fileInputRef} className="hidden" type="file" accept=".db" onChange={() => undefined} />
+      </section>
     </section>
   );
 }

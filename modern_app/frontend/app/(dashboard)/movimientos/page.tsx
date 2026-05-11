@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
 import { ErrorState } from "../../../components/ui/ErrorState";
@@ -78,46 +79,49 @@ export default function MovimientosPage() {
 
   async function handleExportExcel() {
     try {
-      const { blob, filename } = await api.exportExcel(month, year);
+      const { blob } = await api.exportExcel(month, year);
       const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+      const datePart = getExportDatePart();
+      const suggestedName = `ScisoNomics_reporte_${datePart}.xlsx`;
 
       if (isTauri) {
-        const [{ save }, { writeFile }, { openPath }] = await Promise.all([
-          import("@tauri-apps/plugin-dialog"),
-          import("@tauri-apps/plugin-fs"),
-          import("@tauri-apps/plugin-opener"),
-        ]);
+        const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
 
         const selectedPath = await save({
-          defaultPath: filename,
+          defaultPath: suggestedName,
           filters: [{ name: "Excel", extensions: ["xlsx"] }],
         });
 
         if (!selectedPath) return;
 
+        const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
         const bytes = new Uint8Array(await blob.arrayBuffer());
-        await writeFile(selectedPath, bytes);
-
-        const normalized = selectedPath.replace(/\//g, "\\");
-        const lastSlash = normalized.lastIndexOf("\\");
-        const folderPath = lastSlash > 0 ? normalized.slice(0, lastSlash) : normalized;
-        await openPath(folderPath);
-        showSuccess("Excel exportado correctamente");
+        await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
+        showSuccess("Reporte exportado correctamente.");
         return;
       }
 
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
-      link.download = filename;
+      link.download = suggestedName;
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
-      showSuccess("Excel exportado correctamente");
+      showSuccess("Reporte exportado correctamente.");
     } catch (e: any) {
-      showError(e?.message || "No se pudo exportar el Excel.");
+      console.error("Error exportando Excel:", e);
+      showError("No se pudo exportar el reporte.");
     }
+  }
+
+  function getExportDatePart() {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, "0");
+    const dd = String(today.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
   }
 
   const rows: Movimiento[] = movimientos?.rows || [];
@@ -137,7 +141,7 @@ export default function MovimientosPage() {
         <input className="input" placeholder="Monto mínimo" value={minMonto} onChange={(e) => setMinMonto(e.target.value)} />
         <input className="input" placeholder="Monto máximo" value={maxMonto} onChange={(e) => setMaxMonto(e.target.value)} />
         <button className="btn-secondary" onClick={() => { setCategoria(""); setMinMonto(""); setMaxMonto(""); setTipo("todos"); }}>Limpiar filtros</button>
-        <button className="btn-secondary text-center" onClick={handleExportExcel}>Exportar a Excel</button>
+        <button className="btn-secondary text-center" onClick={handleExportExcel}>Exportar reporte a Excel</button>
       </div>
       {loadError ? <ErrorState title="No se pudieron cargar movimientos" description={loadError} onRetry={() => load().catch((e: any) => showError(e.message))} /> : null}
 

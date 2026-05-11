@@ -9,7 +9,6 @@
     "core:default",
     "shell:allow-spawn",
     "dialog:default",
-    "fs:default",
     "opener:default"
   ]
 }

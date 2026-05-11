@@ -7,12 +7,14 @@ import { money } from "../../lib/format";
 import type { Categoria, GastoProgramado } from "../../types/domain";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
+import { LoadingSkeleton } from "../ui/LoadingSkeleton";
 import { Modal } from "../ui/Modal";
 import { SectionHeader } from "../ui/SectionHeader";
 
 export function PlanificacionView({
   rows,
   categories,
+  loading,
   onCreate,
   onUpdate,
   onDelete,
@@ -20,6 +22,7 @@ export function PlanificacionView({
 }: {
   rows: GastoProgramado[];
   categories: Categoria[];
+  loading: boolean;
   onCreate: (payload: any) => Promise<void>;
   onUpdate: (id: number, payload: any) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -88,9 +91,10 @@ export function PlanificacionView({
         </div>
       } />
 
-      {filtered.length === 0 ? <EmptyState title="Sin planificacion" hint="Crea tu primer gasto programado." ctaLabel="Crear planificacion" /> : null}
+      {loading ? <LoadingSkeleton rows={7} /> : null}
+      {filtered.length === 0 && !loading ? <EmptyState title="Sin planificacion" hint="Crea tu primer gasto programado." ctaLabel="Crear planificacion" /> : null}
 
-      <div className="table-wrap">
+      <div className={`table-wrap ${loading ? "hidden" : ""}`}>
         <table className="table-modern w-full text-sm">
           <thead><tr><th>Vencimiento</th><th>Estado</th><th>Categoria</th><th>Descripcion</th><th className="text-right">Monto</th><th>Recurrencia</th><th /></tr></thead>
           <tbody>

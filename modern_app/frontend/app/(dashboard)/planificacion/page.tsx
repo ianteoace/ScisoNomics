@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
+import { ErrorState } from "../../../components/ui/ErrorState";
 import { PlanificacionView } from "../../../components/views/PlanificacionView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
@@ -14,17 +15,28 @@ export default function PlanificacionPage() {
   const { setSaldoActual } = useDashboardUi();
   const [rows, setRows] = useState<GastoProgramado[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [confirmState, setConfirmState] = useState<{ open: boolean; action: (() => Promise<void>) | null }>({ open: false, action: null });
 
   async function load() {
-    const [gp, c] = await Promise.all([api.gastosProgramados("todos"), api.categorias("todos")]);
-    setRows(gp);
-    setCategories(c);
-    setSaldoActual(0);
+    setLoading(true);
+    try {
+      const [gp, c] = await Promise.all([api.gastosProgramados("todos"), api.categorias("todos")]);
+      setRows(gp);
+      setCategories(c);
+      setSaldoActual(0);
+      setLoadError("");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    load().catch((e: any) => showError(e.message || "No se pudo cargar planificacion"));
+    load().catch((e: any) => {
+      setLoadError(e.message || "No se pudieron cargar los datos.");
+      showError(e.message || "No se pudo cargar planificacion");
+    });
   }, []);
 
   async function wrap(action: () => Promise<void>, msg: string) {
@@ -39,9 +51,11 @@ export default function PlanificacionPage() {
 
   return (
     <>
+      {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={load} /> : null}
       <PlanificacionView
         rows={rows}
         categories={categories}
+        loading={loading}
         onCreate={(payload) => wrap(() => api.createGastoProgramado(payload).then(() => undefined), "Gasto programado creado")}
         onUpdate={(id, payload) => wrap(() => api.updateGastoProgramado(id, payload).then(() => undefined), "Gasto programado actualizado")}
         onDelete={(id) => {

@@ -69,4 +69,24 @@ export const api = {
     const filename = match?.[1] || `ScisoNomics_${getLocalDateInputValue()}.xlsx`;
     return { blob, filename };
   },
+  downloadBackup: async () => {
+    const response = await fetch(`${API_URL}/backup/download`, { method: "GET" });
+    if (!response.ok) {
+      const text = await response.text();
+      let detail = "No se pudo crear la copia de seguridad.";
+      try {
+        const parsed = JSON.parse(text);
+        const message = parsed?.detail || parsed?.message;
+        if (typeof message === "string" && message.trim()) detail = message.trim();
+      } catch {
+        if (text.trim()) detail = text.trim();
+      }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = match?.[1] || `ScisoNomics_copia_seguridad_${getLocalDateInputValue()}.db`;
+    return { blob, filename };
+  },
 };
