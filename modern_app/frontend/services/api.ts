@@ -97,4 +97,9 @@ export const api = {
     const filename = match?.[1] || `ScisoNomics_copia_seguridad_${getLocalDateInputValue()}.db`;
     return { blob, filename };
   },
+  restoreBackupFromPath: async (sourcePath: string) => {
+    return sendJSON<{ ok: boolean; safety_backup: string }>("/backup/restore", "POST", {
+      source_path: sourcePath,
+    });
+  },
 };

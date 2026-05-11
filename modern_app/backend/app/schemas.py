@@ -77,3 +77,7 @@ class BackupRestoreIn(BaseModel):
 
 class BackupFrequencyIn(BaseModel):
     frecuencia: Literal["desactivado", "diario", "semanal", "mensual"]
+
+
+class BackupRestorePathIn(BaseModel):
+    source_path: str

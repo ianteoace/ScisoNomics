@@ -128,31 +128,6 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_movimiento_tags_tag_id ON movimiento_tags(tag_id);
                 CREATE INDEX IF NOT EXISTS idx_movimiento_tags_movimiento_id ON movimiento_tags(movimiento_id);
 
-                DROP TRIGGER IF EXISTS trg_categorias_validate_insert;
-                CREATE TRIGGER trg_categorias_validate_insert
-                BEFORE INSERT ON categorias
-                FOR EACH ROW
-                BEGIN
-                    SELECT CASE
-                        WHEN trim(NEW.nombre) = '' THEN RAISE(ABORT, 'Nombre de categoria obligatorio')
-                    END;
-                    SELECT CASE
-                        WHEN NEW.tipo NOT IN ('ingreso', 'gasto', 'ahorro', 'inversion') THEN RAISE(ABORT, 'Tipo de categoria invalido')
-                    END;
-                END;
-
-                DROP TRIGGER IF EXISTS trg_categorias_validate_update;
-                CREATE TRIGGER trg_categorias_validate_update
-                BEFORE UPDATE ON categorias
-                FOR EACH ROW
-                BEGIN
-                    SELECT CASE
-                        WHEN trim(NEW.nombre) = '' THEN RAISE(ABORT, 'Nombre de categoria obligatorio')
-                    END;
-                    SELECT CASE
-                        WHEN NEW.tipo NOT IN ('ingreso', 'gasto', 'ahorro', 'inversion') THEN RAISE(ABORT, 'Tipo de categoria invalido')
-                    END;
-                END;
                 """
                 )
                 self._migrate_categorias_allow_extended_types(conn)

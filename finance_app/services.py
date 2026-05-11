@@ -6,9 +6,15 @@ from datetime import date, datetime, timedelta
 from typing import Iterable
 import sqlite3
 import shutil
+import os
+import tempfile
+import logging
+from uuid import uuid4
 from pathlib import Path
 
 from .db import Database
+
+_logger = logging.getLogger("scisonomics.backup")
 
 
 @dataclass
@@ -492,6 +498,122 @@ class FinanceService:
                 raise ValueError("El backup seleccionado es inválido.")
         shutil.copy2(tmp, target)
         tmp.unlink(missing_ok=True)
+        return safety
+
+    def _build_unique_backup_path(self, backup_dir: Path) -> Path:
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        candidate = backup_dir / f"finanzas_backup_pre_restore_{stamp}_{uuid4().hex[:8]}.db"
+        suffix = 1
+        while candidate.exists() or (candidate.exists() and candidate.is_dir()):
+            candidate = backup_dir / f"finanzas_backup_pre_restore_{stamp}_{uuid4().hex[:8]}_{suffix}.db"
+            suffix += 1
+        return candidate
+
+    def _create_pre_restore_backup(self, target: Path, preferred_dir: Path) -> Path:
+        _ = preferred_dir
+        attempted: list[str] = []
+        backup_dirs = (
+            target.parent / "backups",
+            target.parent.parent / "backups",
+            Path(tempfile.gettempdir()) / "ScisoNomics" / "backups",
+        )
+        for backup_dir in backup_dirs:
+            try:
+                _logger.info("Probando backup_dir=%s", backup_dir)
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                if backup_dir.exists() and not backup_dir.is_dir():
+                    _logger.error("backup_dir existe pero no es carpeta: %s", backup_dir)
+                    attempted.append(f"{backup_dir} (no es carpeta)")
+                    continue
+                print("db_path:", target)
+                print("backup_dir:", backup_dir)
+                safety = self._build_unique_backup_path(backup_dir)
+                existed = safety.exists()
+                is_dir = safety.is_dir() if safety.exists() else False
+                while existed or is_dir:
+                    safety = self._build_unique_backup_path(backup_dir)
+                    existed = safety.exists()
+                    is_dir = safety.is_dir() if safety.exists() else False
+                _logger.info("backup_path generado=%s existed=%s is_dir=%s", safety, existed, is_dir)
+                print("backup_path final:", safety)
+                _logger.info("inicio shutil.copy2 db_path=%s -> backup_path=%s", target, safety)
+                shutil.copy2(target, safety)
+                _logger.info("fin shutil.copy2 backup_path=%s size=%s", safety, safety.stat().st_size if safety.exists() else -1)
+                if not safety.exists() or safety.stat().st_size <= 0:
+                    raise RuntimeError("La copia de seguridad previa se creo pero quedo vacia o inexistente.")
+                return safety
+            except Exception as exc:
+                print("error creando copia previa:", repr(exc))
+                _logger.exception("Fallo creando copia previa en %s: %s", backup_dir, exc)
+                attempted.append(f"{backup_dir} ({exc})")
+        raise RuntimeError("No se pudo crear una copia de seguridad previa.")
+
+    def _validate_scisonomics_db(self, path: Path) -> None:
+        conn: sqlite3.Connection | None = None
+        cur: sqlite3.Cursor | None = None
+        try:
+            conn = sqlite3.connect(str(path))
+            cur = conn.cursor()
+            integrity = cur.execute("PRAGMA integrity_check").fetchone()
+            tables = {
+                str(row[0]).lower()
+                for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if not integrity or str(integrity[0]).lower() != "ok":
+                raise ValueError("La copia seleccionada no paso la validacion de integridad.")
+            required_tables = {"categorias", "movimientos"}
+            missing = sorted(required_tables - tables)
+            if missing:
+                raise ValueError(f"La copia seleccionada no contiene las tablas requeridas: {missing}")
+        finally:
+            if cur is not None:
+                cur.close()
+            if conn is not None:
+                conn.close()
+
+    def validate_restore_source(self, source_path: Path) -> None:
+        if not source_path.exists():
+            raise FileNotFoundError("La copia seleccionada no existe.")
+        if source_path.stat().st_size <= 0:
+            raise ValueError("La copia seleccionada esta vacia.")
+        if source_path.suffix.lower() != ".db":
+            raise ValueError("Debes seleccionar un archivo .db valido.")
+        self._validate_scisonomics_db(source_path)
+
+    def restore_database_from_path(self, source_path: Path, backup_before_restore_dir: Path) -> Path:
+        self.validate_restore_source(source_path)
+        target = Path(self.db.db_path)
+        safety = self._create_pre_restore_backup(target, backup_before_restore_dir)
+
+        tmp_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tmp = target.parent / f"tmp_restore_{tmp_stamp}.db"
+        tmp_suffix = 1
+        while tmp.exists():
+            tmp = target.parent / f"tmp_restore_{tmp_stamp}_{tmp_suffix}.db"
+            tmp_suffix += 1
+        print("tmp_restore_path:", tmp)
+
+        try:
+            print("inicio copia source -> tmp")
+            shutil.copy2(source_path, tmp)
+            print("fin copia source -> tmp")
+            print("inicio validacion tmp")
+            self._validate_scisonomics_db(tmp)
+            print("fin validacion tmp")
+            print("inicio reemplazo db actual")
+            shutil.copy2(tmp, target)
+            print("fin reemplazo db actual")
+        except PermissionError as exc:
+            raise RuntimeError(
+                "No se pudo restaurar porque la base de datos esta en uso. Cerra y volve a abrir ScisoNomics."
+            ) from exc
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink(missing_ok=True)
+                    print("tmp_restore eliminado:", tmp)
+                except PermissionError:
+                    print("No se pudo borrar tmp_restore porque esta en uso:", tmp)
         return safety
 
     def get_config_value(self, key: str, default: str = "") -> str:

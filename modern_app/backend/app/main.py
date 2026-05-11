@@ -11,6 +11,7 @@ import os
 import sys
 
 import shutil
+import sqlite3
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,9 +23,9 @@ from openpyxl import load_workbook
 
 from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
-from .schemas import BackupFrequencyIn, BackupRestoreIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
+from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="1.1.0")
+app = FastAPI(title="Registro Finanzas API", version="1.3.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -440,22 +441,78 @@ def export_backup(service: FinanceService = Depends(get_service)):
 
 
 @app.post("/backup/restore")
-async def restore_backup(file: UploadFile = File(...), service: FinanceService = Depends(get_service)):
-    if not file.filename.lower().endswith(".db"):
-        raise HTTPException(status_code=400, detail="El archivo debe ser .db")
-    target = Path(service.db.db_path)
-    tmp = target.parent / f"restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-    content = await file.read()
-    tmp.write_bytes(content)
-    import sqlite3
-    with sqlite3.connect(tmp) as conn:
-        check = conn.execute("PRAGMA integrity_check").fetchone()
-        if not check or str(check[0]).lower() != "ok":
-            tmp.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail="Backup inválido o corrupto.")
-    shutil.copy2(tmp, target)
-    tmp.unlink(missing_ok=True)
-    return {"ok": True}
+def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depends(get_service)):
+    try:
+        ensure_app_data_initialized()
+        source_path_value = str(payload.source_path or "").strip()
+        print("source_path recibido:", source_path_value)
+        if not source_path_value:
+            raise HTTPException(status_code=400, detail="Debes indicar source_path.")
+
+        source = Path(source_path_value).expanduser()
+        print("source_path existe:", source.exists())
+        print("source_path es archivo:", source.is_file())
+        print("source_path size:", source.stat().st_size if source.exists() else None)
+        if not source.exists():
+            raise HTTPException(status_code=400, detail="La copia seleccionada no existe.")
+        if not source.is_file():
+            raise HTTPException(status_code=400, detail="La ruta seleccionada no es un archivo valido.")
+        if source.stat().st_size <= 0:
+            raise HTTPException(status_code=400, detail="La copia seleccionada esta vacia.")
+        if source.suffix.lower() != ".db":
+            raise HTTPException(status_code=400, detail="Debes seleccionar un archivo .db valido.")
+
+        print("validando sqlite...")
+        with sqlite3.connect(source) as conn:
+            check_row = conn.execute("PRAGMA integrity_check").fetchone()
+            check_value = str(check_row[0]).lower() if check_row and check_row[0] is not None else ""
+            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            table_names = sorted(str(row[0]) for row in table_rows)
+        print("integrity_check:", check_value)
+        print("tablas:", table_names)
+
+        required_tables = {"categorias", "movimientos"}
+        existing_tables_lower = {name.lower() for name in table_names}
+        missing_tables = sorted(required_tables - existing_tables_lower)
+        if check_value != "ok":
+            raise HTTPException(status_code=400, detail="La copia seleccionada no es una base SQLite valida.")
+        if missing_tables:
+            raise HTTPException(status_code=400, detail="La copia seleccionada no tiene la estructura minima requerida.")
+
+        db_path = Path(service.db.db_path)
+        pre_restore_backups = get_data_dir() / "backups"
+        print("db_path actual:", db_path)
+        print("backup_dir:", pre_restore_backups)
+        _logger.info(
+            "Restaurar copia: source_path=%s db_path=%s backups_dir=%s integrity_check=%s tablas=%s",
+            source,
+            db_path,
+            pre_restore_backups,
+            check_value,
+            ",".join(table_names),
+        )
+        print("creando copia previa...")
+        safety = service.restore_database_from_path(source, pre_restore_backups)
+        print("backup_pre_restore_path:", safety)
+        print("reemplazando db actual...")
+        _logger.info("Restaurar copia OK: backup_pre_restore=%s", safety)
+        return {"ok": True, "safety_backup": str(safety)}
+    except HTTPException:
+        raise
+    except (FileNotFoundError, ValueError) as exc:
+        _logger.exception("Error restaurando copia de seguridad: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        import traceback
+        print("ERROR RESTAURANDO COPIA DE SEGURIDAD")
+        print(type(exc).__name__)
+        print(str(exc))
+        traceback.print_exc()
+        _logger.exception("Error restaurando copia de seguridad: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo restaurar la copia de seguridad: {type(exc).__name__}: {exc}",
+        ) from exc
 
 
 @app.get("/backup/download")
