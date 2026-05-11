@@ -6,29 +6,34 @@ import { invoke } from "@tauri-apps/api/core";
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { MovimientosView } from "../../../components/views/MovimientosView";
-import { useDebounce } from "../../../hooks/useDebounce";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
-import { monthName, yearOptions } from "../../../lib/format";
 import { api } from "../../../services/api";
 import type { Categoria, MetaAhorro, Movimiento, MovimientosResponse } from "../../../types/domain";
 
 export default function MovimientosPage() {
-  const { month, setMonth, year, setYear, search, setSaldoActual } = useDashboardUi();
-  const debounced = useDebounce(search, 280);
+  const { setSaldoActual } = useDashboardUi();
   const { showError, showSuccess } = useToast();
 
   const [tipo, setTipo] = useState("todos");
   const [categoria, setCategoria] = useState("");
   const [minMonto, setMinMonto] = useState("");
   const [maxMonto, setMaxMonto] = useState("");
+  const [desde, setDesde] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  });
+  const [hasta, setHasta] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const [sortBy, setSortBy] = useState("recientes");
   const [movimientos, setMovimientos] = useState<MovimientosResponse | null>(null);
   const [categories, setCategories] = useState<Categoria[]>([]);
   const [metas, setMetas] = useState<MetaAhorro[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [confirmState, setConfirmState] = useState<{ open: boolean; title: string; message: string; action: (() => Promise<void>) | null }>({ open: false, title: "", message: "", action: null });
-  const currentYear = new Date().getFullYear();
 
   const filteredCategories = useMemo(() => {
     if (tipo === "todos") return categories;
@@ -39,14 +44,33 @@ export default function MovimientosPage() {
       return c.tipo === tipo;
     });
   }, [categories, tipo]);
+  const invalidRange = useMemo(() => {
+    if (!desde || !hasta) return false;
+    return desde > hasta;
+  }, [desde, hasta]);
 
   async function load() {
+    if (invalidRange) {
+      setLoadError("La fecha 'Desde' no puede ser mayor que 'Hasta'.");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    const [m, c, ms] = await Promise.all([
-      api.movimientos(month, year, tipo, debounced, categoria, minMonto ? Number(minMonto) : undefined, maxMonto ? Number(maxMonto) : undefined),
-      api.categorias("todos"),
-      api.metas(),
-    ]);
+    const periods = listPeriodsBetween(desde, hasta);
+    const batches = await Promise.all(
+      periods.map(({ month, year }) =>
+        api.movimientos(month, year, tipo, "", categoria, minMonto ? Number(minMonto) : undefined, maxMonto ? Number(maxMonto) : undefined),
+      ),
+    );
+    const mergedRows = batches.flatMap((b) => b.rows);
+    mergedRows.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    const m: MovimientosResponse = {
+      rows: mergedRows,
+      summary: { saldo_inicial: 0, ingreso: 0, gasto: 0, balance_final: 0 },
+      visible_count: mergedRows.length,
+      visible_total: 0,
+    };
+    const [c, ms] = await Promise.all([api.categorias("todos"), api.metas()]);
     setMovimientos(m);
     setCategories(c);
     setMetas(ms);
@@ -61,7 +85,7 @@ export default function MovimientosPage() {
       showError(e.message || "No se pudieron cargar movimientos");
       setLoading(false);
     });
-  }, [month, year, tipo, debounced, categoria, minMonto, maxMonto]);
+  }, [tipo, categoria, minMonto, maxMonto, desde, hasta, invalidRange]);
 
   useEffect(() => {
     if (categoria && !filteredCategories.some((c) => c.nombre === categoria)) setCategoria("");
@@ -79,10 +103,9 @@ export default function MovimientosPage() {
 
   async function handleExportExcel() {
     try {
-      const { blob } = await api.exportExcel(month, year);
+      const { blob } = await api.exportExcel(1, new Date().getFullYear(), desde, hasta);
       const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-      const datePart = getExportDatePart();
-      const suggestedName = `ScisoNomics_reporte_${datePart}.xlsx`;
+      const suggestedName = `ScisoNomics_reporte_${desde}_a_${hasta}.xlsx`;
 
       if (isTauri) {
         const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
@@ -116,37 +139,49 @@ export default function MovimientosPage() {
     }
   }
 
-  function getExportDatePart() {
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, "0");
-    const dd = String(today.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
   const rows: Movimiento[] = movimientos?.rows || [];
+  const visibleRows = useMemo(() => {
+    let next = [...rows];
+    if (desde) next = next.filter((r) => r.fecha >= desde);
+    if (hasta) next = next.filter((r) => r.fecha <= hasta);
+    if (sortBy === "antiguos") next.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
+    if (sortBy === "recientes") next.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    if (sortBy === "monto_mayor") next.sort((a, b) => b.monto - a.monto);
+    if (sortBy === "monto_menor") next.sort((a, b) => a.monto - b.monto);
+    return next;
+  }, [rows, desde, hasta, sortBy]);
 
   return (
     <div className="space-y-4">
-      <div className="panel grid gap-2 p-3 md:grid-cols-4">
-        <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>{Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}</select>
-        <select className="input" value={year} onChange={(e) => setYear(Number(e.target.value))}>
-          {yearOptions(currentYear, [year, ...rows.map((r) => Number(r.fecha.slice(0, 4)))]).map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <select className="input" value={tipo} onChange={(e) => setTipo(e.target.value)}><option value="todos">Todos</option><option value="ingreso">Ingresos</option><option value="gasto">Gastos</option><option value="ahorro">Ahorro</option><option value="inversion">Inversión</option></select>
-        <select className="input" value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+      <div className="panel grid gap-2 p-3 md:grid-cols-12">
+        <div className="space-y-1 md:col-span-3">
+          <label className="text-xs text-slate-500 dark:text-slate-400">Desde</label>
+          <input className="input" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+        </div>
+        <div className="space-y-1 md:col-span-3">
+          <label className="text-xs text-slate-500 dark:text-slate-400">Hasta</label>
+          <input className="input" type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+        </div>
+        <select className="input md:col-span-3 md:self-end" value={tipo} onChange={(e) => setTipo(e.target.value)}><option value="todos">Todos</option><option value="ingreso">Ingresos</option><option value="gasto">Gastos</option><option value="ahorro">Ahorro</option><option value="inversion">Inversión</option></select>
+        <select className="input md:col-span-3 md:self-end" value={categoria} onChange={(e) => setCategoria(e.target.value)}>
           <option value="">Todas las categorias</option>
           {filteredCategories.map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
         </select>
-        <input className="input" placeholder="Monto mínimo" value={minMonto} onChange={(e) => setMinMonto(e.target.value)} />
-        <input className="input" placeholder="Monto máximo" value={maxMonto} onChange={(e) => setMaxMonto(e.target.value)} />
-        <button className="btn-secondary" onClick={() => { setCategoria(""); setMinMonto(""); setMaxMonto(""); setTipo("todos"); }}>Limpiar filtros</button>
-        <button className="btn-secondary text-center" onClick={handleExportExcel}>Exportar reporte a Excel</button>
+        <input className="input md:col-span-3" placeholder="Monto mínimo" value={minMonto} onChange={(e) => setMinMonto(e.target.value)} />
+        <input className="input md:col-span-3" placeholder="Monto máximo" value={maxMonto} onChange={(e) => setMaxMonto(e.target.value)} />
+        <select className="input md:col-span-3" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="recientes">Más recientes</option>
+          <option value="antiguos">Más antiguos</option>
+          <option value="monto_mayor">Mayor monto</option>
+          <option value="monto_menor">Menor monto</option>
+        </select>
+        <button className="btn-secondary md:col-span-3" onClick={() => { setCategoria(""); setMinMonto(""); setMaxMonto(""); setTipo("todos"); setSortBy("recientes"); }}>Limpiar filtros</button>
+        <button className="btn-secondary text-center md:col-span-3" onClick={handleExportExcel}>Exportar reporte a Excel</button>
       </div>
       {loadError ? <ErrorState title="No se pudieron cargar movimientos" description={loadError} onRetry={() => load().catch((e: any) => showError(e.message))} /> : null}
 
       <MovimientosView
-        rows={rows}
+        rows={visibleRows}
         categories={categories}
         loading={loading}
         metas={metas}
@@ -175,4 +210,22 @@ export default function MovimientosPage() {
       />
     </div>
   );
+}
+
+function listPeriodsBetween(desde: string, hasta: string): Array<{ month: number; year: number }> {
+  const from = new Date(`${desde}T00:00:00`);
+  const to = new Date(`${hasta}T00:00:00`);
+  const out: Array<{ month: number; year: number }> = [];
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) return out;
+  let y = from.getFullYear();
+  let m = from.getMonth() + 1;
+  while (y < to.getFullYear() || (y === to.getFullYear() && m <= to.getMonth() + 1)) {
+    out.push({ month: m, year: y });
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return out;
 }

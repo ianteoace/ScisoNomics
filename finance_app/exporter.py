@@ -124,6 +124,55 @@ def export_monthly_report(service, month: int, year: int, output_path: Path) -> 
         return _export_basic_xlsx(rows, output_path)
 
 
+def export_date_range_report(service, desde: str, hasta: str, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = _list_movimientos_between(service, desde, hasta)
+    try:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        ws_summary = wb.create_sheet("Resumen")
+        totals = _totals_for_rows(rows)
+        ws_summary.append(["Campo", "Valor"])
+        _style_header(ws_summary, 1)
+        summary_items = [
+            ("Período", f"{desde} a {hasta}"),
+            ("Total ingresos", totals["ingreso"]),
+            ("Total gastos", totals["gasto"]),
+            ("Total ahorro", totals["ahorro"]),
+            ("Total inversión", totals["inversion"]),
+            ("Balance", totals["balance"]),
+            ("Cantidad de movimientos", len(rows)),
+            ("Fecha de exportación", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+        for label, value in summary_items:
+            ws_summary.append([label, value])
+        _style_table(ws_summary, money_cols={2}, text_left_cols={1})
+        _auto_width(ws_summary)
+
+        ws_mov = wb.create_sheet("Movimientos")
+        _write_movimientos_sheet(ws_mov, rows)
+
+        ws_income = wb.create_sheet("Ingresos")
+        _write_type_sheet(ws_income, [r for r in rows if r.get("tipo") == "ingreso"], "ingreso")
+
+        ws_expense = wb.create_sheet("Gastos")
+        _write_type_sheet(ws_expense, [r for r in rows if r.get("tipo") == "gasto"], "gasto")
+
+        ws_savings = wb.create_sheet("Ahorros")
+        _write_type_sheet(ws_savings, [r for r in rows if r.get("tipo") == "ahorro"], "ingreso")
+
+        ws_investments = wb.create_sheet("Inversiones")
+        _write_type_sheet(ws_investments, [r for r in rows if r.get("tipo") == "inversion"], "ingreso")
+
+        wb.save(output_path)
+        return output_path
+    except Exception:
+        return _export_basic_xlsx(rows, output_path)
+
+
 def export_yearly_report(service, year: int, output_path: Path) -> Path:
     rows = service.list_movimientos_by_year(year)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -558,6 +607,52 @@ def _pending_plan_for_month(service, month: int, year: int) -> list[dict]:
 def _pending_plan_for_year(service, year: int) -> list[dict]:
     rows = service.get_gastos_programados("pendiente")
     return [r for r in rows if str(r.get("fecha_vencimiento", "")).startswith(f"{year}-")]
+
+
+def _list_movimientos_between(service, desde: str, hasta: str) -> list[dict]:
+    with service.db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                m.id,
+                m.fecha,
+                m.tipo,
+                c.nombre AS categoria,
+                m.descripcion,
+                m.monto,
+                CAST(strftime('%w', m.fecha) AS INTEGER) AS dia_semana_num,
+                (
+                    SELECT COALESCE(SUM(
+                        CASE
+                            WHEN m2.tipo = 'ingreso' THEN m2.monto
+                            ELSE -m2.monto
+                        END
+                    ), 0)
+                    FROM movimientos m2
+                    WHERE m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id)
+                ) AS saldo_acumulado
+            FROM movimientos m
+            JOIN categorias c ON c.id = m.categoria_id
+            WHERE m.fecha >= ? AND m.fecha <= ?
+            ORDER BY m.fecha DESC, m.id DESC
+            """,
+            (desde, hasta),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _totals_for_rows(rows: list[dict]) -> dict[str, float]:
+    ingresos = sum(float(r.get("monto", 0) or 0) for r in rows if r.get("tipo") == "ingreso")
+    gastos = sum(float(r.get("monto", 0) or 0) for r in rows if r.get("tipo") == "gasto")
+    ahorro = sum(float(r.get("monto", 0) or 0) for r in rows if r.get("tipo") == "ahorro")
+    inversion = sum(float(r.get("monto", 0) or 0) for r in rows if r.get("tipo") == "inversion")
+    return {
+        "ingreso": ingresos,
+        "gasto": gastos,
+        "ahorro": ahorro,
+        "inversion": inversion,
+        "balance": ingresos - gastos - ahorro - inversion,
+    }
 
 
 def _expense_categories_for_year(rows: list[dict]) -> list[dict]:

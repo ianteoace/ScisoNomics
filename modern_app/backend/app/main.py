@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from finance_app.exporter import export_filtered_movimientos, export_monthly_report, export_yearly_report
+from finance_app.exporter import export_date_range_report, export_filtered_movimientos, export_monthly_report, export_yearly_report
 from finance_app.services import FinanceService, GastoFijoInput, GastoProgramadoInput, MetaAhorroInput, MovimientoInput, PresupuestoInput, TagInput
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
 from openpyxl import load_workbook
@@ -477,6 +477,8 @@ def download_backup(service: FinanceService = Depends(get_service)):
 def export_excel(
     month: int | None = Query(default=None, ge=1, le=12),
     year: int | None = Query(default=None),
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
     service: FinanceService = Depends(get_service),
 ):
     now = datetime.now()
@@ -485,7 +487,21 @@ def export_excel(
     output = Path(gettempdir()) / "ScisoNomics" / "exports" / f"ScisoNomics_{now.strftime('%Y-%m-%d')}.xlsx"
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
-        export_monthly_report(service, resolved_month, resolved_year, output)
+        if desde or hasta:
+            if not desde or not hasta:
+                raise HTTPException(status_code=400, detail="Debes indicar ambas fechas: desde y hasta.")
+            try:
+                from_dt = datetime.strptime(desde, "%Y-%m-%d")
+                to_dt = datetime.strptime(hasta, "%Y-%m-%d")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usa YYYY-MM-DD.") from exc
+            if from_dt > to_dt:
+                raise HTTPException(status_code=400, detail="La fecha 'desde' no puede ser mayor que 'hasta'.")
+            export_date_range_report(service, desde, hasta, output)
+        else:
+            export_monthly_report(service, resolved_month, resolved_year, output)
+    except HTTPException:
+        raise
     except Exception as exc:
         _logger.exception("Error exportando Excel (month=%s year=%s): %s", resolved_month, resolved_year, exc)
         raise HTTPException(status_code=500, detail="No se pudo generar el archivo Excel.") from exc

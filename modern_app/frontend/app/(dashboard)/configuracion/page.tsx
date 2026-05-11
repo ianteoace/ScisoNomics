@@ -16,10 +16,9 @@ export default function ConfiguracionPage() {
   async function load() {
     setLoading(true);
     try {
-      const data = await api.settingsInfo();
-      setInfo(data);
+      setInfo(await api.settingsInfo());
     } catch (e: any) {
-      showError(e?.message || "No se pudo cargar la configuración.");
+      showError(e?.message || "No se pudo cargar la configuracion.");
     } finally {
       setLoading(false);
     }
@@ -39,10 +38,10 @@ export default function ConfiguracionPage() {
         const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
         const selectedPath = await save({
           defaultPath: suggestedName,
-          filters: [{ name: "Base de datos", extensions: ["db"] }],
+          filters: [{ name: "Base de datos SQLite", extensions: ["db"] }],
         });
-
         if (!selectedPath) return;
+
         const { blob } = await api.downloadBackup();
         const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
         const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -78,33 +77,37 @@ export default function ConfiguracionPage() {
   return (
     <section className="space-y-4">
       <header className="card p-5">
-        <h2 className="text-2xl font-bold">Configuración</h2>
+        <h2 className="text-2xl font-bold">Configuracion</h2>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Gestioná tu información y conservá tus datos de forma segura.
+          Gestiona tu informacion y conserva tus datos de forma segura.
         </p>
       </header>
 
       {loading ? <LoadingSkeleton rows={5} /> : null}
 
       <section className="card p-5">
-        <h3 className="text-lg font-semibold">Copia de seguridad</h3>
+        <h3 className="text-lg font-semibold">Datos y copias de seguridad</h3>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Guarda una copia de tus datos actuales para conservarla o moverla a otra computadora.
+          Crear copia de seguridad guarda una copia de tus datos actuales.
         </p>
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap gap-2">
           <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
+          <button className="btn-secondary" disabled title="Disponible en una proxima version">Restaurar copia de seguridad</button>
         </div>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+          Restaurar copia de seguridad se implementara con validaciones avanzadas en la version 1.3.0 para priorizar estabilidad.
+        </p>
       </section>
 
       <section className="card p-5">
         <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
         <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
           <p><strong>ScisoNomics</strong></p>
-          <p>Versión 1.1.0</p>
-          <p>Aplicación desktop para gestión de finanzas personales.</p>
+          <p>Version 1.2.0</p>
+          <p>Aplicacion desktop para gestion de finanzas personales.</p>
           <p>Tus datos se guardan localmente en tu equipo.</p>
           <p className="text-slate-500 dark:text-slate-400">Next.js · Tauri · FastAPI · SQLite</p>
-          {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Aún no se encontró la base de datos local.</p> : null}
+          {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Aun no se encontro la base de datos local.</p> : null}
         </div>
       </section>
     </section>

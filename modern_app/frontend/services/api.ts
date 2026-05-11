@@ -49,8 +49,16 @@ export const api = {
 
   calendario: (month: number, year: number) => getJSON<any[]>(`/calendario?month=${month}&year=${year}`),
   reporteMensual: (month: number, year: number) => getJSON<any>(`/reporte-mensual?month=${month}&year=${year}`),
-  exportExcel: async (month: number, year: number) => {
-    const response = await fetch(`${API_URL}/export/excel?month=${month}&year=${year}`, { method: "GET" });
+  exportExcel: async (month: number, year: number, desde?: string, hasta?: string) => {
+    const params = new URLSearchParams();
+    if (desde && hasta) {
+      params.set("desde", desde);
+      params.set("hasta", hasta);
+    } else {
+      params.set("month", String(month));
+      params.set("year", String(year));
+    }
+    const response = await fetch(`${API_URL}/export/excel?${params.toString()}`, { method: "GET" });
     if (!response.ok) {
       const text = await response.text();
       let detail = "No se pudo exportar el Excel.";
