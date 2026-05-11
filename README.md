@@ -71,15 +71,18 @@ Los logs técnicos del backend se guardan en:
 
 ### Inicio
 
-![Inicio](./docs/screenshots/inicio.png)
+<img src="docs/screenshots/inicio.png" alt="Inicio" width="900" />
 
 ### Movimientos
 
-![Movimientos](./docs/screenshots/movimientos.png)
+<img src="docs/screenshots/movimientos.png" alt="Movimientos" width="900" />
 
 ### Estadísticas
 
-![Estadísticas](./docs/screenshots/estadisticas.png)
+<img src="docs/screenshots/estadisticas.png" alt="Estadísticas" width="900" />
+### Excel
+
+<img src="docs/screenshots/excel.png" alt="Excel" width="900" />
 
 Instalación
 Ir a la sección Releases
