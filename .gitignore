@@ -1,0 +1,64 @@
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+
+# Tauri / Rust build
+target/
+modern_app/frontend/src-tauri/target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+modern_app/backend/build/
+modern_app/backend/dist/
+*.spec.bak
+
+# Local databases / backups
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+finanzas.db
+finanzas_backup*.db
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Release binaries
+releases/
+*.exe
+*.msi
+
+# Temporary files
+tmp/
+temp/
+
+# Manual test artifacts
+tmp_export_manual.xlsx
+tmp_export_sidecar.xlsx
+tmp_localappdata_migtest/
+tmp_localappdata_test/

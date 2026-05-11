@@ -1,0 +1,143 @@
+export type MoveType = "ingreso" | "gasto" | "ahorro" | "inversion";
+export type BackupFrequency = "desactivado" | "diario" | "semanal" | "mensual";
+
+export type Movimiento = {
+  id: number;
+  fecha: string;
+  tipo: MoveType;
+  categoria: string;
+  descripcion: string;
+  monto: number;
+  saldo_acumulado: number;
+  meta_id?: number | null;
+  meta_nombre?: string | null;
+  nota?: string;
+  tags?: Tag[];
+};
+
+export type Categoria = {
+  id: number;
+  nombre: string;
+  tipo: MoveType;
+};
+
+export type GastoFijo = {
+  id: number;
+  categoria_id: number;
+  categoria: string;
+  descripcion: string;
+  monto: number;
+  dia_vencimiento: number;
+  activo: number;
+};
+
+export type GastoProgramado = {
+  id: number;
+  descripcion: string;
+  categoria_id: number;
+  categoria: string;
+  monto_estimado: number;
+  fecha_vencimiento: string;
+  estado: "pendiente" | "pagado" | "cancelado";
+  es_recurrente: number;
+  frecuencia: "mensual" | "semanal" | "anual" | null;
+};
+
+export type MovimientosResponse = {
+  rows: Movimiento[];
+  summary: {
+    saldo_inicial: number;
+    ingreso: number;
+    gasto: number;
+    ahorro?: number;
+    balance_final: number;
+    disponible_luego_ahorro?: number;
+  };
+  visible_count: number;
+  visible_total: number;
+};
+
+export type StatsResponse = {
+  summary: {
+    saldo_inicial: number;
+    ingreso: number;
+    gasto: number;
+    balance_final: number;
+  };
+  month_totals: { ingreso: number; gasto: number; balance: number };
+  expenses_by_category: Array<{ categoria_id?: number; categoria: string; total: number; movimientos?: number }>;
+  trend: Array<{ mes: number; ingresos: number; gastos: number }>;
+  planificacion: {
+    total_pendiente_30_dias: number;
+    total_vencido: number;
+    total_pagado_mes: number;
+    balance_proyectado_mes: number;
+  };
+};
+
+export type Presupuesto = {
+  id: number;
+  categoria_id: number;
+  categoria: string;
+  mes: number;
+  anio: number;
+  monto_presupuestado: number;
+  monto_gastado: number;
+  porcentaje_usado: number;
+  monto_disponible: number;
+  excedido: boolean;
+};
+
+export type SettingsInfo = {
+  version: string;
+  backend_ok: boolean;
+  db_path: string;
+  db_exists?: boolean;
+  db_size?: number;
+  data_dir: string;
+  backups_dir?: string;
+  logs_dir: string;
+  logs_exists: boolean;
+  app_data_dir?: string;
+  migrations_status?: string;
+  counts?: {
+    movimientos: number;
+    categorias: number;
+    presupuestos: number;
+    metas: number;
+  };
+};
+
+export type MetaAhorro = {
+  id: number;
+  nombre: string;
+  monto_objetivo: number;
+  monto_inicial: number;
+  fecha_objetivo?: string | null;
+  descripcion?: string;
+  estado: "activa" | "completada" | "pausada";
+  monto_ahorrado: number;
+  faltante: number;
+  porcentaje_completado: number;
+};
+
+export type Tag = {
+  id: number;
+  nombre: string;
+  color?: string | null;
+};
+
+export type BackupItem = {
+  name: string;
+  path: string;
+  size: number;
+  modified_at: string;
+};
+
+export type BackupState = {
+  folder: string;
+  count: number;
+  last_backup?: BackupItem | null;
+  items: BackupItem[];
+  frequency: BackupFrequency;
+};

@@ -1,0 +1,71 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg: 11 16 32;
+  --panel: 18 24 38;
+  --card: 22 30 47;
+  --line: 42 54 81;
+  --text: 229 233 242;
+  --muted: 148 163 184;
+  --aqua: 56 189 248;
+  --income: 52 211 153;
+  --expense: 248 113 113;
+  --warn: 245 158 11;
+}
+
+.light {
+  color-scheme: light;
+  --bg: 245 247 252;
+  --panel: 255 255 255;
+  --card: 255 255 255;
+  --line: 226 232 240;
+  --text: 15 23 42;
+  --muted: 100 116 139;
+  --aqua: 14 116 144;
+  --income: 5 150 105;
+  --expense: 220 38 38;
+  --warn: 180 83 9;
+}
+
+body {
+  font-family: var(--font-sans), ui-sans-serif, system-ui;
+  @apply text-[rgb(var(--text))] antialiased;
+  background: radial-gradient(circle at top left, rgb(22 38 67), rgb(var(--bg)) 45%);
+}
+
+.light body {
+  background: radial-gradient(circle at top left, rgb(224 242 254), rgb(var(--bg)) 45%);
+}
+
+.card {
+  @apply rounded-2xl border shadow-sm transition;
+  border-color: rgb(var(--line));
+  background: color-mix(in oklab, rgb(var(--card)) 96%, transparent 4%);
+  backdrop-filter: blur(4px);
+}
+.card:hover { transform: translateY(-1px); }
+.panel { @apply rounded-2xl border; border-color: rgb(var(--line)); background: rgb(var(--panel)); }
+.input { @apply w-full rounded-xl border px-3 py-2 text-sm outline-none transition; border-color: rgb(var(--line)); background: rgb(var(--card)); }
+.input:focus { box-shadow: 0 0 0 2px rgba(56,189,248,.18); border-color: rgb(var(--aqua)); }
+.btn { @apply rounded-xl px-4 py-2 text-sm font-semibold transition; background: #f59e0b; color: #1f1307; }
+.btn:hover { filter: brightness(1.05); }
+.btn:focus-visible, .btn-secondary:focus-visible, .input:focus-visible { outline: 2px solid rgba(56,189,248,.35); outline-offset: 1px; }
+.btn-secondary { @apply rounded-xl border px-3 py-2 text-sm font-semibold transition; border-color: rgb(var(--line)); }
+.btn-secondary:hover { border-color: rgb(var(--aqua)); }
+
+.section-title { @apply text-lg font-semibold tracking-tight; }
+.section-subtitle { @apply text-sm; color: rgb(var(--muted)); }
+.metric-number { @apply text-2xl font-extrabold tracking-tight; font-variant-numeric: tabular-nums; }
+
+.table-wrap { @apply overflow-auto rounded-xl border; border-color: rgb(var(--line)); }
+.table-modern th { @apply sticky top-0 z-10 bg-[rgb(var(--panel))] text-xs uppercase tracking-wide py-3 px-3; color: rgb(var(--muted)); }
+.table-modern td { @apply py-3 px-3; }
+.table-modern tr:nth-child(even) { background: color-mix(in oklab, rgb(var(--panel)) 93%, black 7%); }
+.light .table-modern tr:nth-child(even) { background: #f8fafc; }
+.table-modern tr:hover { background: color-mix(in oklab, rgb(var(--panel)) 86%, rgb(var(--aqua)) 14%); }
+
+.fade-in { animation: fadeIn .22s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
