@@ -4,19 +4,18 @@ import { useEffect, useState } from "react";
 
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { EstadisticasView } from "../../../components/views/EstadisticasView";
-import { useDebounce } from "../../../hooks/useDebounce";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
-import { monthName, yearOptions } from "../../../lib/format";
+import { monthName } from "../../../lib/format";
 import { api } from "../../../services/api";
-import type { Movimiento, StatsResponse } from "../../../types/domain";
+import type { AnnualStatsResponse, Movimiento, StatsResponse } from "../../../types/domain";
 
 export default function EstadisticasPage() {
-  const { month, setMonth, year, setYear, search, setSaldoActual } = useDashboardUi();
-  const debounced = useDebounce(search, 280);
+  const { setSaldoActual, setTopbarPeriodLabelOverride } = useDashboardUi();
   const { showError } = useToast();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [rows, setRows] = useState<Movimiento[]>([]);
+  const [annual, setAnnual] = useState<AnnualStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [periodo, setPeriodo] = useState("mes_actual");
@@ -26,26 +25,34 @@ export default function EstadisticasPage() {
     (async () => {
       setLoading(true);
       try {
-        let statsData: StatsResponse;
+        const now = new Date();
+        const { targets, currentMonth, currentYear, annualYear } = buildTargetsByPeriod(periodo, now);
         let allRows: Movimiento[] = [];
+        let statsData: StatsResponse | null = null;
         if (periodo === "mes_actual") {
-          const [s, m] = await Promise.all([api.stats(month, year), api.movimientos(month, year, "todos", debounced)]);
+          const [s, m] = await Promise.all([api.stats(currentMonth, currentYear), api.movimientos(currentMonth, currentYear, "todos", "")]);
           statsData = s;
           allRows = m.rows;
         } else {
-          const range = periodo === "ultimos_3_meses" ? 3 : periodo === "ultimos_6_meses" ? 6 : 12;
-          const targets = buildPeriods(month, year, range);
           const results = await Promise.all(targets.map((p) => Promise.all([api.stats(p.month, p.year), api.movimientos(p.month, p.year, "todos", "")])));
           allRows = results.flatMap((r) => r[1].rows);
           statsData = mergeStats(results.map((r) => r[0]));
         }
+        let annualData: AnnualStatsResponse | null = null;
+        try {
+          annualData = await api.statsAnual(annualYear);
+        } catch (annualError) {
+          console.warn("No se pudo cargar /estadisticas/anual. Continuando sin resumen anual.", annualError);
+        }
         if (cancelled) return;
         setStats(statsData);
+        setAnnual(annualData);
         setRows(allRows);
-        setSaldoActual(allRows.length ? allRows[0].saldo_acumulado : 0);
+        setSaldoActual(0);
         setLoadError("");
       } catch (e: any) {
         if (!cancelled) {
+          console.error("Error cargando estadísticas", { periodo, error: e });
           setLoadError(e.message || "No se pudieron cargar los datos.");
           showError(e.message || "No se pudieron cargar estadisticas");
         }
@@ -54,26 +61,34 @@ export default function EstadisticasPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [month, year, debounced, setSaldoActual, showError, periodo]);
+  }, [setSaldoActual, showError, periodo]);
+
+  const periodLabel = getPeriodLabel(periodo);
+
+  useEffect(() => {
+    setTopbarPeriodLabelOverride(periodLabel);
+    return () => setTopbarPeriodLabelOverride(null);
+  }, [periodLabel, setTopbarPeriodLabelOverride]);
 
   return (
     <div className="space-y-4">
-      <div className="panel grid gap-2 p-3 md:grid-cols-4">
-        <select className="input" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
-        </select>
-        <select className="input" value={year} onChange={(e) => setYear(Number(e.target.value))}>
-          {yearOptions(new Date().getFullYear(), [year, ...rows.map((r) => Number(r.fecha.slice(0, 4)))]).map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
+      <div className="panel grid gap-2 p-3 md:grid-cols-2">
         <select className="input" value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
           <option value="mes_actual">Mes actual</option>
           <option value="ultimos_3_meses">Últimos 3 meses</option>
           <option value="ultimos_6_meses">Últimos 6 meses</option>
           <option value="anio_actual">Año actual</option>
         </select>
+        <div className="rounded-lg border border-line px-3 py-2 text-sm text-slate-600 dark:text-slate-300">
+          Período seleccionado: <strong>{periodLabel}</strong>
+        </div>
       </div>
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={() => window.location.reload()} /> : null}
-      <EstadisticasView stats={stats} monthRows={rows} loading={loading} />
+      {!loading && !loadError && rows.length === 0 ? (
+        <ErrorState title="No hay movimientos suficientes para generar estadísticas de este período." description="Probá con otro período o cargá nuevos movimientos." />
+      ) : (
+        <EstadisticasView stats={stats} monthRows={rows} loading={loading} annual={annual} />
+      )}
     </div>
   );
 }
@@ -127,4 +142,27 @@ function mergeStats(items: StatsResponse[]): StatsResponse {
       balance_proyectado_mes: 0,
     },
   };
+}
+
+function buildTargetsByPeriod(periodo: string, now: Date) {
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  if (periodo === "mes_actual") {
+    return { targets: [{ month: currentMonth, year: currentYear }], currentMonth, currentYear, annualYear: currentYear };
+  }
+  if (periodo === "ultimos_3_meses") {
+    return { targets: buildPeriods(currentMonth, currentYear, 3), currentMonth, currentYear, annualYear: currentYear };
+  }
+  if (periodo === "ultimos_6_meses") {
+    return { targets: buildPeriods(currentMonth, currentYear, 6), currentMonth, currentYear, annualYear: currentYear };
+  }
+  return { targets: buildPeriods(currentMonth, currentYear, 12), currentMonth, currentYear, annualYear: currentYear };
+}
+
+function getPeriodLabel(periodo: string) {
+  if (periodo === "mes_actual") return "Mes actual";
+  if (periodo === "ultimos_3_meses") return "Últimos 3 meses";
+  if (periodo === "ultimos_6_meses") return "Últimos 6 meses";
+  if (periodo === "anio_actual") return "Año actual";
+  return "Período";
 }

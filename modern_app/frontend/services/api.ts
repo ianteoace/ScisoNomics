@@ -1,6 +1,6 @@
 import { API_URL, getJSON, sendJSON } from "./http";
 import { getLocalDateInputValue } from "../lib/date";
-import type { BackupState, Categoria, GastoFijo, GastoProgramado, MetaAhorro, MovimientosResponse, Presupuesto, SettingsInfo, StatsResponse, Tag } from "../types/domain";
+import type { AnnualStatsResponse, BackupState, Categoria, GastoFijo, GastoProgramado, MetaAhorro, MovimientosResponse, Presupuesto, SettingsInfo, StatsResponse, Tag } from "../types/domain";
 
 export const api = {
   movimientos: (month: number, year: number, tipo: string, search: string, categoria = "", minMonto?: number, maxMonto?: number) =>
@@ -27,6 +27,7 @@ export const api = {
   marcarPagado: (id: number) => sendJSON<{ changed: boolean }>(`/gastos-programados/${id}/marcar-pagado`, "POST"),
 
   stats: (month: number, year: number) => getJSON<StatsResponse>(`/estadisticas?month=${month}&year=${year}`),
+  statsAnual: (year: number) => getJSON<AnnualStatsResponse>(`/estadisticas/anual?year=${year}`),
   resumenMensual: (month: number, year: number) => getJSON<any>(`/resumen-mensual?month=${month}&year=${year}`),
   presupuestos: (month: number, year: number) => getJSON<Presupuesto[]>(`/presupuestos?month=${month}&year=${year}`),
   upsertPresupuesto: (payload: unknown) => sendJSON<{ ok: boolean }>("/presupuestos", "POST", payload),

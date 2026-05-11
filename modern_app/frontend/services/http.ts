@@ -3,6 +3,7 @@
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
+    console.error("HTTP request failed", { url: res.url, status: res.status, response: text });
     let parsed: any = null;
     try {
       parsed = JSON.parse(text);

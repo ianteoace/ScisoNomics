@@ -11,6 +11,8 @@ type DashboardUiState = {
   setSearch: (v: string) => void;
   saldoActual: number;
   setSaldoActual: (v: number) => void;
+  topbarPeriodLabelOverride: string | null;
+  setTopbarPeriodLabelOverride: (v: string | null) => void;
 };
 
 const DashboardUiContext = createContext<DashboardUiState | null>(null);
@@ -21,10 +23,11 @@ export function DashboardUiProvider({ children }: { children: React.ReactNode })
   const [year, setYear] = useState(now.getFullYear());
   const [search, setSearch] = useState("");
   const [saldoActual, setSaldoActual] = useState(0);
+  const [topbarPeriodLabelOverride, setTopbarPeriodLabelOverride] = useState<string | null>(null);
 
   const value = useMemo(
-    () => ({ month, setMonth, year, setYear, search, setSearch, saldoActual, setSaldoActual }),
-    [month, year, search, saldoActual],
+    () => ({ month, setMonth, year, setYear, search, setSearch, saldoActual, setSaldoActual, topbarPeriodLabelOverride, setTopbarPeriodLabelOverride }),
+    [month, year, search, saldoActual, topbarPeriodLabelOverride],
   );
 
   return <DashboardUiContext.Provider value={value}>{children}</DashboardUiContext.Provider>;

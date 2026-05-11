@@ -25,7 +25,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="1.3.0")
+app = FastAPI(title="Registro Finanzas API", version="1.4.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -353,6 +353,102 @@ def get_stats(month: int = Query(..., ge=1, le=12), year: int = Query(...), serv
         "expenses_by_category": expenses_by_category,
         "trend": trend,
         "planificacion": plan,
+    }
+
+
+@app.get("/estadisticas/anual")
+def get_stats_anual(year: int = Query(...), service: FinanceService = Depends(get_service)):
+    with service.db.connect() as conn:
+        totals_row = conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0) AS ingresos,
+              COALESCE(SUM(CASE WHEN tipo='gasto' THEN monto ELSE 0 END), 0) AS gastos,
+              COALESCE(SUM(CASE WHEN tipo='ahorro' THEN monto ELSE 0 END), 0) AS ahorros,
+              COALESCE(SUM(CASE WHEN tipo='inversion' THEN monto ELSE 0 END), 0) AS inversiones,
+              COUNT(*) AS movimientos
+            FROM movimientos
+            WHERE strftime('%Y', fecha) = ?
+            """,
+            (str(year),),
+        ).fetchone()
+
+        monthly_rows = conn.execute(
+            """
+            SELECT
+              CAST(strftime('%m', fecha) AS INTEGER) AS mes,
+              COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0) AS ingresos,
+              COALESCE(SUM(CASE WHEN tipo='gasto' THEN monto ELSE 0 END), 0) AS gastos,
+              COALESCE(SUM(CASE WHEN tipo='ahorro' THEN monto ELSE 0 END), 0) AS ahorros,
+              COALESCE(SUM(CASE WHEN tipo='inversion' THEN monto ELSE 0 END), 0) AS inversiones
+            FROM movimientos
+            WHERE strftime('%Y', fecha) = ?
+            GROUP BY strftime('%m', fecha)
+            ORDER BY mes
+            """,
+            (str(year),),
+        ).fetchall()
+
+        categories_rows = conn.execute(
+            """
+            SELECT c.nombre AS categoria, COALESCE(SUM(m.monto),0) AS total, COUNT(m.id) AS movimientos
+            FROM movimientos m
+            JOIN categorias c ON c.id = m.categoria_id
+            WHERE strftime('%Y', m.fecha) = ? AND m.tipo = 'gasto'
+            GROUP BY c.nombre
+            HAVING total > 0
+            ORDER BY total DESC
+            """,
+            (str(year),),
+        ).fetchall()
+
+    by_month = {
+        int(row["mes"]): {
+            "mes": int(row["mes"]),
+            "ingresos": float(row["ingresos"] or 0),
+            "gastos": float(row["gastos"] or 0),
+            "ahorros": float(row["ahorros"] or 0),
+            "inversiones": float(row["inversiones"] or 0),
+        }
+        for row in monthly_rows
+    }
+    monthly = []
+    for m in range(1, 13):
+        item = by_month.get(m, {"mes": m, "ingresos": 0.0, "gastos": 0.0, "ahorros": 0.0, "inversiones": 0.0})
+        item["balance"] = item["ingresos"] - item["gastos"] - item["ahorros"] - item["inversiones"]
+        monthly.append(item)
+
+    total_ingresos = float(totals_row["ingresos"] or 0)
+    total_gastos = float(totals_row["gastos"] or 0)
+    total_ahorros = float(totals_row["ahorros"] or 0)
+    total_inversiones = float(totals_row["inversiones"] or 0)
+    balance_anual = total_ingresos - total_gastos - total_ahorros - total_inversiones
+    movimientos_total = int(totals_row["movimientos"] or 0)
+
+    mes_mayor_gasto = max(monthly, key=lambda x: x["gastos"]) if monthly else None
+    mes_mayor_ingreso = max(monthly, key=lambda x: x["ingresos"]) if monthly else None
+    categoria_mayor_gasto = dict(categories_rows[0]) if categories_rows else None
+
+    return {
+        "year": year,
+        "totals": {
+            "ingresos": total_ingresos,
+            "gastos": total_gastos,
+            "ahorros": total_ahorros,
+            "inversiones": total_inversiones,
+            "balance": balance_anual,
+            "movimientos": movimientos_total,
+        },
+        "promedios_mensuales": {
+            "ingresos": total_ingresos / 12.0,
+            "gastos": total_gastos / 12.0,
+            "balance": balance_anual / 12.0,
+        },
+        "mes_mayor_gasto": mes_mayor_gasto,
+        "mes_mayor_ingreso": mes_mayor_ingreso,
+        "categoria_mayor_gasto": categoria_mayor_gasto,
+        "monthly": monthly,
+        "gastos_por_categoria": [dict(r) for r in categories_rows],
     }
 
 

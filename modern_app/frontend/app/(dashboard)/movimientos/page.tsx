@@ -15,6 +15,17 @@ export default function MovimientosPage() {
   const { setSaldoActual } = useDashboardUi();
   const { showError, showSuccess } = useToast();
 
+  function getDefaultDateRange() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return {
+      desde: `${y}-${m}-01`,
+      hasta: `${y}-${m}-${day}`,
+    };
+  }
+
   const [tipo, setTipo] = useState("todos");
   const [categoria, setCategoria] = useState("");
   const [minMonto, setMinMonto] = useState("");
@@ -175,7 +186,21 @@ export default function MovimientosPage() {
           <option value="monto_mayor">Mayor monto</option>
           <option value="monto_menor">Menor monto</option>
         </select>
-        <button className="btn-secondary md:col-span-3" onClick={() => { setCategoria(""); setMinMonto(""); setMaxMonto(""); setTipo("todos"); setSortBy("recientes"); }}>Limpiar filtros</button>
+        <button
+          className="btn-secondary md:col-span-3"
+          onClick={() => {
+            const defaults = getDefaultDateRange();
+            setDesde(defaults.desde);
+            setHasta(defaults.hasta);
+            setCategoria("");
+            setMinMonto("");
+            setMaxMonto("");
+            setTipo("todos");
+            setSortBy("recientes");
+          }}
+        >
+          Limpiar filtros
+        </button>
         <button className="btn-secondary text-center md:col-span-3" onClick={handleExportExcel}>Exportar reporte a Excel</button>
       </div>
       {loadError ? <ErrorState title="No se pudieron cargar movimientos" description={loadError} onRetry={() => load().catch((e: any) => showError(e.message))} /> : null}

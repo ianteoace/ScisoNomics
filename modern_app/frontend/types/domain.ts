@@ -75,6 +75,28 @@ export type StatsResponse = {
   };
 };
 
+export type AnnualStatsResponse = {
+  year: number;
+  totals: {
+    ingresos: number;
+    gastos: number;
+    ahorros: number;
+    inversiones: number;
+    balance: number;
+    movimientos: number;
+  };
+  promedios_mensuales: {
+    ingresos: number;
+    gastos: number;
+    balance: number;
+  };
+  mes_mayor_gasto: { mes: number; gastos: number } | null;
+  mes_mayor_ingreso: { mes: number; ingresos: number } | null;
+  categoria_mayor_gasto: { categoria: string; total: number; movimientos?: number } | null;
+  monthly: Array<{ mes: number; ingresos: number; gastos: number; ahorros: number; inversiones: number; balance: number }>;
+  gastos_por_categoria: Array<{ categoria: string; total: number; movimientos?: number }>;
+};
+
 export type Presupuesto = {
   id: number;
   categoria_id: number;

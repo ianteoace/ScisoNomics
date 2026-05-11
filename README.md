@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.3.0](../../releases/tag/v1.3.0)
+[Descargar ScisoNomics v1.4.0](../../releases/tag/v1.4.0)
 
 ---
 
@@ -23,7 +23,7 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Presupuestos mensuales.
 - Metas de ahorro.
 - Calendario de movimientos.
-- Estadísticas mensuales.
+- Estadísticas por períodos: mes actual, últimos 3 meses, últimos 6 meses y año actual.
 - Reporte mensual.
 - Base de datos SQLite local.
 - Creación automática de base de datos en primera instalación.
@@ -101,7 +101,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.3.0`
+Versión estable actual: `v1.4.0`
 
 Funcionalidades validadas:
 

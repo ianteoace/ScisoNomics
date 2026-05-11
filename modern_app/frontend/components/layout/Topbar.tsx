@@ -8,7 +8,7 @@ import { monthName } from "../../lib/format";
 import { useDashboardUi } from "../../hooks/useDashboardUi";
 
 export function Topbar() {
-  const { month, year } = useDashboardUi();
+  const { month, year, topbarPeriodLabelOverride } = useDashboardUi();
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -17,7 +17,9 @@ export function Topbar() {
     <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4" style={{ borderColor: "rgb(var(--line))", background: "rgb(var(--panel))" }}>
       <div>
         <p className="text-xs uppercase tracking-widest" style={{ color: "rgb(var(--muted))" }}>Periodo seleccionado</p>
-        <h2 className="text-xl font-bold" style={{ color: "rgb(var(--aqua))" }}>{monthName(month)} {year}</h2>
+        <h2 className="text-xl font-bold" style={{ color: "rgb(var(--aqua))" }}>
+          {topbarPeriodLabelOverride || `${monthName(month)} ${year}`}
+        </h2>
       </div>
       <div className="flex-1 text-center">
         <p className="text-xl font-extrabold tracking-tight" style={{ color: "rgb(var(--warn))" }}>ScisoNomics</p>
