@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.1.0](../../releases/tag/v1.1.0)
+[Descargar ScisoNomics v1.2.0](../../releases/tag/v1.2.0)
 
 ---
 
@@ -32,6 +32,9 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Aplicación instalable para Windows.
 - Exportación Excel con opción de elegir ubicación.
 - Creación de copia de seguridad local.
+- Exportación de reportes por rango de fechas.
+- Filtros de movimientos por fechas exactas.
+- Reporte Excel mejorado visualmente.
 
 ---
 
@@ -95,7 +98,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.1.0`
+Versión estable actual: `v1.2.0`
 
 Funcionalidades validadas:
 
