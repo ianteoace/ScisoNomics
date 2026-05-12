@@ -1,17 +1,23 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export function Modal({ open, title, children, onClose }: { open: boolean; title: string; children: React.ReactNode; onClose: () => void }) {
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const raf = requestAnimationFrame(() => {
-      modalRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
       modalRef.current?.focus();
     });
     return () => {
@@ -20,9 +26,9 @@ export function Modal({ open, title, children, onClose }: { open: boolean; title
     };
   }, [open]);
 
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+  if (!open || !mounted) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
       <motion.div
         ref={modalRef}
         tabIndex={-1}
@@ -30,7 +36,7 @@ export function Modal({ open, title, children, onClose }: { open: boolean; title
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 8 }}
         transition={{ duration: 0.18 }}
-        className="card w-full max-w-xl p-5 outline-none"
+        className="card max-h-[90vh] w-full max-w-xl overflow-y-auto p-5 outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -39,6 +45,7 @@ export function Modal({ open, title, children, onClose }: { open: boolean; title
         </div>
         {children}
       </motion.div>
-    </div>
+    </div>,
+    document.body,
   );
 }

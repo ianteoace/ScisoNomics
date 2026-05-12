@@ -1,9 +1,9 @@
-﻿"use client";
+"use client";
 
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { monthName, money, yearOptions } from "../../lib/format";
-import type { GastoProgramado, Presupuesto, StatsResponse } from "../../types/domain";
+import type { GastoFijo, GastoProgramado, MetaAhorro, Movimiento, Presupuesto, StatsResponse } from "../../types/domain";
 import { ClientOnly } from "../ui/ClientOnly";
 import { EmptyState } from "../ui/EmptyState";
 import { LoadingGrid, LoadingSkeleton } from "../ui/LoadingSkeleton";
@@ -17,11 +17,19 @@ export function DashboardView({
   upcoming,
   resumenPotente,
   presupuestos,
+  gastosFijos,
+  metas,
+  recentMovements,
   month,
   year,
   onMonthChange,
   onYearChange,
   saldoActual,
+  onQuickNewMovement,
+  onQuickMovements,
+  onQuickStats,
+  onQuickExport,
+  onQuickBackup,
   loading,
 }: {
   summary: { saldo_inicial: number; ingreso: number; gasto: number; balance_final: number };
@@ -30,15 +38,46 @@ export function DashboardView({
   upcoming: GastoProgramado[];
   resumenPotente: any;
   presupuestos: Presupuesto[];
+  gastosFijos: GastoFijo[];
+  metas: MetaAhorro[];
+  recentMovements: Movimiento[];
   month: number;
   year: number;
   onMonthChange: (v: number) => void;
   onYearChange: (v: number) => void;
   saldoActual: number;
+  onQuickNewMovement: () => void;
+  onQuickMovements: () => void;
+  onQuickStats: () => void;
+  onQuickExport: () => Promise<void>;
+  onQuickBackup: () => Promise<void>;
   loading: boolean;
 }) {
   const incomeVar = previous && previous.ingreso ? ((summary.ingreso - previous.ingreso) / previous.ingreso) * 100 : null;
   const expenseVar = previous && previous.gasto ? ((summary.gasto - previous.gasto) / previous.gasto) * 100 : null;
+
+  const ahorroMes = Number(resumenPotente?.ahorro_mes || 0);
+  const inversionesMes = Number(resumenPotente?.inversiones_mes || 0);
+  const balanceMes = Number(resumenPotente?.balance_mensual ?? summary.balance_final);
+
+  const presupuestoComprometido = presupuestos.length
+    ? [...presupuestos].sort((a, b) => Number(b.porcentaje_usado || 0) - Number(a.porcentaje_usado || 0))[0]
+    : null;
+
+  const proximoGastoFijo = (() => {
+    const activos = gastosFijos.filter((g) => g.activo === 1);
+    if (!activos.length) return null;
+    const today = new Date().getDate();
+    return [...activos].sort((a, b) => {
+      const deltaA = a.dia_vencimiento >= today ? a.dia_vencimiento - today : 31 - today + a.dia_vencimiento;
+      const deltaB = b.dia_vencimiento >= today ? b.dia_vencimiento - today : 31 - today + b.dia_vencimiento;
+      return deltaA - deltaB;
+    })[0];
+  })();
+
+  const metaMasAvanzada = metas.length
+    ? [...metas].sort((a, b) => Number(b.porcentaje_completado || 0) - Number(a.porcentaje_completado || 0))[0]
+    : null;
 
   const barData = [
     { name: "Ingresos", value: summary.ingreso },
@@ -47,7 +86,7 @@ export function DashboardView({
 
   return (
     <div className="space-y-4">
-      <SectionHeader title="Inicio" subtitle={`Vista general del mes: ${monthName(month)} ${year}`} />
+      <SectionHeader title="Inicio" subtitle={`Resumen de ${monthName(month)} ${year}`} />
       <div className="panel grid gap-2 p-3 md:grid-cols-3">
         <select className="input" value={month} onChange={(e) => onMonthChange(Number(e.target.value))}>
           {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
@@ -58,25 +97,70 @@ export function DashboardView({
       </div>
 
       {loading ? (
-        <LoadingGrid items={6} className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6" />
+        <LoadingGrid items={8} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-          <MetricCard title="Saldo inicial" value={money(summary.saldo_inicial)} tone="accent" />
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="Saldo del mes anterior" value={money(summary.saldo_inicial)} tone="default" />
+          <MetricCard title="Saldo actual" value={money(saldoActual)} tone="accent" />
           <MetricCard highlightOnHover title="Ingresos del mes" value={money(summary.ingreso)} tone="income" helper={incomeVar === null ? "Mes anterior: -" : `Mes anterior: ${incomeVar >= 0 ? "+" : ""}${incomeVar.toFixed(1)}%`} />
           <MetricCard highlightOnHover title="Gastos del mes" value={money(summary.gasto)} tone="expense" helper={expenseVar === null ? "Mes anterior: -" : `Mes anterior: ${expenseVar >= 0 ? "+" : ""}${expenseVar.toFixed(1)}%`} />
-          <MetricCard highlightOnHover title="Ahorro del mes" value={money(resumenPotente?.ahorro_mes || 0)} tone="accent" />
-          <MetricCard title="Balance mensual" value={money(resumenPotente?.balance_mensual ?? summary.balance_final)} tone={(resumenPotente?.balance_mensual ?? summary.balance_final) >= 0 ? "income" : "warn"} />
-          <article className={`card p-5 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40 ${saldoActual >= 0 ? "bg-emerald-50/60 dark:bg-emerald-950/20" : "bg-rose-50/60 dark:bg-rose-950/20"}`}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Saldo actual</p>
-            <p className={`mt-2 text-3xl font-black tracking-tight ${saldoActual >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{money(saldoActual)}</p>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{saldoActual >= 0 ? "Estado positivo" : "Estado ajustado"}</p>
-          </article>
+          <MetricCard title="Balance del mes" value={money(balanceMes)} tone={balanceMes >= 0 ? "income" : "warn"} />
+          <MetricCard title="Ahorros del mes" value={money(ahorroMes)} tone="accent" />
+          <MetricCard title="Inversiones del mes" value={money(inversionesMes)} tone="accent" />
         </div>
       )}
 
+      <section className="card p-4">
+        <SectionHeader title="Indicadores utiles" subtitle="Puntos clave para decidir rapido" />
+        {loading ? (
+          <LoadingSkeleton rows={4} />
+        ) : (
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-line p-3 text-sm">
+              <p className="text-slate-500 dark:text-slate-400">Presupuesto mas comprometido</p>
+              {presupuestoComprometido ? (
+                <>
+                  <p className="mt-1 font-semibold">{presupuestoComprometido.categoria}</p>
+                  <p>{presupuestoComprometido.porcentaje_usado.toFixed(1)}% - {money(presupuestoComprometido.monto_gastado)} / {money(presupuestoComprometido.monto_presupuestado)}</p>
+                </>
+              ) : <p className="mt-1">Sin presupuestos cargados.</p>}
+            </div>
+            <div className="rounded-xl border border-line p-3 text-sm">
+              <p className="text-slate-500 dark:text-slate-400">Proximo gasto fijo</p>
+              {proximoGastoFijo ? (
+                <>
+                  <p className="mt-1 font-semibold">{proximoGastoFijo.descripcion}</p>
+                  <p>{money(proximoGastoFijo.monto)} - Dia {proximoGastoFijo.dia_vencimiento}</p>
+                </>
+              ) : <p className="mt-1">Sin gastos fijos activos.</p>}
+            </div>
+            <div className="rounded-xl border border-line p-3 text-sm">
+              <p className="text-slate-500 dark:text-slate-400">Meta mas avanzada</p>
+              {metaMasAvanzada ? (
+                <>
+                  <p className="mt-1 font-semibold">{metaMasAvanzada.nombre}</p>
+                  <p>{Number(metaMasAvanzada.porcentaje_completado || 0).toFixed(1)}% - {money(metaMasAvanzada.monto_ahorrado)} / {money(metaMasAvanzada.monto_objetivo)}</p>
+                </>
+              ) : <p className="mt-1">Sin metas de ahorro.</p>}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="card p-4">
+        <SectionHeader title="Accesos rapidos" subtitle="Acciones frecuentes" />
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          <button className="btn" onClick={onQuickNewMovement}>Nuevo movimiento</button>
+          <button className="btn-secondary" onClick={onQuickMovements}>Ver movimientos</button>
+          <button className="btn-secondary" onClick={onQuickStats}>Ver estadisticas</button>
+          <button className="btn-secondary" onClick={() => onQuickExport().catch(() => undefined)}>Exportar reporte</button>
+          <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia de seguridad</button>
+        </div>
+      </section>
+
       <div className="grid gap-4 xl:grid-cols-3">
         <section className="card p-5 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40 xl:col-span-2">
-          <SectionHeader title="Ingresos vs gastos" subtitle="Comparativa rápida del mes" />
+          <SectionHeader title="Ingresos vs gastos" subtitle="Comparativa rapida del mes" />
           <div className="h-64">
             {loading ? (
               <div className="h-full w-full animate-pulse rounded-lg border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900" />
@@ -106,7 +190,7 @@ export function DashboardView({
         </section>
 
         <section className="card p-5 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40">
-          <SectionHeader title="Próximos gastos" subtitle="Pendientes cercanos" />
+          <SectionHeader title="Proximos gastos" subtitle="Pendientes cercanos" />
           {loading ? (
             <LoadingSkeleton rows={5} />
           ) : (
@@ -115,7 +199,7 @@ export function DashboardView({
               {upcoming.slice(0, 8).map((item) => (
                 <div key={item.id} className="rounded-xl border p-2.5 text-sm" style={{ borderColor: "rgb(var(--line))" }}>
                   <div className="flex justify-between gap-2"><span className="font-medium">{item.descripcion}</span><span className="font-semibold text-rose-300">{money(item.monto_estimado)}</span></div>
-                  <div className="text-xs text-slate-400">{item.fecha_vencimiento} · {item.estado}</div>
+                  <div className="text-xs text-slate-400">{item.fecha_vencimiento} - {item.estado}</div>
                 </div>
               ))}
             </div>
@@ -128,27 +212,28 @@ export function DashboardView({
           Balance proyectado del mes: <span className="font-semibold text-cyan-700 dark:text-cyan-300">{money(stats.planificacion.balance_proyectado_mes)}</span>
           <span className="ml-3">Disponible luego de ahorro: <strong>{money(resumenPotente?.disponible_luego_ahorro || 0)}</strong></span>
           {resumenPotente?.categoria_mayor_gasto ? <span className="ml-3">Mayor gasto: <strong>{resumenPotente.categoria_mayor_gasto.categoria}</strong></span> : null}
+          <span className="ml-3">Saldo actual: <strong>{money(saldoActual)}</strong></span>
         </div>
       ) : null}
-      <section className="card p-4 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40">
-        <SectionHeader title="Presupuestos y gastos por categoría" subtitle="Consumo por categoría del mes" />
+
+      <section className="card p-4">
+        <SectionHeader title="Actividad reciente" subtitle="Ultimos 5 movimientos" />
         {loading ? (
-          <LoadingSkeleton rows={6} />
+          <LoadingSkeleton rows={5} />
+        ) : recentMovements.length === 0 ? (
+          <EmptyState title="No hay movimientos recientes." hint="Carga un movimiento para comenzar." />
         ) : (
-          <>
-            {presupuestos.length === 0 ? <EmptyState title="Sin presupuestos del mes" hint="No hay presupuestos cargados para este mes." /> : null}
-            <div className="grid gap-2 md:grid-cols-2">
-              {presupuestos.slice(0, 4).map((p) => <div key={p.id} className="rounded-lg border border-line p-2 text-left text-sm">{p.categoria}: {p.porcentaje_usado.toFixed(1)}% ({money(p.monto_gastado)} / {money(p.monto_presupuestado)})</div>)}
-            </div>
-            <div className="mt-3 space-y-2">
-              {stats?.expenses_by_category.slice(0, 6).map((c) => (
-                <div key={c.categoria} className="flex w-full items-center justify-between rounded-lg border border-line p-2 text-left text-sm">
-                  <span>{c.categoria}</span>
-                  <strong>{money(c.total)}</strong>
+          <div className="space-y-2">
+            {recentMovements.map((mov) => (
+              <div key={mov.id} className="rounded-lg border border-line p-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{mov.descripcion || "Sin descripcion"}</span>
+                  <strong className={mov.tipo === "ingreso" ? "text-emerald-300" : "text-rose-300"}>{money(mov.monto)}</strong>
                 </div>
-              ))}
-            </div>
-          </>
+                <div className="text-xs text-slate-400">{mov.fecha} - {mov.categoria} - {mov.tipo}</div>
+              </div>
+            ))}
+          </div>
         )}
       </section>
     </div>

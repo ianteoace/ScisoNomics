@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
@@ -12,6 +13,8 @@ import { api } from "../../../services/api";
 import type { Categoria, MetaAhorro, Movimiento, MovimientosResponse } from "../../../types/domain";
 
 export default function MovimientosPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { setSaldoActual } = useDashboardUi();
   const { showError, showSuccess } = useToast();
 
@@ -44,6 +47,7 @@ export default function MovimientosPage() {
   const [metas, setMetas] = useState<MetaAhorro[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [openCreateSignal, setOpenCreateSignal] = useState(0);
   const [confirmState, setConfirmState] = useState<{ open: boolean; title: string; message: string; action: (() => Promise<void>) | null }>({ open: false, title: "", message: "", action: null });
 
   const filteredCategories = useMemo(() => {
@@ -101,6 +105,15 @@ export default function MovimientosPage() {
   useEffect(() => {
     if (categoria && !filteredCategories.some((c) => c.nombre === categoria)) setCategoria("");
   }, [categoria, filteredCategories]);
+
+  useEffect(() => {
+  if (!searchParams) return;
+
+  if (searchParams.get("nuevo") !== "1") return;
+
+  setOpenCreateSignal((prev) => prev + 1);
+  router.replace("/movimientos");
+}, [router, searchParams]);
 
   async function wrap(action: () => Promise<void>, msg: string) {
     try {
@@ -210,6 +223,7 @@ export default function MovimientosPage() {
         categories={categories}
         loading={loading}
         metas={metas}
+        openCreateSignal={openCreateSignal}
         onCreate={(payload) => wrap(() => api.createMovimiento(payload).then(() => undefined), "Movimiento creado")}
         onUpdate={(id, payload) => wrap(() => api.updateMovimiento(id, payload).then(() => undefined), "Movimiento actualizado")}
         onDelete={(id) => {

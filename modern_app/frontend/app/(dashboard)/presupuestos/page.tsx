@@ -57,6 +57,15 @@ export default function PresupuestosPage() {
   }, [router]);
 
   const usedPairs = useMemo(() => new Set(rows.map((r) => `${r.categoria_id}-${r.mes}-${r.anio}`)), [rows]);
+  const summary = useMemo(() => {
+    if (!rows.length) return null;
+    const totalPresupuestado = rows.reduce((acc, r) => acc + Number(r.monto_presupuestado || 0), 0);
+    const totalGastado = rows.reduce((acc, r) => acc + Number(r.monto_gastado || 0), 0);
+    const totalDisponible = rows.reduce((acc, r) => acc + Number(r.monto_disponible || 0), 0);
+    const activos = rows.length;
+    const comprometido = [...rows].sort((a, b) => Number(b.porcentaje_usado || 0) - Number(a.porcentaje_usado || 0))[0] || null;
+    return { totalPresupuestado, totalGastado, totalDisponible, activos, comprometido };
+  }, [rows]);
 
   function openCreate() {
     setEditing(null);
@@ -107,19 +116,48 @@ export default function PresupuestosPage() {
   }
 
   return (
-    <section className="card p-5">
+    <section className="space-y-4">
+      <header className="card p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xl font-bold">Presupuestos por categoría</h2>
+          <button className="btn" onClick={openCreate}>Crear presupuesto</button>
+        </div>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Seguimiento de gasto vs presupuesto mensual con alertas por categoría.
+        </p>
+      </header>
+
+      {loading ? (
+        <div className="card p-5">
+          <LoadingSkeleton rows={4} />
+        </div>
+      ) : null}
+
+      {!loading && summary ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Metric title="Total presupuestado" value={money(summary.totalPresupuestado)} tone="text-cyan-300" />
+          <Metric title="Total gastado" value={money(summary.totalGastado)} tone="text-rose-300" />
+          <Metric title="Total disponible" value={money(summary.totalDisponible)} tone={summary.totalDisponible >= 0 ? "text-emerald-300" : "text-rose-300"} />
+          <Metric
+            title="Más comprometido"
+            value={summary.comprometido ? `${summary.comprometido.categoria} (${summary.comprometido.porcentaje_usado.toFixed(1)}%)` : "-"}
+            tone={summary.comprometido?.excedido ? "text-rose-300" : "text-amber-300"}
+          />
+        </div>
+      ) : null}
+
+      <section className="card p-5">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-xl font-bold">Presupuestos por categoria</h2>
-        <button className="btn" onClick={openCreate}>Crear presupuesto</button>
+        <h3 className="text-lg font-semibold">Detalle por categoría</h3>
+        <span className="text-sm text-slate-500 dark:text-slate-400">{rows.length} presupuesto(s)</span>
       </div>
 
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={load} /> : null}
-      {loading ? <LoadingSkeleton rows={6} /> : null}
-      {rows.length === 0 && !loading ? <EmptyState title="Sin presupuestos" hint="Crea tu primer presupuesto mensual por categoria." ctaLabel="Crear presupuesto" onAction={openCreate} /> : null}
+      {rows.length === 0 && !loading ? <EmptyState title="Sin presupuestos" hint="Crea tu primer presupuesto mensual por categoría." ctaLabel="Crear presupuesto" onAction={openCreate} /> : null}
 
       <div className={`mt-4 space-y-2 ${loading ? "hidden" : ""}`}>
         {rows.map((r) => (
-          <div key={r.id} className="rounded-xl border border-line p-3">
+          <div key={r.id} className="rounded-xl border border-line p-4">
             <div className="flex items-center justify-between">
               <strong>{r.categoria}</strong>
               <div className="flex gap-2">
@@ -127,14 +165,23 @@ export default function PresupuestosPage() {
                 <button className="btn-secondary" onClick={() => setConfirmId(r.id)}>Eliminar</button>
               </div>
             </div>
-            <p className="text-sm">Periodo: {monthName(r.mes)} {r.anio}</p>
-            <p className="text-sm">Presupuestado: {money(r.monto_presupuestado)} · Gastado: {money(r.monto_gastado)} · Disponible: {money(r.monto_disponible)}</p>
-            <p className={`text-sm font-semibold ${r.excedido ? "text-rose-300" : "text-emerald-300"}`}>
-              {r.porcentaje_usado.toFixed(1)}% usado {r.excedido ? "(excedido)" : ""}
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Período: {monthName(r.mes)} {r.anio}</p>
+            <p className="mt-2 text-sm">Presupuestado: <strong>{money(r.monto_presupuestado)}</strong></p>
+            <p className="text-sm">Gastado: <strong>{money(r.monto_gastado)}</strong></p>
+            <p className="text-sm">Disponible: <strong className={r.monto_disponible < 0 ? "text-rose-300" : "text-emerald-300"}>{money(r.monto_disponible)}</strong></p>
+            <div className="mt-2 h-2 rounded-full bg-slate-200 dark:bg-slate-800">
+              <div
+                className={`h-2 rounded-full ${getBudgetState(r.porcentaje_usado).barClass}`}
+                style={{ width: `${Math.min(100, Math.max(0, r.porcentaje_usado))}%` }}
+              />
+            </div>
+            <p className={`mt-2 text-sm font-semibold ${getBudgetState(r.porcentaje_usado).textClass}`}>
+              {r.porcentaje_usado.toFixed(1)}% usado · {getBudgetState(r.porcentaje_usado).label}
             </p>
           </div>
         ))}
       </div>
+      </section>
 
       <Modal open={open} title={editing ? "Editar presupuesto" : "Crear presupuesto"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={save}>
@@ -169,5 +216,21 @@ export default function PresupuestosPage() {
         }}
       />
     </section>
+  );
+}
+
+function getBudgetState(percent: number) {
+  if (percent > 100) return { label: "Superado", textClass: "text-rose-300", barClass: "bg-rose-500" };
+  if (percent === 100) return { label: "Al límite", textClass: "text-amber-300", barClass: "bg-amber-500" };
+  if (percent >= 70) return { label: "Cerca del límite", textClass: "text-amber-300", barClass: "bg-amber-500" };
+  return { label: "En control", textClass: "text-emerald-300", barClass: "bg-emerald-500" };
+}
+
+function Metric({ title, value, tone = "text-slate-100" }: { title: string; value: string; tone?: string }) {
+  return (
+    <article className="card p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</p>
+      <p className={`mt-1 text-lg font-semibold ${tone}`}>{value}</p>
+    </article>
   );
 }

@@ -13,12 +13,14 @@ import { SectionHeader } from "../ui/SectionHeader";
 export function GastosFijosView({
   rows,
   categories,
+  loading,
   onCreate,
   onUpdate,
   onDelete,
 }: {
   rows: GastoFijo[];
   categories: Categoria[];
+  loading?: boolean;
   onCreate: (payload: any) => Promise<void>;
   onUpdate: (id: number, payload: any) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -29,6 +31,27 @@ export function GastosFijosView({
   const [form, setForm] = useState({ categoria_id: 0, descripcion: "", monto: "", dia_vencimiento: "1", activo: 1 });
 
   const gastoCategories = useMemo(() => categories.filter((c) => c.tipo === "gasto"), [categories]);
+  const enrichedRows = useMemo(() => rows.map((r) => ({ ...r, ...getFixedExpenseStatus(r) })), [rows]);
+  const sortedRows = useMemo(() => {
+    const statusRank: Record<string, number> = { vencido: 0, proximo: 1, pendiente: 2, inactivo: 3 };
+    return [...enrichedRows].sort((a, b) => {
+      const rankDiff = statusRank[a.statusKey] - statusRank[b.statusKey];
+      if (rankDiff !== 0) return rankDiff;
+      return a.dia_vencimiento - b.dia_vencimiento;
+    });
+  }, [enrichedRows]);
+  const resumen = useMemo(() => {
+    const activos = enrichedRows.filter((r) => r.activo === 1);
+    const totalMensual = activos.reduce((acc, r) => acc + Number(r.monto || 0), 0);
+    const proximosCount = activos.filter((r) => r.statusKey === "proximo").length;
+    const proximo = sortedRows.find((r) => r.activo === 1) || null;
+    return {
+      totalMensual,
+      activosCount: activos.length,
+      proximosCount,
+      proximo,
+    };
+  }, [enrichedRows, sortedRows]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -69,25 +92,49 @@ export function GastosFijosView({
   }
 
   return (
-    <section className="card p-5">
+    <section className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Metric title="Total mensual (activos)" value={money(resumen.totalMensual)} tone="text-rose-300" />
+        <Metric title="Gastos fijos activos" value={String(resumen.activosCount)} />
+        <Metric
+          title="Próximo gasto fijo"
+          value={resumen.proximo ? `${resumen.proximo.descripcion} · Día ${resumen.proximo.dia_vencimiento}` : "-"}
+          tone={resumen.proximo?.statusTone || "text-slate-100"}
+        />
+        <Metric title="Próximos a vencer" value={String(resumen.proximosCount)} tone="text-amber-300" />
+      </div>
+
+      <section className="card p-5">
       <SectionHeader title="Gastos fijos" subtitle="Plantillas mensuales de egresos" right={<button className="btn" onClick={openCreate}>Crear gasto fijo</button>} />
 
-      {rows.length === 0 ? <EmptyState title="Sin gastos fijos" hint="Crea tu primer gasto fijo mensual." ctaLabel="Crear gasto fijo" onAction={openCreate} /> : null}
+      {!loading && rows.length === 0 ? <EmptyState title="No hay gastos fijos cargados." hint="Creá tu primer gasto fijo mensual." ctaLabel="Crear gasto fijo" onAction={openCreate} /> : null}
 
-      <div className="table-wrap">
-        <table className="table-modern w-full text-sm">
-          <thead><tr><th>Categoria</th><th>Descripcion</th><th className="text-right">Monto</th><th>Dia</th><th>Activo</th><th /></tr></thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-t border-line/70">
-                <td><Badge>{r.categoria}</Badge></td><td>{r.descripcion}</td><td className="text-right text-rose-300">{money(r.monto)}</td><td>{r.dia_vencimiento}</td>
-                <td><Badge tone={r.activo ? "income" : "neutral"}>{r.activo ? "Activo" : "Inactivo"}</Badge></td>
-                <td className="py-2"><div className="flex justify-end gap-2"><button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button><button className="btn-secondary" onClick={() => toggle(r)}>{r.activo ? "Desactivar" : "Activar"}</button><button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button></div></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className={`grid gap-3 lg:grid-cols-2 ${loading ? "hidden" : ""}`}>
+        {sortedRows.map((r) => (
+          <article key={r.id} className="rounded-xl border border-line p-4 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="font-semibold">{r.descripcion}</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400">{r.categoria || "Sin categoría"}</p>
+              </div>
+              <div className="flex flex-wrap justify-end gap-1">
+                <Badge tone={r.statusBadgeTone as any}>{r.statusLabel}</Badge>
+                <Badge tone={r.activo ? "income" : "neutral"}>{r.activo ? "Activo" : "Inactivo"}</Badge>
+              </div>
+            </div>
+            <p className="text-sm">Monto: <strong className="text-rose-300">{money(r.monto)}</strong></p>
+            <p className="text-sm">Vencimiento: <strong>Día {r.dia_vencimiento}</strong> de cada mes</p>
+            <p className="text-sm">Frecuencia: <strong>{(r as any).frecuencia || "Mensual"}</strong></p>
+            <p className={`text-xs ${r.statusTone}`}>{r.statusDescription}</p>
+            <div className="pt-1 flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
+              <button className="btn-secondary" onClick={() => toggle(r)}>{r.activo ? "Desactivar" : "Activar"}</button>
+              <button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button>
+            </div>
+          </article>
+        ))}
       </div>
+      </section>
 
       <Modal open={open} title={selected ? "Editar gasto fijo" : "Crear gasto fijo"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={submit}>
@@ -106,5 +153,67 @@ export function GastosFijosView({
         </form>
       </Modal>
     </section>
+  );
+}
+
+function getFixedExpenseStatus(row: GastoFijo) {
+  if (!row.activo) {
+    return {
+      statusKey: "inactivo",
+      statusLabel: "Pendiente",
+      statusDescription: "Gasto inactivo.",
+      statusBadgeTone: "neutral",
+      statusTone: "text-slate-400",
+    };
+  }
+
+  const today = new Date();
+  const currentDay = today.getDate();
+  const dueDay = Number(row.dia_vencimiento || 1);
+  const diff = dueDay - currentDay;
+  const dayLabel = (n: number) => `${n} día${n === 1 ? "" : "s"}`;
+  if (dueDay < currentDay) {
+    const daysLate = Math.abs(diff);
+    return {
+      statusKey: "vencido",
+      statusLabel: "Vencido",
+      statusDescription: `Venció hace ${dayLabel(daysLate)}.`,
+      statusBadgeTone: "expense",
+      statusTone: "text-rose-300",
+    };
+  }
+  if (diff === 0) {
+    return {
+      statusKey: "proximo",
+      statusLabel: "Próximo",
+      statusDescription: "Vence hoy.",
+      statusBadgeTone: "warn",
+      statusTone: "text-amber-300",
+    };
+  }
+  if (diff <= 7) {
+    return {
+      statusKey: "proximo",
+      statusLabel: "Próximo",
+      statusDescription: `Vence en ${dayLabel(diff)}.`,
+      statusBadgeTone: "warn",
+      statusTone: "text-amber-300",
+    };
+  }
+  return {
+    statusKey: "pendiente",
+    statusLabel: "Pendiente",
+    statusDescription: `Faltan ${dayLabel(diff)} para vencer.`,
+    statusBadgeTone: "income",
+    statusTone: "text-emerald-300",
+  };
+}
+
+function Metric({ title, value, tone = "text-slate-100" }: { title: string; value: string; tone?: string }) {
+  return (
+    <article className="card p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</p>
+      <p className={`mt-1 text-lg font-semibold ${tone}`}>{value}</p>
+    </article>
   );
 }

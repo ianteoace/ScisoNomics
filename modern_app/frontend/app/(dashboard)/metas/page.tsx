@@ -61,6 +61,22 @@ export default function MetasPage() {
   }, []);
 
   const hasRows = useMemo(() => rows.length > 0, [rows]);
+  const resumen = useMemo(() => {
+    const activas = rows.filter((m) => m.estado === "activa");
+    const totalObjetivo = activas.reduce((acc, m) => acc + Number(m.monto_objetivo || 0), 0);
+    const totalAhorrado = activas.reduce((acc, m) => acc + Number(m.monto_ahorrado || 0), 0);
+    const faltanteTotal = Math.max(0, totalObjetivo - totalAhorrado);
+    const metaMasAvanzada = activas.length
+      ? [...activas].sort((a, b) => safeProgress(b) - safeProgress(a))[0]
+      : null;
+    return {
+      metasActivas: activas.length,
+      totalObjetivo,
+      totalAhorrado,
+      faltanteTotal,
+      metaMasAvanzada,
+    };
+  }, [rows]);
 
   function openCreate() {
     setEditing(null);
@@ -158,19 +174,49 @@ export default function MetasPage() {
   }
 
   return (
-    <section className="card p-5 space-y-4">
+    <section className="space-y-4">
+      <header className="card p-5">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-xl font-bold">Metas de ahorro</h2>
+          <button className="btn" onClick={openCreate}>Crear meta</button>
+        </div>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Seguimiento de avance para alcanzar tus objetivos de ahorro.
+        </p>
+      </header>
+
+      {loading ? (
+        <div className="card p-5">
+          <LoadingSkeleton rows={5} />
+        </div>
+      ) : null}
+
+      {!loading && hasRows ? (
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <Metric title="Metas activas" value={String(resumen.metasActivas)} />
+          <Metric title="Total objetivo" value={money(resumen.totalObjetivo)} tone="text-cyan-300" />
+          <Metric title="Total ahorrado" value={money(resumen.totalAhorrado)} tone="text-emerald-300" />
+          <Metric title="Faltante total" value={money(resumen.faltanteTotal)} tone={resumen.faltanteTotal > 0 ? "text-amber-300" : "text-emerald-300"} />
+          <Metric
+            title="Meta más avanzada"
+            value={resumen.metaMasAvanzada ? `${resumen.metaMasAvanzada.nombre} (${safeProgress(resumen.metaMasAvanzada).toFixed(1)}%)` : "-"}
+            tone="text-indigo-300"
+          />
+        </div>
+      ) : null}
+
+      <section className="card p-5 space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-xl font-bold">Metas de ahorro</h2>
-        <button className="btn" onClick={openCreate}>Crear meta</button>
+        <h3 className="text-lg font-semibold">Detalle de metas</h3>
+        <span className="text-sm text-slate-500 dark:text-slate-400">{rows.length} meta(s)</span>
       </div>
 
-      {loadError ? <ErrorState title="Error al cargar metas" description={loadError} onRetry={load} /> : null}
-      {loading ? <LoadingSkeleton rows={6} /> : null}
+      {loadError ? <ErrorState title="No se pudieron cargar las metas." description={loadError} onRetry={load} /> : null}
 
       {!loading && !hasRows ? (
         <EmptyState
-          title="No tenés metas de ahorro todavía"
-          hint="Creá una meta para visualizar tu progreso de ahorro."
+          title="No hay metas de ahorro creadas."
+          hint="Creá una meta para empezar a seguir tu progreso."
           ctaLabel="Crear meta"
           onAction={openCreate}
         />
@@ -179,7 +225,9 @@ export default function MetasPage() {
       {hasRows ? (
         <div className="grid gap-3 lg:grid-cols-2">
           {rows.map((m) => {
-            const pct = Math.max(0, Math.min(100, Number(m.porcentaje_completado || 0)));
+            const rawPct = safeProgress(m);
+            const visualPct = Math.max(0, Math.min(100, rawPct));
+            const state = getGoalState(rawPct);
             return (
               <article key={m.id} className="rounded-xl border border-line p-4 space-y-2">
                 <div className="flex items-start justify-between gap-2">
@@ -187,19 +235,19 @@ export default function MetasPage() {
                     <h3 className="font-semibold">{m.nombre}</h3>
                     {m.descripcion ? <p className="text-sm text-muted mt-1">{m.descripcion}</p> : null}
                   </div>
-                  <span className="rounded-full border border-line px-2 py-0.5 text-xs uppercase">{m.estado}</span>
+                  <span className={`rounded-full border border-line px-2 py-0.5 text-xs uppercase ${state.textClass}`}>{state.label}</span>
                 </div>
-                <p className="text-sm">Objetivo: <strong>{money(m.monto_objetivo)}</strong></p>
-                <p className="text-sm">Ahorrado: <strong>{money(m.monto_ahorrado)}</strong></p>
-                <p className="text-sm">Faltante: <strong>{money(m.faltante)}</strong></p>
+                <p className="text-sm">Monto actual: <strong>{money(Number(m.monto_ahorrado || 0))}</strong></p>
+                <p className="text-sm">Monto objetivo: <strong>{money(Number(m.monto_objetivo || 0))}</strong></p>
+                <p className="text-sm">Monto faltante: <strong className={Number(m.faltante || 0) > 0 ? "text-amber-300" : "text-emerald-300"}>{money(Number(m.faltante || 0))}</strong></p>
                 {m.fecha_objetivo ? <p className="text-xs text-muted">Fecha objetivo: {m.fecha_objetivo}</p> : null}
                 <div>
                   <div className="mb-1 flex items-center justify-between text-xs">
                     <span>Progreso</span>
-                    <span>{pct.toFixed(1)}%</span>
+                    <span>{rawPct.toFixed(1)}%</span>
                   </div>
                   <div className="h-2 rounded bg-slate-700/40">
-                    <div className="h-2 rounded bg-emerald-400" style={{ width: `${pct}%` }} />
+                    <div className={`h-2 rounded ${state.barClass}`} style={{ width: `${visualPct}%` }} />
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2 pt-1">
@@ -214,6 +262,7 @@ export default function MetasPage() {
           })}
         </div>
       ) : null}
+      </section>
 
       <Modal open={openForm} title={title} onClose={() => setOpenForm(false)}>
         <form className="grid gap-2" onSubmit={submit}>
@@ -254,5 +303,27 @@ export default function MetasPage() {
         onConfirm={removeMeta}
       />
     </section>
+  );
+}
+
+function safeProgress(meta: MetaAhorro) {
+  const objetivo = Number(meta.monto_objetivo || 0);
+  const actual = Number(meta.monto_ahorrado || 0);
+  if (!Number.isFinite(objetivo) || objetivo <= 0 || !Number.isFinite(actual) || actual < 0) return 0;
+  return (actual / objetivo) * 100;
+}
+
+function getGoalState(progress: number) {
+  if (progress >= 100) return { label: "Cumplida", textClass: "text-emerald-300", barClass: "bg-emerald-500" };
+  if (progress >= 75) return { label: "Cerca de completar", textClass: "text-amber-300", barClass: "bg-amber-500" };
+  return { label: "En progreso", textClass: "text-cyan-300", barClass: "bg-cyan-500" };
+}
+
+function Metric({ title, value, tone = "text-slate-100" }: { title: string; value: string; tone?: string }) {
+  return (
+    <article className="card p-4">
+      <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</p>
+      <p className={`mt-1 text-lg font-semibold ${tone}`}>{value}</p>
+    </article>
   );
 }

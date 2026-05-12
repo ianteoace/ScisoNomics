@@ -16,12 +16,13 @@ type Props = {
   categories: Categoria[];
   metas: MetaAhorro[];
   loading: boolean;
+  openCreateSignal?: number;
   onCreate: (payload: any) => Promise<void>;
   onUpdate: (id: number, payload: any) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
 };
 
-export function MovimientosView({ rows, categories, metas, loading, onCreate, onUpdate, onDelete }: Props) {
+export function MovimientosView({ rows, categories, metas, loading, openCreateSignal = 0, onCreate, onUpdate, onDelete }: Props) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Movimiento | null>(null);
   const [form, setForm] = useState({
@@ -90,6 +91,11 @@ export function MovimientosView({ rows, categories, metas, loading, onCreate, on
     });
     setOpen(true);
   }
+
+  useEffect(() => {
+    if (!openCreateSignal) return;
+    startCreate();
+  }, [openCreateSignal]);
 
   return (
     <section className="card p-5">
