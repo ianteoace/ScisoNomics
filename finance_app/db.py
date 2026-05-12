@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 import sqlite3
 import shutil
+import uuid
 
 from .paths import ensure_app_data_layout, get_backup_dir, get_db_path, get_logs_dir
 
@@ -133,9 +134,11 @@ class Database:
                 self._migrate_categorias_allow_extended_types(conn)
                 self._recreate_categorias_validation_triggers(conn)
                 self._migrate_movimientos_meta_y_nota(conn)
+                self._migrate_sync_columns(conn)
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
                 self._seed_default_tags(conn)
+                self._migrate_sync_columns(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
                     return
@@ -383,6 +386,91 @@ class Database:
             )
         if "nota" not in cols:
             conn.execute("ALTER TABLE movimientos ADD COLUMN nota TEXT")
+
+    def _migrate_sync_columns(self, conn: sqlite3.Connection) -> None:
+        user_tables = [
+            "movimientos",
+            "categorias",
+            "presupuestos",
+            "metas_ahorro",
+            "gastos_fijos",
+            "gastos_programados",
+            "tags",
+            "movimiento_tags",
+        ]
+        existing_tables = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        for table in user_tables:
+            if table not in existing_tables:
+                continue
+            self._ensure_sync_columns_for_table(conn, table)
+
+    def _ensure_sync_columns_for_table(self, conn: sqlite3.Connection, table: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        sync_columns = {
+            "sync_id": "TEXT",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+            "deleted_at": "TEXT",
+            "sync_status": "TEXT",
+            "last_synced_at": "TEXT",
+        }
+        for name, definition in sync_columns.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                columns.add(name)
+
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            f"UPDATE {table} SET created_at = COALESCE(NULLIF(created_at, ''), ?) WHERE created_at IS NULL OR trim(created_at) = ''",
+            (now,),
+        )
+        conn.execute(
+            f"UPDATE {table} SET updated_at = COALESCE(NULLIF(updated_at, ''), created_at, ?) WHERE updated_at IS NULL OR trim(updated_at) = ''",
+            (now,),
+        )
+        conn.execute(
+            f"UPDATE {table} SET deleted_at = NULL WHERE deleted_at = ''",
+        )
+        conn.execute(
+            f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = ''",
+        )
+
+        id_columns = [
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            if int(row["pk"] or 0) > 0
+        ]
+        selector = ", ".join(id_columns)
+        if id_columns:
+            rows = conn.execute(
+                f"SELECT {selector} FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''"
+            ).fetchall()
+            where = " AND ".join([f"{col} = ?" for col in id_columns])
+            for row in rows:
+                conn.execute(
+                    f"UPDATE {table} SET sync_id = ? WHERE {where}",
+                    (str(uuid.uuid4()), *[row[col] for col in id_columns]),
+                )
+        else:
+            rows = conn.execute(
+                f"SELECT rowid AS _rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''"
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    f"UPDATE {table} SET sync_id = ? WHERE rowid = ?",
+                    (str(uuid.uuid4()), row["_rowid"]),
+                )
+
+        conn.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_sync_id ON {table}(sync_id) WHERE sync_id IS NOT NULL"
+        )
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_sync_status ON {table}(sync_status)")
 
     def _seed_default_tags(self, conn: sqlite3.Connection) -> None:
         defaults = [

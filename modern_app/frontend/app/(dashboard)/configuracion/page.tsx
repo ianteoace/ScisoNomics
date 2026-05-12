@@ -161,7 +161,7 @@ export default function ConfiguracionPage() {
         <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
         <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
           <p><strong>ScisoNomics</strong></p>
-          <p>Versión 1.8.0</p>
+          <p>Versión 1.9.0</p>
           <p>Aplicación desktop para gestión de finanzas personales.</p>
           <p>Tus datos se guardan localmente en tu equipo.</p>
           <p className="text-slate-500 dark:text-slate-400">Next.js - Tauri - FastAPI - SQLite</p>

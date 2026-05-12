@@ -77,6 +77,9 @@ class FinanceService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
+    def _new_sync_id(self) -> str:
+        return str(uuid4())
+
     def list_categorias(self, tipo: str | None = None) -> list[dict]:
         query = "SELECT id, nombre, tipo FROM categorias"
         params: tuple = ()
@@ -97,8 +100,11 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 conn.execute(
-                    "INSERT INTO categorias (nombre, tipo) VALUES (?, ?)",
-                    (nombre, tipo),
+                    """
+                    INSERT INTO categorias (nombre, tipo, sync_id, created_at, updated_at, sync_status)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    """,
+                    (nombre, tipo, self._new_sync_id()),
                 )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Ya existe una categoria con ese nombre y tipo.") from exc
@@ -114,7 +120,7 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 conn.execute(
-                    "UPDATE categorias SET nombre = ?, tipo = ? WHERE id = ?",
+                    "UPDATE categorias SET nombre = ?, tipo = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
                     (nombre, tipo, categoria_id),
                 )
         except sqlite3.IntegrityError as exc:
@@ -212,8 +218,11 @@ class FinanceService:
             with self.db.connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto, meta_id, nota)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO movimientos (
+                        fecha, tipo, categoria_id, descripcion, monto, meta_id, nota,
+                        sync_id, created_at, updated_at, sync_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
                     (
                         data.fecha,
@@ -223,6 +232,7 @@ class FinanceService:
                         data.monto,
                         meta_id,
                         data.nota.strip(),
+                        self._new_sync_id(),
                     ),
                 )
                 mov_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -239,7 +249,8 @@ class FinanceService:
                 conn.execute(
                     """
                     UPDATE movimientos
-                    SET fecha = ?, tipo = ?, categoria_id = ?, descripcion = ?, monto = ?, meta_id = ?, nota = ?
+                    SET fecha = ?, tipo = ?, categoria_id = ?, descripcion = ?, monto = ?, meta_id = ?, nota = ?,
+                        updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                     WHERE id = ?
                     """,
                     (
@@ -284,8 +295,13 @@ class FinanceService:
         conn.execute("DELETE FROM movimiento_tags WHERE movimiento_id = ?", (movimiento_id,))
         unique_ids = sorted({int(tag_id) for tag_id in tag_ids if int(tag_id) > 0})
         conn.executemany(
-            "INSERT INTO movimiento_tags (movimiento_id, tag_id) VALUES (?, ?)",
-            [(movimiento_id, tag_id) for tag_id in unique_ids],
+            """
+            INSERT INTO movimiento_tags (
+                movimiento_id, tag_id, sync_id, created_at, updated_at, sync_status
+            )
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+            """,
+            [(movimiento_id, tag_id, self._new_sync_id()) for tag_id in unique_ids],
         )
 
     def get_tags_for_movimiento(self, movimiento_id: int) -> list[dict]:
@@ -312,14 +328,23 @@ class FinanceService:
         if not nombre:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
-            conn.execute("INSERT INTO tags (nombre, color) VALUES (?, ?)", (nombre, data.color))
+            conn.execute(
+                """
+                INSERT INTO tags (nombre, color, sync_id, created_at, updated_at, sync_status)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                """,
+                (nombre, data.color, self._new_sync_id()),
+            )
 
     def update_tag(self, tag_id: int, data: TagInput) -> None:
         nombre = data.nombre.strip()
         if not nombre:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
-            conn.execute("UPDATE tags SET nombre = ?, color = ? WHERE id = ?", (nombre, data.color, tag_id))
+            conn.execute(
+                "UPDATE tags SET nombre = ?, color = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
+                (nombre, data.color, tag_id),
+            )
 
     def delete_tag(self, tag_id: int) -> None:
         with self.db.connect() as conn:
@@ -356,10 +381,13 @@ class FinanceService:
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO metas_ahorro (nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO metas_ahorro (
+                    nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado,
+                    sync_id, created_at, updated_at, sync_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
-                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado),
+                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, self._new_sync_id()),
             )
 
     def update_meta_ahorro(self, meta_id: int, data: MetaAhorroInput) -> None:
@@ -367,7 +395,8 @@ class FinanceService:
             conn.execute(
                 """
                 UPDATE metas_ahorro
-                SET nombre = ?, monto_objetivo = ?, monto_inicial = ?, fecha_objetivo = ?, descripcion = ?, estado = ?, updated_at = CURRENT_TIMESTAMP
+                SET nombre = ?, monto_objetivo = ?, monto_inicial = ?, fecha_objetivo = ?, descripcion = ?, estado = ?,
+                    updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 WHERE id = ?
                 """,
                 (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, meta_id),
@@ -375,7 +404,10 @@ class FinanceService:
 
     def delete_meta_ahorro(self, meta_id: int) -> None:
         with self.db.connect() as conn:
-            conn.execute("UPDATE movimientos SET meta_id = NULL WHERE meta_id = ?", (meta_id,))
+            conn.execute(
+                "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ?",
+                (meta_id,),
+            )
             conn.execute("DELETE FROM metas_ahorro WHERE id = ?", (meta_id,))
 
     def get_calendario_mensual(self, month: int, year: int) -> list[dict]:
@@ -732,10 +764,13 @@ class FinanceService:
             with self.db.connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO gastos_fijos (categoria_id, descripcion, monto, dia_vencimiento, activo)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO gastos_fijos (
+                        categoria_id, descripcion, monto, dia_vencimiento, activo,
+                        sync_id, created_at, updated_at, sync_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo),
+                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, self._new_sync_id()),
                 )
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al crear gasto fijo: {exc}") from exc
@@ -746,7 +781,8 @@ class FinanceService:
                 conn.execute(
                     """
                     UPDATE gastos_fijos
-                    SET categoria_id = ?, descripcion = ?, monto = ?, dia_vencimiento = ?, activo = ?
+                    SET categoria_id = ?, descripcion = ?, monto = ?, dia_vencimiento = ?, activo = ?,
+                        updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                     WHERE id = ?
                     """,
                     (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, gasto_id),
@@ -809,10 +845,13 @@ class FinanceService:
 
                 conn.execute(
                     """
-                    INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto)
-                    VALUES (?, 'gasto', ?, ?, ?)
+                    INSERT INTO movimientos (
+                        fecha, tipo, categoria_id, descripcion, monto,
+                        sync_id, created_at, updated_at, sync_status
+                    )
+                    VALUES (?, 'gasto', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (movement_date, row["categoria_id"], desc, row["monto"]),
+                    (movement_date, row["categoria_id"], desc, row["monto"], self._new_sync_id()),
                 )
                 inserted += 1
 
@@ -930,9 +969,10 @@ class FinanceService:
                 conn.execute(
                     """
                     INSERT INTO gastos_programados (
-                        descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
+                        descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia,
+                        sync_id, created_at, updated_at, sync_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
                     (
                         data.descripcion.strip(),
@@ -942,6 +982,7 @@ class FinanceService:
                         data.estado,
                         data.es_recurrente,
                         data.frecuencia,
+                        self._new_sync_id(),
                     ),
                 )
         except sqlite3.Error as exc:
@@ -955,7 +996,8 @@ class FinanceService:
                     """
                     UPDATE gastos_programados
                     SET descripcion = ?, categoria_id = ?, monto_estimado = ?, fecha_vencimiento = ?,
-                        estado = ?, es_recurrente = ?, frecuencia = ?
+                        estado = ?, es_recurrente = ?, frecuencia = ?,
+                        updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                     WHERE id = ?
                     """,
                     (
@@ -1007,19 +1049,23 @@ class FinanceService:
                 return {"changed": False, "generated_next": False, "is_recurrent": bool(row["es_recurrente"])}
 
             conn.execute(
-                "UPDATE gastos_programados SET estado = 'pagado' WHERE id = ?",
+                "UPDATE gastos_programados SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
                 (gasto_id,),
             )
             conn.execute(
                 """
-                INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto)
-                VALUES (?, 'gasto', ?, ?, ?)
+                INSERT INTO movimientos (
+                    fecha, tipo, categoria_id, descripcion, monto,
+                    sync_id, created_at, updated_at, sync_status
+                )
+                VALUES (?, 'gasto', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
                 (
                     date.today().isoformat(),
                     row["categoria_id"],
                     row["descripcion"],
                     row["monto_estimado"],
+                    self._new_sync_id(),
                 ),
             )
             generated_next = False
@@ -1047,9 +1093,10 @@ class FinanceService:
                     conn.execute(
                         """
                         INSERT INTO gastos_programados (
-                            descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
+                            descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia,
+                            sync_id, created_at, updated_at, sync_status
                         )
-                        VALUES (?, ?, ?, ?, 'pendiente', 1, ?)
+                        VALUES (?, ?, ?, ?, 'pendiente', 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                         """,
                         (
                             row["descripcion"],
@@ -1057,6 +1104,7 @@ class FinanceService:
                             row["monto_estimado"],
                             next_due_iso,
                             row["frecuencia"],
+                            self._new_sync_id(),
                         ),
                     )
                     generated_next = True
@@ -1220,12 +1268,12 @@ class FinanceService:
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO presupuestos (categoria_id, mes, anio, monto, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO presupuestos (categoria_id, mes, anio, monto, sync_id, created_at, updated_at, sync_status)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 ON CONFLICT(categoria_id, mes, anio)
-                DO UPDATE SET monto = excluded.monto, updated_at = CURRENT_TIMESTAMP
+                DO UPDATE SET monto = excluded.monto, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 """,
-                (data.categoria_id, data.mes, data.anio, data.monto),
+                (data.categoria_id, data.mes, data.anio, data.monto, self._new_sync_id()),
             )
 
     def delete_presupuesto(self, presupuesto_id: int) -> None:

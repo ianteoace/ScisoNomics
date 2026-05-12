@@ -25,7 +25,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="1.4.0")
+app = FastAPI(title="Registro Finanzas API", version="1.9.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -523,6 +523,70 @@ def settings_info(service: FinanceService = Depends(get_service)):
         "frozen": bool(getattr(sys, "frozen", False)),
         "executable": str(sys.executable),
         "counts": counts,
+    }
+
+
+@app.get("/sync/status")
+def sync_status(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    candidate_tables = [
+        "movimientos",
+        "categorias",
+        "presupuestos",
+        "metas_ahorro",
+        "gastos_fijos",
+        "gastos_programados",
+        "tags",
+        "movimiento_tags",
+    ]
+    tables: dict[str, dict[str, int | bool]] = {}
+    with service.db.connect() as conn:
+        existing_tables = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        for table in candidate_tables:
+            if table not in existing_tables:
+                continue
+            columns = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            has_sync_columns = {"sync_id", "sync_status", "deleted_at"}.issubset(columns)
+            if not has_sync_columns:
+                tables[table] = {
+                    "total": int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]),
+                    "pending": 0,
+                    "synced": 0,
+                    "deleted": 0,
+                    "missing_sync_id": 0,
+                    "sync_ready": False,
+                }
+                continue
+            row = conn.execute(
+                f"""
+                SELECT
+                  COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+                  COALESCE(SUM(CASE WHEN sync_status = 'synced' THEN 1 ELSE 0 END), 0) AS synced,
+                  COALESCE(SUM(CASE WHEN sync_status = 'deleted' OR deleted_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS deleted,
+                  COALESCE(SUM(CASE WHEN sync_id IS NULL OR trim(sync_id) = '' THEN 1 ELSE 0 END), 0) AS missing_sync_id
+                FROM {table}
+                """
+            ).fetchone()
+            tables[table] = {
+                "total": int(row["total"] or 0),
+                "pending": int(row["pending"] or 0),
+                "synced": int(row["synced"] or 0),
+                "deleted": int(row["deleted"] or 0),
+                "missing_sync_id": int(row["missing_sync_id"] or 0),
+                "sync_ready": int(row["missing_sync_id"] or 0) == 0,
+            }
+
+    return {
+        "ok": True,
+        "sync_ready": all(bool(info.get("sync_ready")) for info in tables.values()),
+        "tables": tables,
     }
 
 
