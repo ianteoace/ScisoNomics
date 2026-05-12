@@ -86,9 +86,10 @@ export default function EstadisticasPage() {
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={() => window.location.reload()} /> : null}
       {!loading && !loadError && rows.length === 0 ? (
         <ErrorState title="No hay movimientos suficientes para generar estadísticas de este período." description="Probá con otro período o cargá nuevos movimientos." />
-      ) : (
+      ) : null}
+      {!loadError ? (
         <EstadisticasView stats={stats} monthRows={rows} loading={loading} annual={annual} />
-      )}
+      ) : null}
     </div>
   );
 }

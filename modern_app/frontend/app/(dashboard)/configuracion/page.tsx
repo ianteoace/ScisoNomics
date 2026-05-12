@@ -1,16 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 
+import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
+import { Modal } from "../../../components/ui/Modal";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
+import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import type { SettingsInfo } from "../../../types/domain";
+
+const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
+const ONBOARDING_SECTION_KEYS = [
+  "scisonomics_onboarding_inicio_seen",
+  "scisonomics_onboarding_movimientos_seen",
+  "scisonomics_onboarding_presupuestos_seen",
+  "scisonomics_onboarding_metas_seen",
+  "scisonomics_onboarding_gastos_fijos_seen",
+  "scisonomics_onboarding_planificacion_seen",
+  "scisonomics_onboarding_calendario_seen",
+  "scisonomics_onboarding_estadisticas_seen",
+  "scisonomics_onboarding_reporte_mensual_seen",
+  "scisonomics_onboarding_configuracion_seen",
+] as const;
 
 export default function ConfiguracionPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [restoring, setRestoring] = useState(false);
   const [selectedRestorePath, setSelectedRestorePath] = useState<string | null>(null);
   const { showError, showSuccess } = useToast();
@@ -19,7 +36,9 @@ export default function ConfiguracionPage() {
     setLoading(true);
     try {
       setInfo(await api.settingsInfo());
+      setLoadError("");
     } catch (e: any) {
+      setLoadError(e?.message || "No se pudo cargar la configuracion.");
       showError(e?.message || "No se pudo cargar la configuracion.");
     } finally {
       setLoading(false);
@@ -32,39 +51,11 @@ export default function ConfiguracionPage() {
 
   async function handleCreateSecurityCopy() {
     try {
-      const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-      const datePart = getDatePart();
-      const suggestedName = `ScisoNomics_copia_seguridad_${datePart}.db`;
-
-      if (isTauri) {
-        const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
-        const selectedPath = await save({
-          defaultPath: suggestedName,
-          filters: [{ name: "Base de datos SQLite", extensions: ["db"] }],
-        });
-        if (!selectedPath) return;
-
-        const { blob } = await api.downloadBackup();
-        const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
-        showSuccess("Copia de seguridad creada correctamente.");
-        return;
-      }
-
-      const { blob } = await api.downloadBackup();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = suggestedName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
+      await createSecurityCopyWithSaveDialog();
       showSuccess("Copia de seguridad creada correctamente.");
     } catch (error) {
       console.error("Error creando copia de seguridad:", error);
-      showError("No se pudo crear la copia de seguridad.");
+      showError(error instanceof Error ? error.message : "No se pudo crear la copia de seguridad.");
     }
   }
 
@@ -101,21 +92,40 @@ export default function ConfiguracionPage() {
     try {
       await api.restoreBackupFromPath(selectedRestorePath);
       setSelectedRestorePath(null);
-      showSuccess("Copia restaurada correctamente. Reiniciá ScisoNomics para aplicar los cambios.");
-    } catch (error) {
+      showSuccess("Copia restaurada correctamente. Reinicia ScisoNomics para aplicar los cambios.");
+    } catch (error: any) {
       console.error("Error restaurando copia de seguridad:", error);
-      showError("No se pudo restaurar la copia de seguridad.");
+      const message = typeof error?.message === "string" ? error.message : "";
+      const normalized = message.toLowerCase();
+      if (
+        normalized.includes("sqlite") ||
+        normalized.includes("estructura minima") ||
+        normalized.includes("archivo .db") ||
+        normalized.includes("vacia") ||
+        normalized.includes("no existe") ||
+        normalized.includes("no es un archivo")
+      ) {
+        showError("No se pudo restaurar la copia de seguridad. Verifica que el archivo sea una copia valida de ScisoNomics.");
+      } else if (normalized.includes("base de datos esta en uso")) {
+        showError("No se pudo restaurar porque la base de datos esta en uso. Cerra y volve a abrir ScisoNomics.");
+      } else {
+        showError("No se pudo restaurar la copia de seguridad. Intenta nuevamente o elegi otra copia.");
+      }
     } finally {
       setRestoring(false);
     }
   }
 
-  function getDatePart() {
-    const today = new Date();
-    const yyyy = today.getFullYear();
-    const mm = String(today.getMonth() + 1).padStart(2, "0");
-    const dd = String(today.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+  const selectedRestoreName = selectedRestorePath ? selectedRestorePath.split(/[/\\]/).pop() || selectedRestorePath : null;
+
+  function handleReopenOnboarding() {
+    if (typeof window === "undefined") return;
+    try {
+      for (const key of ONBOARDING_SECTION_KEYS) window.localStorage.removeItem(key);
+    } catch {
+      // La guia no debe bloquear la app si localStorage falla.
+    }
+    window.dispatchEvent(new Event(ONBOARDING_REOPEN_EVENT));
   }
 
   return (
@@ -128,6 +138,7 @@ export default function ConfiguracionPage() {
       </header>
 
       {loading ? <LoadingSkeleton rows={5} /> : null}
+      {loadError ? <ErrorState title="No se pudieron cargar los datos de configuracion." description={loadError} onRetry={load} /> : null}
 
       <section className="card p-5">
         <h3 className="text-lg font-semibold">Datos y copias de seguridad</h3>
@@ -137,7 +148,10 @@ export default function ConfiguracionPage() {
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           Restaurar copia de seguridad reemplaza tus datos actuales por una copia guardada.
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
+          Recomendamos no cambiar el nombre ni la extension del archivo de copia de seguridad. Si lo renombras, conserva la extension .db.
+        </p>
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
           <button className="btn-secondary" onClick={handlePickRestoreFile}>Restaurar copia de seguridad</button>
         </div>
@@ -147,41 +161,48 @@ export default function ConfiguracionPage() {
         <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
         <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
           <p><strong>ScisoNomics</strong></p>
-          <p>Version 1.5.0</p>
+          <p>Version 1.6.0</p>
           <p>Aplicacion desktop para gestion de finanzas personales.</p>
           <p>Tus datos se guardan localmente en tu equipo.</p>
-          <p className="text-slate-500 dark:text-slate-400">Next.js · Tauri · FastAPI · SQLite</p>
+          <p className="text-slate-500 dark:text-slate-400">Next.js - Tauri - FastAPI - SQLite</p>
           {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Aun no se encontro la base de datos local.</p> : null}
         </div>
       </section>
 
-      {selectedRestorePath ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-900">
-            <h4 className="text-lg font-semibold">Restaurar copia de seguridad</h4>
-            <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-              Esta accion reemplazara tus datos actuales por los datos de la copia seleccionada.
-            </p>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-              Antes de restaurar, ScisoNomics creara automaticamente una copia de seguridad de tus datos actuales.
-            </p>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-              Luego deberas reiniciar la aplicacion para ver los cambios.
-            </p>
-            <p className="mt-3 break-all rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-              Archivo seleccionado: {selectedRestorePath}
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => setSelectedRestorePath(null)} disabled={restoring}>
-                Cancelar
-              </button>
-              <button className="btn" onClick={handleConfirmRestore} disabled={restoring}>
-                {restoring ? "Restaurando..." : "Restaurar copia"}
-              </button>
-            </div>
-          </div>
+      <section className="card p-5">
+        <h3 className="text-lg font-semibold">Guias de uso</h3>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Mostra nuevamente las explicaciones breves de cada seccion.
+        </p>
+        <div className="mt-4">
+          <button className="btn-secondary" onClick={handleReopenOnboarding}>Volver a ver guias</button>
         </div>
-      ) : null}
+      </section>
+
+      <Modal open={!!selectedRestorePath} title="Restaurar copia de seguridad" onClose={() => setSelectedRestorePath(null)}>
+        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+          Esta accion reemplazara tus datos actuales por los datos de la copia seleccionada.
+        </p>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+          Antes de restaurar, ScisoNomics creara automaticamente una copia de seguridad de tus datos actuales.
+        </p>
+        <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+          Luego deberas reiniciar la aplicacion para ver los cambios.
+        </p>
+        {selectedRestoreName ? (
+          <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+            Archivo seleccionado: {selectedRestoreName}
+          </p>
+        ) : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="btn-secondary" onClick={() => setSelectedRestorePath(null)} disabled={restoring}>
+            Cancelar
+          </button>
+          <button className="btn" onClick={handleConfirmRestore} disabled={restoring}>
+            {restoring ? "Restaurando..." : "Restaurar copia"}
+          </button>
+        </div>
+      </Modal>
     </section>
   );
 }

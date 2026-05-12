@@ -3,7 +3,7 @@
 export function EmptyState({ title, hint, ctaLabel, onAction }: { title: string; hint: string; ctaLabel?: string; onAction?: () => void }) {
   return (
     <div className="rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "rgb(var(--line))" }}>
-      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-800/50">
+      <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-slate-200 text-slate-700 dark:bg-slate-800/60 dark:text-slate-100">
         <CircleHelp size={18} />
       </div>
       <p className="text-lg font-semibold">{title}</p>

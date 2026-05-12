@@ -9,8 +9,8 @@ import { DashboardView } from "../../../components/views/DashboardView";
 import { useDebounce } from "../../../hooks/useDebounce";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
-import { getLocalDateInputValue } from "../../../lib/date";
 import { api } from "../../../services/api";
+import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import type { GastoFijo, GastoProgramado, MetaAhorro, Movimiento, MovimientosResponse, Presupuesto, StatsResponse } from "../../../types/domain";
 
 export default function DashboardPage() {
@@ -107,30 +107,7 @@ export default function DashboardPage() {
 
   async function handleBackup() {
     try {
-      const { blob } = await api.downloadBackup();
-      const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-      const suggestedName = `ScisoNomics_copia_seguridad_${getLocalDateInputValue()}.db`;
-
-      if (isTauri) {
-        const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
-        const selectedPath = await save({
-          defaultPath: suggestedName,
-          filters: [{ name: "Base de datos SQLite", extensions: ["db"] }],
-        });
-        if (!selectedPath) return;
-        const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
-      } else {
-        const objectUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = objectUrl;
-        link.download = suggestedName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(objectUrl);
-      }
+      await createSecurityCopyWithSaveDialog();
       showSuccess("Copia de seguridad creada correctamente.");
     } catch (e: any) {
       showError(e.message || "No se pudo crear la copia de seguridad.");

@@ -37,7 +37,7 @@ export function EstadisticasView({ stats, monthRows, loading, annual }: { stats:
   }
   if (!stats) return <EmptyState title="Sin estadísticas" hint="No hay datos para este período." ctaLabel="Cambiar filtros" />;
   const hasData = monthRows.length > 0 || stats.expenses_by_category.length > 0 || stats.month_totals.ingreso > 0 || stats.month_totals.gasto > 0;
-  if (!hasData) return <EmptyState title="Sin estadísticas para este período" hint="No hay movimientos en el mes/año seleccionado." ctaLabel="Cambiar período" />;
+  if (!hasData) return <EmptyState title="Sin estadísticas para este período" hint="No hay movimientos en el período seleccionado." ctaLabel="Cambiar período" />;
 
   const barData = [
     { nombre: "Ingresos", total: stats.month_totals.ingreso },

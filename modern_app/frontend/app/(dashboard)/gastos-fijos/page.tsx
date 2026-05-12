@@ -54,6 +54,7 @@ export default function GastosFijosPage() {
     <>
       {loadError ? <ErrorState title="No se pudieron cargar los gastos fijos." description={loadError} onRetry={load} /> : null}
       {loading ? <LoadingSkeleton rows={6} /> : null}
+      {!loading && loadError ? null : (
       <GastosFijosView
         rows={rows}
         categories={categories}
@@ -65,6 +66,7 @@ export default function GastosFijosPage() {
           return Promise.resolve();
         }}
       />
+      )}
       <ConfirmDialog
         open={confirmState.open}
         title="Eliminar gasto fijo"

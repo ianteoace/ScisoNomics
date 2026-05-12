@@ -82,6 +82,7 @@ export const api = {
     const response = await fetch(`${API_URL}/backup/download`, { method: "GET" });
     if (!response.ok) {
       const text = await response.text();
+      console.error("Backup download failed", { status: response.status, response: text });
       let detail = "No se pudo crear la copia de seguridad.";
       try {
         const parsed = JSON.parse(text);
@@ -99,8 +100,23 @@ export const api = {
     return { blob, filename };
   },
   restoreBackupFromPath: async (sourcePath: string) => {
-    return sendJSON<{ ok: boolean; safety_backup: string }>("/backup/restore", "POST", {
-      source_path: sourcePath,
+    const response = await fetch(`${API_URL}/backup/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_path: sourcePath }),
     });
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      console.error("Restore response is not JSON", { status: response.status, response: text, sourcePath });
+    }
+    if (!response.ok) {
+      console.error("Restore backup failed", { status: response.status, response: parsed || text, sourcePath });
+      const detail = parsed?.detail || parsed?.message || text || "No se pudo restaurar la copia de seguridad.";
+      throw new Error(typeof detail === "string" ? detail : "No se pudo restaurar la copia de seguridad.");
+    }
+    return parsed as { ok: boolean; safety_backup: string };
   },
 };

@@ -48,36 +48,38 @@ export default function CategoriasPage() {
 
   return (
     <>
-      <CategoriasView
-        categories={categories}
-        loading={loading}
-        onCreate={(payload) => wrap(() => api.createCategoria(payload).then(() => undefined), "Categoria creada")}
-        onUpdate={(id, payload) => wrap(() => api.updateCategoria(id, payload).then(() => undefined), "Categoria actualizada")}
-        onDelete={(id) => {
-          const target = categories.find((c) => c.id === id);
-          setConfirmState({
-            open: true,
-            action: () =>
-              wrap(async () => {
-                await api.deleteCategoria(id);
-                const refreshed = await load();
-                const stillExistsById = refreshed.some((c) => c.id === id);
-                const stillExistsByIdentity = target
-                  ? refreshed.some(
-                      (c) =>
-                        c.nombre.trim().toLowerCase() === target.nombre.trim().toLowerCase() &&
-                        c.tipo === target.tipo,
-                    )
-                  : false;
-                if (stillExistsById || stillExistsByIdentity) {
-                  throw new Error("La categoria no se pudo eliminar realmente. Revisa si el backend activo esta desactualizado.");
-                }
-              }, "Categoria eliminada"),
-          });
-          return Promise.resolve();
-        }}
-      />
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={load} /> : null}
+      {!loading && loadError ? null : (
+        <CategoriasView
+          categories={categories}
+          loading={loading}
+          onCreate={(payload) => wrap(() => api.createCategoria(payload).then(() => undefined), "Categoria creada")}
+          onUpdate={(id, payload) => wrap(() => api.updateCategoria(id, payload).then(() => undefined), "Categoria actualizada")}
+          onDelete={(id) => {
+            const target = categories.find((c) => c.id === id);
+            setConfirmState({
+              open: true,
+              action: () =>
+                wrap(async () => {
+                  await api.deleteCategoria(id);
+                  const refreshed = await load();
+                  const stillExistsById = refreshed.some((c) => c.id === id);
+                  const stillExistsByIdentity = target
+                    ? refreshed.some(
+                        (c) =>
+                          c.nombre.trim().toLowerCase() === target.nombre.trim().toLowerCase() &&
+                          c.tipo === target.tipo,
+                      )
+                    : false;
+                  if (stillExistsById || stillExistsByIdentity) {
+                    throw new Error("La categoria no se pudo eliminar realmente. Revisa si el backend activo esta desactualizado.");
+                  }
+                }, "Categoria eliminada"),
+            });
+            return Promise.resolve();
+          }}
+        />
+      )}
       <ConfirmDialog
         open={confirmState.open}
         title="Eliminar categoria"

@@ -12,83 +12,125 @@ type HealthResponse = {
   detail?: string;
 };
 
-const MAX_WAIT_MS = 60_000;
-const RETRY_MS = 1_000;
+const MAX_WAIT_MS = 20_000;
+const RETRY_MS = 800;
+const ATTEMPT_TIMEOUT_MS = 2_500;
+
+function wait(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isBackendReady(health: HealthResponse | null) {
+  if (!health?.ok) return false;
+  if (health.db_exists === false) return false;
+  if (health.db_initialized === false) return false;
+  return true;
+}
 
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [statusText, setStatusText] = useState("Iniciando backend local...");
+  const [error, setError] = useState(false);
+  const [statusText, setStatusText] = useState("Iniciando ScisoNomics...");
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     let active = true;
 
     const run = async () => {
+      setReady(false);
+      setError(false);
+      setStatusText("Estamos preparando la aplicacion y la base de datos local...");
+
       const startedAt = Date.now();
       let lastError = "Sin respuesta";
       let lastStatus: number | null = null;
+      let attempt = 0;
 
       while (active && Date.now() - startedAt < MAX_WAIT_MS) {
+        attempt += 1;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+
         try {
-          const response = await fetch(`${API_URL}/health`, { cache: "no-store" });
+          console.info("Startup health attempt", { attempt, url: `${API_URL}/health` });
+          const response = await fetch(`${API_URL}/health`, {
+            cache: "no-store",
+            signal: controller.signal,
+          });
           lastStatus = response.status;
+
           const raw = await response.text();
           let health: HealthResponse | null = null;
           try {
             health = JSON.parse(raw) as HealthResponse;
           } catch {
-            // body no JSON
+            lastError = raw || "Health no devolvio JSON";
           }
 
-          if (response.ok && health?.ok && health.db_exists && health.db_initialized) {
+          console.info("Startup health response", { attempt, status: response.status, health });
+
+          if (response.ok && isBackendReady(health)) {
             if (!active) return;
+            console.info("Startup health ready", { attempt, elapsedMs: Date.now() - startedAt });
             setReady(true);
             return;
           }
 
-          if (health?.ok && health.db_exists && !health.db_initialized) {
-            setStatusText("Preparando base de datos...");
+          if (health?.ok && health.db_initialized === false) {
+            setStatusText("Estamos preparando la base de datos local...");
           } else {
-            setStatusText("Iniciando backend local...");
+            setStatusText("Estamos esperando al backend local...");
           }
 
           if (health?.error || health?.detail) {
             lastError = `${health.error || ""} ${health.detail || ""}`.trim();
           } else if (!response.ok) {
             lastError = `HTTP ${response.status}`;
-          } else {
-            lastError = raw || "Health no listo";
+          } else if (raw) {
+            lastError = raw;
           }
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
+          console.info("Startup health pending", { attempt, error: lastError });
+        } finally {
+          window.clearTimeout(timeoutId);
         }
 
-        await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+        await wait(RETRY_MS);
       }
 
       if (!active) return;
-      const waitedMs = Date.now() - startedAt;
-      console.error("Startup gate timeout", { waitedMs, lastError, lastStatus });
-      setError("No se pudo iniciar el backend local. Cerrá y abrí la app nuevamente. Si continúa, revisá los logs en %LOCALAPPDATA%\\ScisoNomics\\logs.");
+      console.error("Startup gate timeout", {
+        waitedMs: Date.now() - startedAt,
+        attempts: attempt,
+        lastError,
+        lastStatus,
+      });
+      setError(true);
     };
 
     run().catch((err) => {
       if (!active) return;
       console.error("Startup gate fatal error", err);
-      setError("No se pudo iniciar el backend local. Cerrá y abrí la app nuevamente. Si continúa, revisá los logs en %LOCALAPPDATA%\\ScisoNomics\\logs.");
+      setError(true);
     });
 
     return () => {
       active = false;
     };
-  }, []);
+  }, [retryKey]);
 
   if (error) {
     return (
-      <div className="min-h-screen grid place-items-center p-6">
+      <div className="grid min-h-screen place-items-center p-6">
         <div className="card w-full max-w-xl p-8 text-center">
-          <h1 className="text-2xl font-bold">ScisoNomics</h1>
-          <p className="mt-3 text-sm text-rose-300">{error}</p>
+          <h1 className="text-2xl font-bold">No se pudo iniciar ScisoNomics.</h1>
+          <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
+            No pudimos conectar con el backend local. Intenta nuevamente en unos segundos.
+          </p>
+          <button className="btn mt-5" onClick={() => setRetryKey((value) => value + 1)}>
+            Reintentar
+          </button>
         </div>
       </div>
     );
@@ -96,13 +138,12 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
 
   if (!ready) {
     return (
-      <div className="min-h-screen grid place-items-center p-6">
+      <div className="grid min-h-screen place-items-center p-6">
         <div className="card w-full max-w-xl p-8 text-center">
-          <h1 className="text-3xl font-bold">ScisoNomics</h1>
-          <p className="mt-3 text-base">Iniciando tu espacio financiero...</p>
-          <p className="mt-2 text-sm text-slate-400">Preparando la base de datos local. Esto puede tardar unos segundos la primera vez.</p>
+          <h1 className="text-3xl font-bold">Iniciando ScisoNomics</h1>
+          <p className="mt-3 text-base">Estamos preparando la aplicacion y la base de datos local.</p>
           <div className="mx-auto mt-6 h-10 w-10 animate-spin rounded-full border-2 border-slate-500/40 border-t-cyan-400" />
-          <p className="mt-4 text-xs text-slate-400">{statusText}</p>
+          <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">{statusText}</p>
         </div>
       </div>
     );

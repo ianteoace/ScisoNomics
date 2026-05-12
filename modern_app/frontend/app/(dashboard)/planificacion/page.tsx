@@ -52,18 +52,20 @@ export default function PlanificacionPage() {
   return (
     <>
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={load} /> : null}
-      <PlanificacionView
-        rows={rows}
-        categories={categories}
-        loading={loading}
-        onCreate={(payload) => wrap(() => api.createGastoProgramado(payload).then(() => undefined), "Gasto programado creado")}
-        onUpdate={(id, payload) => wrap(() => api.updateGastoProgramado(id, payload).then(() => undefined), "Gasto programado actualizado")}
-        onDelete={(id) => {
-          setConfirmState({ open: true, action: () => wrap(() => api.deleteGastoProgramado(id).then(() => undefined), "Gasto programado eliminado") });
-          return Promise.resolve();
-        }}
-        onMarkPaid={(id) => wrap(() => api.marcarPagado(id).then(() => undefined), "Gasto marcado como pagado")}
-      />
+      {!loading && loadError ? null : (
+        <PlanificacionView
+          rows={rows}
+          categories={categories}
+          loading={loading}
+          onCreate={(payload) => wrap(() => api.createGastoProgramado(payload).then(() => undefined), "Gasto programado creado")}
+          onUpdate={(id, payload) => wrap(() => api.updateGastoProgramado(id, payload).then(() => undefined), "Gasto programado actualizado")}
+          onDelete={(id) => {
+            setConfirmState({ open: true, action: () => wrap(() => api.deleteGastoProgramado(id).then(() => undefined), "Gasto programado eliminado") });
+            return Promise.resolve();
+          }}
+          onMarkPaid={(id) => wrap(() => api.marcarPagado(id).then(() => undefined), "Gasto marcado como pagado")}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmState.open}

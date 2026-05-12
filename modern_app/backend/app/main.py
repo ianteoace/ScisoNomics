@@ -537,18 +537,31 @@ def export_backup(service: FinanceService = Depends(get_service)):
 
 
 @app.post("/backup/restore")
-def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depends(get_service)):
+async def restore_backup(request: Request, service: FinanceService = Depends(get_service)):
     try:
         ensure_app_data_initialized()
-        source_path_value = str(payload.source_path or "").strip()
-        print("source_path recibido:", source_path_value)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            _logger.exception("Body invalido en restauracion de copia: %s", exc)
+            raise HTTPException(status_code=400, detail="Solicitud invalida para restaurar copia de seguridad.") from exc
+
+        _logger.info("Payload recibido en /backup/restore: keys=%s", list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Solicitud invalida para restaurar copia de seguridad.")
+
+        source_path_value = str(payload.get("source_path") or "").strip()
         if not source_path_value:
             raise HTTPException(status_code=400, detail="Debes indicar source_path.")
 
         source = Path(source_path_value).expanduser()
-        print("source_path existe:", source.exists())
-        print("source_path es archivo:", source.is_file())
-        print("source_path size:", source.stat().st_size if source.exists() else None)
+        _logger.info(
+            "Restaurar copia solicitado. source_path=%s exists=%s is_file=%s size=%s",
+            source,
+            source.exists(),
+            source.is_file() if source.exists() else False,
+            source.stat().st_size if source.exists() and source.is_file() else None,
+        )
         if not source.exists():
             raise HTTPException(status_code=400, detail="La copia seleccionada no existe.")
         if not source.is_file():
@@ -558,18 +571,25 @@ def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depen
         if source.suffix.lower() != ".db":
             raise HTTPException(status_code=400, detail="Debes seleccionar un archivo .db valido.")
 
-        print("validando sqlite...")
-        with sqlite3.connect(source) as conn:
-            check_row = conn.execute("PRAGMA integrity_check").fetchone()
-            check_value = str(check_row[0]).lower() if check_row and check_row[0] is not None else ""
-            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            table_names = sorted(str(row[0]) for row in table_rows)
-        print("integrity_check:", check_value)
-        print("tablas:", table_names)
+        try:
+            with sqlite3.connect(source) as conn:
+                check_row = conn.execute("PRAGMA integrity_check").fetchone()
+                check_value = str(check_row[0]).lower() if check_row and check_row[0] is not None else ""
+                table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                table_names = sorted(str(row[0]) for row in table_rows)
+        except sqlite3.Error as exc:
+            _logger.exception("La copia seleccionada no se pudo abrir como SQLite: %s", exc)
+            raise HTTPException(status_code=400, detail="La copia seleccionada no es una base SQLite valida.") from exc
 
         required_tables = {"categorias", "movimientos"}
         existing_tables_lower = {name.lower() for name in table_names}
         missing_tables = sorted(required_tables - existing_tables_lower)
+        _logger.info(
+            "Validacion de copia: integrity_check=%s tablas=%s missing=%s",
+            check_value,
+            ",".join(table_names),
+            ",".join(missing_tables),
+        )
         if check_value != "ok":
             raise HTTPException(status_code=400, detail="La copia seleccionada no es una base SQLite valida.")
         if missing_tables:
@@ -577,8 +597,6 @@ def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depen
 
         db_path = Path(service.db.db_path)
         pre_restore_backups = get_data_dir() / "backups"
-        print("db_path actual:", db_path)
-        print("backup_dir:", pre_restore_backups)
         _logger.info(
             "Restaurar copia: source_path=%s db_path=%s backups_dir=%s integrity_check=%s tablas=%s",
             source,
@@ -587,10 +605,7 @@ def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depen
             check_value,
             ",".join(table_names),
         )
-        print("creando copia previa...")
         safety = service.restore_database_from_path(source, pre_restore_backups)
-        print("backup_pre_restore_path:", safety)
-        print("reemplazando db actual...")
         _logger.info("Restaurar copia OK: backup_pre_restore=%s", safety)
         return {"ok": True, "safety_backup": str(safety)}
     except HTTPException:
@@ -599,31 +614,41 @@ def restore_backup(payload: BackupRestorePathIn, service: FinanceService = Depen
         _logger.exception("Error restaurando copia de seguridad: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        import traceback
-        print("ERROR RESTAURANDO COPIA DE SEGURIDAD")
-        print(type(exc).__name__)
-        print(str(exc))
-        traceback.print_exc()
         _logger.exception("Error restaurando copia de seguridad: %s", exc)
         raise HTTPException(
             status_code=500,
-            detail=f"No se pudo restaurar la copia de seguridad: {type(exc).__name__}: {exc}",
+            detail="No se pudo restaurar la copia de seguridad.",
         ) from exc
 
 
 @app.get("/backup/download")
 def download_backup(service: FinanceService = Depends(get_service)):
-    ensure_app_data_initialized()
-    source = Path(service.db.db_path)
-    if not source.exists():
-        raise HTTPException(status_code=404, detail="No existe la base de datos.")
-    filename = f"ScisoNomics_copia_seguridad_{datetime.now().strftime('%Y-%m-%d')}.db"
-    return FileResponse(
-        path=source,
-        filename=filename,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    try:
+        ensure_app_data_initialized()
+        source = Path(service.db.db_path)
+        _logger.info("Solicitud de copia de seguridad. db_path=%s", source)
+        if not source.exists():
+            _logger.error("No existe la DB para copia de seguridad. db_path=%s", source)
+            raise HTTPException(status_code=404, detail="No existe la base de datos local.")
+        if not source.is_file():
+            _logger.error("La ruta de DB no es un archivo. db_path=%s", source)
+            raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.")
+        if source.stat().st_size <= 0:
+            _logger.error("La DB esta vacia. db_path=%s", source)
+            raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.")
+
+        filename = f"ScisoNomics_copia_seguridad_{datetime.now().strftime('%Y-%m-%d')}.db"
+        return FileResponse(
+            path=source,
+            filename=filename,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.exception("Error generando copia de seguridad: %s", exc)
+        raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.") from exc
 
 
 @app.get("/export/excel")

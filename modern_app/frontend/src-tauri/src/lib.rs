@@ -4,13 +4,24 @@ use tauri_plugin_shell::ShellExt;
 #[tauri::command]
 fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
   if path.trim().is_empty() {
-    return Err("Ruta de archivo inválida.".to_string());
+    return Err("Ruta de archivo invalida.".to_string());
   }
+  if bytes.is_empty() {
+    return Err("El archivo recibido esta vacio.".to_string());
+  }
+
   let output_path = std::path::Path::new(&path);
-  if let Some(parent) = output_path.parent() {
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+  if output_path.exists() && output_path.is_dir() {
+    return Err("La ubicacion seleccionada es una carpeta, no un archivo.".to_string());
   }
-  std::fs::write(output_path, bytes).map_err(|e| e.to_string())
+
+  if let Some(parent) = output_path.parent() {
+    std::fs::create_dir_all(parent)
+      .map_err(|e| format!("No se pudo preparar la carpeta destino: {e}"))?;
+  }
+
+  std::fs::write(output_path, bytes)
+    .map_err(|e| format!("No se pudo escribir el archivo seleccionado: {e}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
