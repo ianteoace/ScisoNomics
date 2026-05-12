@@ -2,7 +2,7 @@
 
 ScisoNomics es una aplicación de escritorio para gestión de finanzas personales.
 
-Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, administrar gastos fijos, visualizar estadísticas, filtrar movimientos y exportar reportes a Excel.
+Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, administrar gastos fijos, visualizar estadísticas, consultar reportes, filtrar movimientos y exportar información a Excel.
 
 La aplicación funciona de forma local, sin necesidad de conexión a internet, y almacena los datos en una base SQLite dentro del equipo del usuario.
 
@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.6.0](../../releases/tag/v1.6.0)
+[Descargar ScisoNomics v1.7.0](../../releases/tag/v1.7.0)
 
 ---
 
@@ -30,7 +30,9 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Calendario de movimientos.
 - Filtros de movimientos por fechas exactas, tipo, categoría, monto y orden.
 - Estadísticas por períodos: mes actual, últimos 3 meses, últimos 6 meses y año actual.
-- Reportes mensuales.
+- Sección Reporte con vista mensual y anual.
+- Reporte mensual con resumen de ingresos, gastos, balance y movimientos del período.
+- Reporte anual con resumen del año, totales, promedios y detalle por mes.
 - Exportación de reportes a Excel por rango de fechas.
 - Reporte Excel mejorado visualmente.
 - Exportación Excel con opción de elegir ubicación.
@@ -102,7 +104,7 @@ Logs técnicos:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_1.6.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_1.7.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -112,7 +114,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.6.0`
+Versión estable actual: `v1.7.0`
 
 Funcionalidades validadas:
 
@@ -128,11 +130,24 @@ Funcionalidades validadas:
 - Calendario de movimientos.
 - Filtros de movimientos.
 - Estadísticas por períodos.
+- Reporte mensual.
+- Reporte anual.
 - Exportación a Excel por rango de fechas.
 - Creación de copias de seguridad.
 - Restauración segura de copias de seguridad.
 - Guías contextuales por sección.
 - Funcionamiento offline.
+
+---
+
+## Reportes
+
+ScisoNomics incluye una sección de Reporte con dos vistas principales:
+
+- Reporte mensual: permite analizar ingresos, gastos, balance y movimientos de un período mensual.
+- Reporte anual: permite revisar el comportamiento financiero del año, con totales, promedios y resumen por mes.
+
+Esta sección está pensada para consultar información más detallada y complementar las estadísticas visuales de la aplicación.
 
 ---
 
@@ -162,7 +177,7 @@ Se recomienda conservar el nombre y la extensión `.db` del archivo de copia de 
 - Backups automáticos configurables.
 - Restauración guiada con historial de copias.
 - Mejora visual de reportes exportados.
-- Reporte anual.
+- Exportación específica del reporte anual.
 - Sistema de actualización automática.
 - Sincronización cloud opcional.
 - Versión mobile.

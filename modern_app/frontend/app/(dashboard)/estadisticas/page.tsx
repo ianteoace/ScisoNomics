@@ -6,19 +6,18 @@ import { ErrorState } from "../../../components/ui/ErrorState";
 import { EstadisticasView } from "../../../components/views/EstadisticasView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
-import { monthName } from "../../../lib/format";
 import { api } from "../../../services/api";
-import type { AnnualStatsResponse, Movimiento, StatsResponse } from "../../../types/domain";
+import type { Movimiento, MovimientosResponse, StatsResponse } from "../../../types/domain";
 
 export default function EstadisticasPage() {
   const { setSaldoActual, setTopbarPeriodLabelOverride } = useDashboardUi();
   const { showError } = useToast();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [rows, setRows] = useState<Movimiento[]>([]);
-  const [annual, setAnnual] = useState<AnnualStatsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [periodo, setPeriodo] = useState("mes_actual");
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,27 +25,24 @@ export default function EstadisticasPage() {
       setLoading(true);
       try {
         const now = new Date();
-        const { targets, currentMonth, currentYear, annualYear } = buildTargetsByPeriod(periodo, now);
+        const { targets, currentMonth, currentYear } = buildTargetsByPeriod(periodo, now);
         let allRows: Movimiento[] = [];
         let statsData: StatsResponse | null = null;
         if (periodo === "mes_actual") {
-          const [s, m] = await Promise.all([api.stats(currentMonth, currentYear), api.movimientos(currentMonth, currentYear, "todos", "")]);
+          const [s, m] = await loadTargetWithRetry({ month: currentMonth, year: currentYear });
           statsData = s;
           allRows = m.rows;
         } else {
-          const results = await Promise.all(targets.map((p) => Promise.all([api.stats(p.month, p.year), api.movimientos(p.month, p.year, "todos", "")])));
+          const results: Array<[StatsResponse, MovimientosResponse]> = [];
+          for (const target of targets) {
+            if (cancelled) return;
+            results.push(await loadTargetWithRetry(target));
+          }
           allRows = results.flatMap((r) => r[1].rows);
           statsData = mergeStats(results.map((r) => r[0]));
         }
-        let annualData: AnnualStatsResponse | null = null;
-        try {
-          annualData = await api.statsAnual(annualYear);
-        } catch (annualError) {
-          console.warn("No se pudo cargar /estadisticas/anual. Continuando sin resumen anual.", annualError);
-        }
         if (cancelled) return;
         setStats(statsData);
-        setAnnual(annualData);
         setRows(allRows);
         setSaldoActual(0);
         setLoadError("");
@@ -54,14 +50,14 @@ export default function EstadisticasPage() {
         if (!cancelled) {
           console.error("Error cargando estadísticas", { periodo, error: e });
           setLoadError(e.message || "No se pudieron cargar los datos.");
-          showError(e.message || "No se pudieron cargar estadisticas");
+          showError("No se pudieron cargar las estadísticas. Intentá nuevamente.");
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [setSaldoActual, showError, periodo]);
+  }, [setSaldoActual, showError, periodo, retryNonce]);
 
   const periodLabel = getPeriodLabel(periodo);
 
@@ -83,12 +79,12 @@ export default function EstadisticasPage() {
           Período seleccionado: <strong>{periodLabel}</strong>
         </div>
       </div>
-      {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={() => window.location.reload()} /> : null}
+      {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={() => setRetryNonce((value) => value + 1)} /> : null}
       {!loading && !loadError && rows.length === 0 ? (
         <ErrorState title="No hay movimientos suficientes para generar estadísticas de este período." description="Probá con otro período o cargá nuevos movimientos." />
       ) : null}
       {!loadError ? (
-        <EstadisticasView stats={stats} monthRows={rows} loading={loading} annual={annual} />
+        <EstadisticasView stats={stats} monthRows={rows} loading={loading} />
       ) : null}
     </div>
   );
@@ -107,6 +103,40 @@ function buildPeriods(month: number, year: number, count: number) {
     }
   }
   return out;
+}
+
+function buildYearToDatePeriods(currentMonth: number, currentYear: number) {
+  return Array.from({ length: currentMonth }, (_, index) => ({
+    month: currentMonth - index,
+    year: currentYear,
+  }));
+}
+
+async function loadTargetWithRetry(target: { month: number; year: number }) {
+  return retryAsync(
+    () => Promise.all([
+      api.stats(target.month, target.year),
+      api.movimientos(target.month, target.year, "todos", ""),
+    ]),
+    2,
+  );
+}
+
+async function retryAsync<T>(fn: () => Promise<T>, retries: number): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await delay(350 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function mergeStats(items: StatsResponse[]): StatsResponse {
@@ -149,15 +179,15 @@ function buildTargetsByPeriod(periodo: string, now: Date) {
   const currentMonth = now.getMonth() + 1;
   const currentYear = now.getFullYear();
   if (periodo === "mes_actual") {
-    return { targets: [{ month: currentMonth, year: currentYear }], currentMonth, currentYear, annualYear: currentYear };
+    return { targets: [{ month: currentMonth, year: currentYear }], currentMonth, currentYear };
   }
   if (periodo === "ultimos_3_meses") {
-    return { targets: buildPeriods(currentMonth, currentYear, 3), currentMonth, currentYear, annualYear: currentYear };
+    return { targets: buildPeriods(currentMonth, currentYear, 3), currentMonth, currentYear };
   }
   if (periodo === "ultimos_6_meses") {
-    return { targets: buildPeriods(currentMonth, currentYear, 6), currentMonth, currentYear, annualYear: currentYear };
+    return { targets: buildPeriods(currentMonth, currentYear, 6), currentMonth, currentYear };
   }
-  return { targets: buildPeriods(currentMonth, currentYear, 12), currentMonth, currentYear, annualYear: currentYear };
+  return { targets: buildYearToDatePeriods(currentMonth, currentYear), currentMonth, currentYear };
 }
 
 function getPeriodLabel(periodo: string) {

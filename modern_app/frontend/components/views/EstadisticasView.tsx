@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { money, monthName } from "../../lib/format";
-import type { AnnualStatsResponse, Movimiento, StatsResponse } from "../../types/domain";
+import type { Movimiento, StatsResponse } from "../../types/domain";
 import { EmptyState } from "../ui/EmptyState";
 import { LoadingGrid, LoadingSkeleton } from "../ui/LoadingSkeleton";
 import { MetricCard } from "../ui/MetricCard";
@@ -14,7 +14,7 @@ import { Modal } from "../ui/Modal";
 
 const palette = ["#00bcd4", "#ff7043", "#7e57c2", "#66bb6a", "#ec407a", "#26a69a", "#ffca28", "#42a5f5", "#ab47bc", "#8d6e63", "#26c6da", "#ef5350"];
 
-export function EstadisticasView({ stats, monthRows, loading, annual }: { stats: StatsResponse | null; monthRows: Movimiento[]; loading: boolean; annual: AnnualStatsResponse | null }) {
+export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsResponse | null; monthRows: Movimiento[]; loading: boolean }) {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [hoverCategory, setHoverCategory] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -43,6 +43,12 @@ export function EstadisticasView({ stats, monthRows, loading, annual }: { stats:
     { nombre: "Ingresos", total: stats.month_totals.ingreso },
     { nombre: "Gastos", total: stats.month_totals.gasto },
   ];
+  const totalExpensesByCategory = stats.expenses_by_category.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const piePercentLabel = ({ total }: { total?: number }) => {
+    if (!totalExpensesByCategory) return "";
+    const percent = ((Number(total || 0) / totalExpensesByCategory) * 100).toFixed(1);
+    return `${percent}%`;
+  };
 
   return (
     <div className="grid gap-4">
@@ -65,7 +71,7 @@ export function EstadisticasView({ stats, monthRows, loading, annual }: { stats:
                     dataKey="total"
                     nameKey="categoria"
                     outerRadius={100}
-                    label
+                    label={piePercentLabel}
                     isAnimationActive={false}
                     onMouseEnter={(entry: any) => setHoverCategory(entry?.categoria || null)}
                     onMouseLeave={() => setHoverCategory(null)}
@@ -144,77 +150,6 @@ export function EstadisticasView({ stats, monthRows, loading, annual }: { stats:
           </ClientOnly>
         </div>
       </section>
-
-      {annual ? (
-        <>
-          <SectionHeader title="Resumen anual" subtitle={`Año ${annual.year}`} />
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <MetricCard title="Ingresos del año" value={money(annual.totals.ingresos)} tone="income" />
-            <MetricCard title="Gastos del año" value={money(annual.totals.gastos)} tone="expense" />
-            <MetricCard title="Ahorros del año" value={money(annual.totals.ahorros)} />
-            <MetricCard title="Inversiones del año" value={money(annual.totals.inversiones)} />
-            <MetricCard title="Balance anual" value={money(annual.totals.balance)} tone={annual.totals.balance >= 0 ? "accent" : "warn"} />
-            <MetricCard title="Promedio ingreso mensual" value={money(annual.promedios_mensuales.ingresos)} />
-            <MetricCard title="Promedio gasto mensual" value={money(annual.promedios_mensuales.gastos)} />
-            <MetricCard title="Movimientos del año" value={String(annual.totals.movimientos)} />
-          </div>
-          <div className="grid gap-4 xl:grid-cols-3">
-            <section className="card p-4 xl:col-span-2">
-              <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Ingresos vs gastos por mes</h3>
-              <div className="h-72">
-                <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={annual.monthly}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" />
-                      <XAxis dataKey="mes" stroke="rgb(var(--muted))" tickFormatter={(m) => monthName(Number(m))} />
-                      <YAxis stroke="rgb(var(--muted))" />
-                      <Tooltip formatter={(v: number) => [money(v), "valor"]} />
-                      <Bar dataKey="ingresos" fill="rgb(var(--income))" radius={6} isAnimationActive={false} />
-                      <Bar dataKey="gastos" fill="rgb(var(--expense))" radius={6} isAnimationActive={false} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </ClientOnly>
-              </div>
-            </section>
-            <section className="card p-4 xl:col-span-1">
-              <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Gastos por categoría (año)</h3>
-              <div className="h-72">
-                <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={annual.gastos_por_categoria} dataKey="total" nameKey="categoria" outerRadius={95} label isAnimationActive={false}>
-                        {annual.gastos_por_categoria.map((entry, i) => <Cell key={`${entry.categoria}-${i}`} fill={palette[i % palette.length]} />)}
-                      </Pie>
-                      <Tooltip formatter={(v: number) => [money(v), "gasto"]} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </ClientOnly>
-              </div>
-            </section>
-          </div>
-          <section className="card p-4">
-            <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Balance mensual del año</h3>
-            <div className="h-72">
-              <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={annual.monthly}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" />
-                    <XAxis dataKey="mes" stroke="rgb(var(--muted))" tickFormatter={(m) => monthName(Number(m))} />
-                    <YAxis stroke="rgb(var(--muted))" />
-                    <Tooltip formatter={(v: number) => [money(v), "balance"]} />
-                    <Line type="monotone" dataKey="balance" stroke="#4ad4c3" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </ClientOnly>
-            </div>
-            <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-              Mes con mayor gasto: <strong>{annual.mes_mayor_gasto ? monthName(annual.mes_mayor_gasto.mes) : "-"}</strong> ·
-              Mes con mayor ingreso: <strong>{annual.mes_mayor_ingreso ? monthName(annual.mes_mayor_ingreso.mes) : "-"}</strong> ·
-              Categoría con mayor gasto: <strong>{annual.categoria_mayor_gasto?.categoria || "-"}</strong>
-            </p>
-          </section>
-        </>
-      ) : null}
 
       <Modal open={modalOpen} title={`Movimientos: ${activeCategory || "-"}`} onClose={() => setModalOpen(false)}>
         <p className="mb-2 text-sm">Total del período: <strong>{money(modalTotal)}</strong></p>

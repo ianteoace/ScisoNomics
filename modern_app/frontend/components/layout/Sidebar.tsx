@@ -14,7 +14,7 @@ const items = [
   { href: "/calendario", label: "Calendario", icon: CalendarClock },
   { href: "/presupuestos", label: "Presupuestos", icon: Wallet },
   { href: "/estadisticas", label: "Estadisticas", icon: BarChart3 },
-  { href: "/reporte-mensual", label: "Reporte mensual", icon: BarChart3 },
+  { href: "/reporte-mensual", label: "Reporte", icon: BarChart3 },
   { href: "/metas", label: "Metas", icon: Flag },
   { href: "/configuracion", label: "Configuracion", icon: Settings },
 ] as const;

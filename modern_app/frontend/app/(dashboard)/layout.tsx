@@ -64,8 +64,8 @@ const SECTION_GUIDES = {
   reporteMensual: {
     key: "scisonomics_onboarding_reporte_mensual_seen",
     match: (pathname: string) => pathname.startsWith("/reporte-mensual") || pathname.startsWith("/reporte"),
-    title: "Reporte mensual",
-    text: "En Reporte mensual podes revisar un resumen detallado de tus ingresos, gastos y balance del periodo seleccionado. Tambien podes exportar reportes a Excel.",
+    title: "Reporte",
+    text: "En Reporte podes consultar informes mensuales o anuales de tus ingresos, gastos y balance. Tambien podes exportar la informacion cuando lo necesites.",
   },
   configuracion: {
     key: "scisonomics_onboarding_configuracion_seen",
@@ -107,13 +107,14 @@ function resetSectionGuides() {
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const currentPathname = pathname || "";
   const [collapsed, setCollapsed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [activeGuide, setActiveGuide] = useState<(typeof SECTION_GUIDE_LIST)[number] | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const guide = getGuideForPath(pathname);
+    const guide = getGuideForPath(currentPathname);
     if (!guide) {
       setOnboardingOpen(false);
       setActiveGuide(null);
@@ -126,13 +127,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
     setActiveGuide(guide);
     setOnboardingOpen(true);
-  }, [pathname]);
+  }, [currentPathname]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const resetGuides = () => {
       resetSectionGuides();
-      const guide = getGuideForPath(pathname);
+      const guide = getGuideForPath(currentPathname);
       if (guide) {
         setActiveGuide(guide);
         setOnboardingOpen(true);
@@ -140,7 +141,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     };
     window.addEventListener(ONBOARDING_REOPEN_EVENT, resetGuides);
     return () => window.removeEventListener(ONBOARDING_REOPEN_EVENT, resetGuides);
-  }, [pathname]);
+  }, [currentPathname]);
 
   function completeOnboarding() {
     if (activeGuide) safeSetLocalStorage(activeGuide.key, "1");
