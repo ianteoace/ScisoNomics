@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const [resumenPotente, setResumenPotente] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +72,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [month, year, debounced, setSaldoActual, showError]);
+  }, [month, year, debounced, setSaldoActual, showError, retryNonce]);
 
   async function handleExport() {
     try {
@@ -114,7 +115,7 @@ export default function DashboardPage() {
     }
   }
 
-  if (error) return <ErrorState title="No se pudo cargar el resumen." description={error} onRetry={() => window.location.reload()} />;
+  if (error) return <ErrorState title="No se pudo cargar el resumen." description={error} onRetry={() => setRetryNonce((value) => value + 1)} />;
 
   return (
     <DashboardView

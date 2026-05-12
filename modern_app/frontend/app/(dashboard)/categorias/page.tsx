@@ -72,7 +72,7 @@ export default function CategoriasPage() {
                       )
                     : false;
                   if (stillExistsById || stillExistsByIdentity) {
-                    throw new Error("La categoria no se pudo eliminar realmente. Revisa si el backend activo esta desactualizado.");
+                    throw new Error("La categoría no se pudo eliminar. Intentá nuevamente.");
                   }
                 }, "Categoria eliminada"),
             });

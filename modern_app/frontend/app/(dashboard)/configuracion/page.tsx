@@ -38,8 +38,8 @@ export default function ConfiguracionPage() {
       setInfo(await api.settingsInfo());
       setLoadError("");
     } catch (e: any) {
-      setLoadError(e?.message || "No se pudo cargar la configuracion.");
-      showError(e?.message || "No se pudo cargar la configuracion.");
+      setLoadError(e?.message || "No se pudo cargar la configuración.");
+      showError(e?.message || "No se pudo cargar la configuración.");
     } finally {
       setLoading(false);
     }
@@ -63,7 +63,7 @@ export default function ConfiguracionPage() {
     try {
       const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
       if (!isTauri) {
-        showError("La restauracion de copia de seguridad esta disponible solo en la app de escritorio.");
+        showError("La restauración de copia de seguridad está disponible solo en la app de escritorio.");
         return;
       }
 
@@ -105,11 +105,11 @@ export default function ConfiguracionPage() {
         normalized.includes("no existe") ||
         normalized.includes("no es un archivo")
       ) {
-        showError("No se pudo restaurar la copia de seguridad. Verifica que el archivo sea una copia valida de ScisoNomics.");
+        showError("No se pudo restaurar la copia de seguridad. Verificá que el archivo sea una copia válida de ScisoNomics.");
       } else if (normalized.includes("base de datos esta en uso")) {
-        showError("No se pudo restaurar porque la base de datos esta en uso. Cerra y volve a abrir ScisoNomics.");
+        showError("No se pudo restaurar porque tus datos están en uso. Cerrá y volvé a abrir ScisoNomics.");
       } else {
-        showError("No se pudo restaurar la copia de seguridad. Intenta nuevamente o elegi otra copia.");
+        showError("No se pudo restaurar la copia de seguridad. Intentá nuevamente o elegí otra copia.");
       }
     } finally {
       setRestoring(false);
@@ -131,14 +131,14 @@ export default function ConfiguracionPage() {
   return (
     <section className="space-y-4">
       <header className="card p-5">
-        <h2 className="text-2xl font-bold">Configuracion</h2>
+        <h2 className="text-2xl font-bold">Configuración</h2>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Gestiona tu informacion y conserva tus datos de forma segura.
+          Gestioná tu información y conservá tus datos de forma segura.
         </p>
       </header>
 
       {loading ? <LoadingSkeleton rows={5} /> : null}
-      {loadError ? <ErrorState title="No se pudieron cargar los datos de configuracion." description={loadError} onRetry={load} /> : null}
+      {loadError ? <ErrorState title="No se pudieron cargar los datos de configuración." description={loadError} onRetry={load} /> : null}
 
       <section className="card p-5">
         <h3 className="text-lg font-semibold">Datos y copias de seguridad</h3>
@@ -149,7 +149,7 @@ export default function ConfiguracionPage() {
           Restaurar copia de seguridad reemplaza tus datos actuales por una copia guardada.
         </p>
         <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
-          Recomendamos no cambiar el nombre ni la extension del archivo de copia de seguridad. Si lo renombras, conserva la extension .db.
+          Recomendamos no cambiar el nombre ni la extensión del archivo de copia de seguridad. Si lo renombrás, conservá la extensión .db.
         </p>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
@@ -161,33 +161,33 @@ export default function ConfiguracionPage() {
         <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
         <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
           <p><strong>ScisoNomics</strong></p>
-          <p>Version 1.6.0</p>
-          <p>Aplicacion desktop para gestion de finanzas personales.</p>
+          <p>Versión 1.8.0</p>
+          <p>Aplicación desktop para gestión de finanzas personales.</p>
           <p>Tus datos se guardan localmente en tu equipo.</p>
           <p className="text-slate-500 dark:text-slate-400">Next.js - Tauri - FastAPI - SQLite</p>
-          {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Aun no se encontro la base de datos local.</p> : null}
+          {info?.db_exists === false ? <p className="text-amber-600 dark:text-amber-400">Tus datos locales todavía se están preparando.</p> : null}
         </div>
       </section>
 
       <section className="card p-5">
         <h3 className="text-lg font-semibold">Guias de uso</h3>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Mostra nuevamente las explicaciones breves de cada seccion.
+          Mostrá nuevamente las explicaciones breves de cada sección.
         </p>
         <div className="mt-4">
-          <button className="btn-secondary" onClick={handleReopenOnboarding}>Volver a ver guias</button>
+          <button className="btn-secondary" onClick={handleReopenOnboarding}>Volver a ver guías</button>
         </div>
       </section>
 
       <Modal open={!!selectedRestorePath} title="Restaurar copia de seguridad" onClose={() => setSelectedRestorePath(null)}>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-          Esta accion reemplazara tus datos actuales por los datos de la copia seleccionada.
+          Esta acción reemplazará tus datos actuales por los datos de la copia seleccionada.
         </p>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-          Antes de restaurar, ScisoNomics creara automaticamente una copia de seguridad de tus datos actuales.
+          Antes de restaurar, ScisoNomics creará automáticamente una copia de seguridad de tus datos actuales.
         </p>
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-          Luego deberas reiniciar la aplicacion para ver los cambios.
+          Luego deberás reiniciar la aplicación para ver los cambios.
         </p>
         {selectedRestoreName ? (
           <p className="mt-3 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200">

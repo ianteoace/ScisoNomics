@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.7.0](../../releases/tag/v1.7.0)
+[Descargar ScisoNomics v1.8.0](../../releases/tag/v1.8.0)
 
 ---
 
@@ -104,7 +104,7 @@ Logs técnicos:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_1.7.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_1.8.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -114,7 +114,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.7.0`
+Versión estable actual: `v1.8.0`
 
 Funcionalidades validadas:
 

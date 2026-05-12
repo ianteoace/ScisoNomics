@@ -62,7 +62,7 @@ export function CategoriasView({
 
   return (
     <section className="card p-5">
-      <SectionHeader title="Categorias" subtitle="Separadas por tipo de movimiento" right={<button className="btn" onClick={openCreate}>Nueva categoria</button>} />
+      <SectionHeader title="Categorías" subtitle="Separadas por tipo de movimiento" right={<button className="btn" onClick={openCreate}>Nueva categoría</button>} />
 
       {loading ? <LoadingSkeleton rows={8} /> : null}
       {categories.length === 0 && !loading ? <EmptyState title="Sin categorias" hint="Crea categorias para empezar." ctaLabel="Nueva categoria" onAction={openCreate} /> : null}

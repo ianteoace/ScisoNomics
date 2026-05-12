@@ -146,7 +146,7 @@ function MonthlyReport({
       </div>
 
       {loadError && !loading ? <ErrorState title="No se pudieron cargar los datos." description={loadError} /> : null}
-      {unavailable && !loading ? <EmptyState title="Sección no disponible" hint="Esta sección requiere un backend actualizado." /> : null}
+      {unavailable && !loading ? <EmptyState title="Sección no disponible" hint="No se pudo cargar la información de este reporte." /> : null}
       {loading ? (
         <div className="space-y-4">
           <LoadingGrid items={6} className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" />

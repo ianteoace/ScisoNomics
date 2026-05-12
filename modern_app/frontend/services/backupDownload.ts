@@ -24,7 +24,7 @@ async function assertBackendReady() {
     }
   } catch (error) {
     console.error("Backup health check failed", error);
-      throw new Error("ScisoNomics todavia se esta iniciando. Intenta nuevamente en unos segundos.");
+      throw new Error("ScisoNomics todavía se está iniciando. Intentá nuevamente en unos segundos.");
   }
 }
 
@@ -93,6 +93,6 @@ export async function createSecurityCopyWithSaveDialog() {
     await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
   } catch (error) {
     console.error("Error saving backup file", { path: targetPath, error });
-    throw new Error("No se pudo guardar la copia de seguridad en la ubicacion seleccionada. Proba elegir otra carpeta.");
+    throw new Error("No se pudo guardar la copia de seguridad en la ubicación seleccionada. Probá elegir otra carpeta.");
   }
 }

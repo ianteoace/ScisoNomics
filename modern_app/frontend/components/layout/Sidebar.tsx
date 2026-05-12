@@ -8,15 +8,15 @@ import { motion } from "framer-motion";
 const items = [
   { href: "/dashboard", label: "Inicio", icon: LayoutDashboard },
   { href: "/movimientos", label: "Movimientos", icon: List },
-  { href: "/categorias", label: "Categorias", icon: Tags },
+  { href: "/categorias", label: "Categorías", icon: Tags },
   { href: "/gastos-fijos", label: "Gastos fijos", icon: CreditCard },
-  { href: "/planificacion", label: "Planificacion", icon: CalendarClock },
+  { href: "/planificacion", label: "Planificación", icon: CalendarClock },
   { href: "/calendario", label: "Calendario", icon: CalendarClock },
   { href: "/presupuestos", label: "Presupuestos", icon: Wallet },
-  { href: "/estadisticas", label: "Estadisticas", icon: BarChart3 },
+  { href: "/estadisticas", label: "Estadísticas", icon: BarChart3 },
   { href: "/reporte-mensual", label: "Reporte", icon: BarChart3 },
   { href: "/metas", label: "Metas", icon: Flag },
-  { href: "/configuracion", label: "Configuracion", icon: Settings },
+  { href: "/configuracion", label: "Configuración", icon: Settings },
 ] as const;
 
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {

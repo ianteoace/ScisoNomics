@@ -39,7 +39,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
     const run = async () => {
       setReady(false);
       setError(false);
-      setStatusText("Estamos preparando la aplicacion y la base de datos local...");
+      setStatusText("Estamos preparando la aplicación y tus datos locales...");
 
       const startedAt = Date.now();
       let lastError = "Sin respuesta";
@@ -79,7 +79,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
           if (health?.ok && health.db_initialized === false) {
             setStatusText("Estamos preparando la base de datos local...");
           } else {
-            setStatusText("Estamos esperando al backend local...");
+            setStatusText("Estamos preparando los servicios locales...");
           }
 
           if (health?.error || health?.detail) {
@@ -126,7 +126,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
         <div className="card w-full max-w-xl p-8 text-center">
           <h1 className="text-2xl font-bold">No se pudo iniciar ScisoNomics.</h1>
           <p className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-            No pudimos conectar con el backend local. Intenta nuevamente en unos segundos.
+            No pudimos iniciar los servicios locales. Intentá nuevamente en unos segundos.
           </p>
           <button className="btn mt-5" onClick={() => setRetryKey((value) => value + 1)}>
             Reintentar
@@ -141,7 +141,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
       <div className="grid min-h-screen place-items-center p-6">
         <div className="card w-full max-w-xl p-8 text-center">
           <h1 className="text-3xl font-bold">Iniciando ScisoNomics</h1>
-          <p className="mt-3 text-base">Estamos preparando la aplicacion y la base de datos local.</p>
+          <p className="mt-3 text-base">Estamos preparando la aplicación y tus datos locales.</p>
           <div className="mx-auto mt-6 h-10 w-10 animate-spin rounded-full border-2 border-slate-500/40 border-t-cyan-400" />
           <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">{statusText}</p>
         </div>

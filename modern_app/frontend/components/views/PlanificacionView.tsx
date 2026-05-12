@@ -82,7 +82,7 @@ export function PlanificacionView({
 
   return (
     <section className="card p-5">
-      <SectionHeader title="Planificacion" subtitle="Control de vencimientos y recurrencias" right={
+      <SectionHeader title="Planificación" subtitle="Control de vencimientos y recurrencias" right={
         <div className="flex items-center gap-2">
           <select className="input w-48" value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="todos">Todos</option><option value="pendiente">Pendientes</option><option value="pagado">Pagados</option><option value="cancelado">Cancelados</option>
