@@ -2,7 +2,7 @@
 
 ScisoNomics es una aplicación de escritorio para gestión de finanzas personales.
 
-Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, visualizar estadísticas y exportar reportes a Excel.
+Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, administrar gastos fijos, visualizar estadísticas, filtrar movimientos y exportar reportes a Excel.
 
 La aplicación funciona de forma local, sin necesidad de conexión a internet, y almacena los datos en una base SQLite dentro del equipo del usuario.
 
@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.4.0](../../releases/tag/v1.4.0)
+[Descargar ScisoNomics v1.5.0](../../releases/tag/v1.5.0)
 
 ---
 
@@ -20,24 +20,29 @@ La versión estable para Windows está disponible en la sección de Releases:
 
 - Registro de ingresos, gastos, ahorros e inversiones.
 - Categorías personalizadas.
-- Presupuestos mensuales.
-- Metas de ahorro.
+- Dashboard de inicio con resumen financiero mensual.
+- Cards de ingresos, gastos, balance, ahorros e inversiones.
+- Últimos movimientos desde la pantalla de inicio.
+- Accesos rápidos a funciones principales.
+- Presupuestos mensuales con progreso, disponible y estados visuales.
+- Metas de ahorro con progreso, monto faltante y porcentaje alcanzado.
+- Gastos fijos con resumen mensual, próximos vencimientos y estados visuales.
 - Calendario de movimientos.
+- Filtros de movimientos por fechas exactas, tipo, categoría, monto y orden.
 - Estadísticas por períodos: mes actual, últimos 3 meses, últimos 6 meses y año actual.
-- Reporte mensual.
+- Reportes mensuales.
+- Exportación de reportes a Excel por rango de fechas.
+- Reporte Excel mejorado visualmente.
+- Exportación Excel con opción de elegir ubicación.
+- Creación de copias de seguridad locales.
+- Restauración segura de copias de seguridad.
+- Validación de copias antes de restaurar.
+- Creación automática de una copia previa antes de restaurar datos.
 - Base de datos SQLite local.
 - Creación automática de base de datos en primera instalación.
 - Backend local embebido como sidecar.
 - Modo claro y modo oscuro.
 - Aplicación instalable para Windows.
-- Exportación Excel con opción de elegir ubicación.
-- Creación de copia de seguridad local.
-- Exportación de reportes por rango de fechas.
-- Filtros de movimientos por fechas exactas.
-- Reporte Excel mejorado visualmente.
-- Restauración segura de copias de seguridad.
-- Validación de copias antes de restaurar.
-- Creación automática de una copia previa antes de restaurar datos.
 
 ---
 
@@ -91,7 +96,7 @@ Logs técnicos:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_1.0.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_1.5.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -101,7 +106,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.4.0`
+Versión estable actual: `v1.5.0`
 
 Funcionalidades validadas:
 
@@ -109,19 +114,25 @@ Funcionalidades validadas:
 - Creación automática de base de datos.
 - Registro de movimientos.
 - Gestión de categorías.
-- Presupuestos.
-- Metas.
-- Calendario.
-- Estadísticas.
-- Exportación a Excel.
+- Dashboard financiero.
+- Presupuestos con progreso y estados visuales.
+- Metas de ahorro con progreso y estados visuales.
+- Gastos fijos con próximos vencimientos y estados visuales.
+- Calendario de movimientos.
+- Filtros de movimientos.
+- Estadísticas por períodos.
+- Exportación a Excel por rango de fechas.
+- Creación de copias de seguridad.
+- Restauración segura de copias de seguridad.
 - Funcionamiento offline.
 
 ---
 
 ## Posibles mejoras futuras
 
-- Importación desde Excel o CSV.
+- Importación desde plantilla oficial de Excel o CSV.
 - Backups automáticos configurables.
+- Restauración guiada con historial de copias.
 - Mejora visual de reportes exportados.
 - Sistema de actualización automática.
 - Sincronización cloud opcional.
