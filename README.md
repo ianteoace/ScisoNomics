@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v1.9.0](../../releases/tag/v1.9.0)
+[Descargar ScisoNomics v2.0.0](../../releases/tag/v2.0.0)
 
 ---
 
@@ -43,10 +43,16 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Advertencias para conservar correctamente los archivos de copia de seguridad.
 - Guías contextuales por sección para nuevos usuarios.
 - Opción para volver a ver las guías desde Configuración.
-- Pantalla de inicio mientras se prepara la aplicación y la base de datos local.
+- Pantalla de inicio mientras se preparan los servicios locales.
 - Base de datos SQLite local.
 - Creación automática de base de datos en primera instalación.
 - Backend local embebido como sidecar.
+- Preparación interna para futura sincronización cloud opcional.
+- Identificadores internos de sincronización para datos locales.
+- Cuenta de usuario opcional.
+- Login con email y contraseña.
+- Opción “Recordarme” para mantener la sesión iniciada.
+- Base preparada para inicio de sesión con Google.
 - Modo claro y modo oscuro.
 - Aplicación instalable para Windows.
 
@@ -56,10 +62,13 @@ La versión estable para Windows está disponible en la sección de Releases:
 
 - Frontend: Next.js, React, Tailwind CSS
 - Desktop: Tauri
-- Backend: FastAPI
-- Base de datos: SQLite
+- Backend local: FastAPI
+- Backend cloud/auth: FastAPI
+- Base de datos local: SQLite
+- Base cloud de desarrollo: SQLite
 - Empaquetado backend: PyInstaller
 - Exportación Excel: OpenPyXL
+- Autenticación: JWT
 
 ---
 
@@ -78,6 +87,32 @@ Base de datos local:
 Logs técnicos:
 
 `%LOCALAPPDATA%\ScisoNomics\logs`
+
+La versión 2.0.0 incorpora una base de cuenta de usuario opcional. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
+
+La sincronización cloud todavía no está activa. La cuenta prepara la base para futuras funciones de respaldo y sincronización entre dispositivos.
+
+---
+
+## Cuenta de usuario
+
+ScisoNomics permite crear o iniciar sesión con una cuenta opcional.
+
+Actualmente la cuenta permite:
+
+- Registrarse con email y contraseña.
+- Iniciar sesión.
+- Cerrar sesión.
+- Usar la opción “Recordarme”.
+- Preparar la base para futuro inicio de sesión con Google.
+
+Importante:
+
+- La cuenta no es obligatoria.
+- La app puede usarse sin internet.
+- Los datos financieros siguen guardándose localmente.
+- Cerrar sesión no borra los datos locales.
+- La sincronización cloud estará disponible en una próxima versión.
 
 ---
 
@@ -104,7 +139,7 @@ Logs técnicos:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_1.9.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_2.0.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -114,7 +149,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v1.9.0`
+Versión estable actual: `v2.0.0`
 
 Funcionalidades validadas:
 
@@ -136,6 +171,11 @@ Funcionalidades validadas:
 - Creación de copias de seguridad.
 - Restauración segura de copias de seguridad.
 - Guías contextuales por sección.
+- Preparación local-first para sincronización futura.
+- Diagnóstico local de estado de sincronización mediante `/sync/status`.
+- Cuenta de usuario opcional.
+- Registro e inicio de sesión con email y contraseña.
+- Cierre de sesión sin borrar datos locales.
 - Funcionamiento offline.
 
 ---
@@ -171,19 +211,34 @@ Se recomienda conservar el nombre y la extensión `.db` del archivo de copia de 
 
 ---
 
-## Posibles mejoras futuras
+## Desarrollo local
 
-- Importación desde plantilla oficial de Excel o CSV.
-- Backups automáticos configurables.
-- Restauración guiada con historial de copias.
-- Mejora visual de reportes exportados.
-- Exportación específica del reporte anual.
-- Sistema de actualización automática.
-- Sincronización cloud opcional.
-- Versión mobile.
+Backend cloud/auth en desarrollo:
 
----
+```powershell
+cd C:\dev\scisonomics
 
-## Autor
+$env:SCISONOMICS_JWT_SECRET="dev-secret-change-me"
+$env:SCISONOMICS_CLOUD_DATABASE_URL="sqlite:///./modern_app/cloud_backend/scisonomics_cloud_dev.db"
+
+python -m uvicorn modern_app.cloud_backend.app.main:app --reload --host 127.0.0.1 --port 9000
+Frontend/Tauri en desarrollo con cuenta:
+
+cd C:\dev\scisonomics\modern_app\frontend
+
+$env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
+
+npm run tauri:dev
+Posibles mejoras futuras
+Sincronización manual con la nube.
+Sincronización automática entre dispositivos.
+Google OAuth completamente configurado.
+Exportación específica del reporte anual.
+Importación desde plantilla oficial de Excel o CSV.
+Backups automáticos configurables.
+Restauración guiada con historial de copias.
+Sistema de actualización automática.
+Versión mobile.
+Autor
 
 Desarrollado por Ian Acevedo.

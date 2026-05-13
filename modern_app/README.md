@@ -14,6 +14,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 
 - `backend/`: API FastAPI sobre SQLite
 - `frontend/`: UI Next.js + Tauri
+- `cloud_backend/`: API FastAPI independiente para cuenta opcional y futura sincronizacion
 
 ## 1) Backend (FastAPI)
 
@@ -69,6 +70,12 @@ Abrir:
 
 Nota: el frontend ya tiene fallback a `http://127.0.0.1:8000` en `services/http.ts`.
 
+Para probar la cuenta opcional en desarrollo:
+
+```powershell
+$env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
+```
+
 ## 4) Desktop (Tauri, Windows)
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health` o `/debug/db-path`, y al cerrar la app termina el proceso backend.
@@ -112,3 +119,4 @@ npm run tauri:build
   - saldo acumulado
 - SQLite sigue siendo la base de datos.
 - Exportacion Excel reutiliza `finance_app/exporter.py`.
+- La cuenta opcional de v2.0 no sincroniza datos financieros. El backend cloud esta separado del backend local.

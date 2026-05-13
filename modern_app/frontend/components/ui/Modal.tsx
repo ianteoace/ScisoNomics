@@ -4,7 +4,19 @@ import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export function Modal({ open, title, children, onClose }: { open: boolean; title: string; children: React.ReactNode; onClose: () => void }) {
+export function Modal({
+  open,
+  title,
+  children,
+  onClose,
+  size = "md",
+}: {
+  open: boolean;
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+  size?: "md" | "lg" | "xl";
+}) {
   const modalRef = useRef<HTMLDivElement | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -27,6 +39,8 @@ export function Modal({ open, title, children, onClose }: { open: boolean; title
   }, [open]);
 
   if (!open || !mounted) return null;
+  const sizeClass = size === "xl" ? "max-w-5xl" : size === "lg" ? "max-w-3xl" : "max-w-xl";
+
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
       <motion.div
@@ -36,7 +50,7 @@ export function Modal({ open, title, children, onClose }: { open: boolean; title
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 8 }}
         transition={{ duration: 0.18 }}
-        className="card max-h-[90vh] w-full max-w-xl overflow-y-auto p-5 outline-none"
+        className={`card max-h-[90vh] w-full ${sizeClass} overflow-y-auto p-5 outline-none`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
