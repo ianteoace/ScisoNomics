@@ -37,3 +37,47 @@ def init_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_categorias (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                color TEXT,
+                icono TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_categorias_user ON cloud_categorias(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_movimientos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                tipo TEXT NOT NULL,
+                monto REAL NOT NULL,
+                descripcion TEXT,
+                categoria_id INTEGER,
+                categoria_sync_id TEXT,
+                fecha TEXT NOT NULL,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_movimientos_user ON cloud_movimientos(user_id)")

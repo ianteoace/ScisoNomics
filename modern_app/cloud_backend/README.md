@@ -20,6 +20,9 @@ python -m uvicorn modern_app.cloud_backend.app.main:app --reload --host 127.0.0.
 - `GET /auth/me`
 - `POST /auth/logout`
 - `GET /health`
+- `GET /sync/health`
+- `POST /sync/push`
+- `GET /sync/pull`
 
 ## Variables
 
@@ -30,6 +33,6 @@ python -m uvicorn modern_app.cloud_backend.app.main:app --reload --host 127.0.0.
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`
 - `SCISONOMICS_GOOGLE_REDIRECT_URI`
 
-La sincronizacion de movimientos, categorias o datos financieros no esta implementada en esta API.
+La sincronizacion manual inicial acepta categorias y movimientos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
 
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.

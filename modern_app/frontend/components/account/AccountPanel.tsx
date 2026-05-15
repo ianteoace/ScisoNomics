@@ -12,6 +12,7 @@ import {
   setStoredToken,
   type CloudUser,
 } from "../../services/cloudAuth";
+import { getLastManualSyncAt, runManualSync } from "../../services/cloudSync";
 
 type Mode = "login" | "register";
 
@@ -26,6 +27,10 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [submitting, setSubmitting] = useState(false);
   const [remember, setRemember] = useState(true);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("Sin sincronizar");
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [syncSummary, setSyncSummary] = useState("");
   const [user, setUser] = useState<CloudUser | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -46,6 +51,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   useEffect(() => {
     let cancelled = false;
     async function loadSession() {
+      setLastSyncAt(getLastManualSyncAt());
       if (!configured) {
         setLoadingSession(false);
         return;
@@ -130,6 +136,29 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     showSuccess("Sesion cerrada.");
   }
 
+  async function handleManualSync() {
+    const token = getStoredToken();
+    if (!token || syncing) return;
+    setSyncing(true);
+    setSyncMessage("Sincronizando tus datos...");
+    setSyncSummary("");
+    try {
+      const result = await runManualSync(token, user?.email);
+      setLastSyncAt(result.syncedAt);
+      setSyncMessage("Sincronizacion completada");
+      setSyncSummary(
+        `Subidos: ${result.uploaded.categorias} categorias y ${result.uploaded.movimientos} movimientos. Aplicados: ${result.applied.categorias_inserted + result.applied.categorias_updated} categorias y ${result.applied.movimientos_inserted + result.applied.movimientos_updated} movimientos.`,
+      );
+      showSuccess("Sincronizacion completada correctamente.");
+    } catch (error) {
+      console.error("Error sincronizando:", error);
+      setSyncMessage("Error al sincronizar");
+      showError("No se pudo sincronizar. Revisa tu conexion e intenta nuevamente.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function handleGoogleLogin() {
     if (!configured) {
       showError("El servicio de cuenta no esta configurado en este entorno.");
@@ -155,7 +184,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
           <h2 className="mt-2 text-2xl font-bold">Cuenta</h2>
           <p className="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-            Podes usar ScisoNomics sin cuenta. Tus datos siguen guardandose localmente y la sincronizacion cloud estara disponible en una proxima version.
+            Podes usar ScisoNomics sin cuenta. Tus datos siguen guardandose localmente y la sincronizacion manual esta disponible solo si inicias sesion.
           </p>
         </header>
       ) : null}
@@ -184,8 +213,28 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
             {tokenMode === "persistent" ? <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">Recordarme activado</p> : null}
           </div>
           <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-900 dark:text-sky-100">
-            La sincronizacion cloud todavia no esta disponible. Tus datos siguen guardandose localmente en este dispositivo.
+            La sincronizacion cloud esta en etapa inicial y es manual. Tus datos siguen guardandose localmente en este dispositivo.
           </p>
+          {configured ? (
+            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold">Sincronizacion manual</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    {syncMessage}
+                    {lastSyncAt ? ` · Ultima sincronizacion: ${new Date(lastSyncAt).toLocaleString()}` : ""}
+                  </p>
+                  {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
+                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    Esta version sincroniza manualmente categorias y movimientos. Tus datos siguen guardandose localmente.
+                  </p>
+                </div>
+                <button className="btn" onClick={handleManualSync} disabled={syncing}>
+                  {syncing ? "Sincronizando..." : "Sincronizar ahora"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="mt-5 flex justify-end">
             <button className="btn-secondary" onClick={handleLogout}>Cerrar sesion</button>
           </div>
@@ -295,7 +344,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
             <div className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
               <p>La cuenta es opcional.</p>
               <p>Tus datos siguen guardandose localmente en este equipo.</p>
-              <p>La sincronizacion cloud estara disponible en una proxima version.</p>
+              <p>La sincronizacion es manual y solo se ejecuta cuando tocas Sincronizar ahora.</p>
               <p>No se suben movimientos, categorias, presupuestos, metas ni gastos a la nube.</p>
             </div>
           </aside>

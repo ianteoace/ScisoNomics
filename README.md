@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v2.0.0](../../releases/tag/v2.0.0)
+[Descargar ScisoNomics v2.1.0](../../releases/tag/v2.1.0)
 
 ---
 
@@ -53,6 +53,7 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Login con email y contraseña.
 - Opción “Recordarme” para mantener la sesión iniciada.
 - Base preparada para inicio de sesión con Google.
+- Sincronización manual inicial de categorías y movimientos.
 - Modo claro y modo oscuro.
 - Aplicación instalable para Windows.
 
@@ -88,9 +89,9 @@ Logs técnicos:
 
 `%LOCALAPPDATA%\ScisoNomics\logs`
 
-La versión 2.0.0 incorpora una base de cuenta de usuario opcional. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
+La versión 2.1.0 incorpora sincronización manual inicial para categorías y movimientos. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
 
-La sincronización cloud todavía no está activa. La cuenta prepara la base para futuras funciones de respaldo y sincronización entre dispositivos.
+La sincronización no es automática. Solo se ejecuta cuando el usuario toca “Sincronizar ahora”.
 
 ---
 
@@ -112,7 +113,8 @@ Importante:
 - La app puede usarse sin internet.
 - Los datos financieros siguen guardándose localmente.
 - Cerrar sesión no borra los datos locales.
-- La sincronización cloud estará disponible en una próxima versión.
+- La sincronización manual inicial solo incluye categorías y movimientos.
+- No se sube la base `.db` completa.
 
 ---
 
@@ -139,7 +141,7 @@ Importante:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_2.0.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_2.1.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -149,7 +151,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v2.0.0`
+Versión estable actual: `v2.1.0`
 
 Funcionalidades validadas:
 
@@ -175,6 +177,7 @@ Funcionalidades validadas:
 - Diagnóstico local de estado de sincronización mediante `/sync/status`.
 - Cuenta de usuario opcional.
 - Registro e inicio de sesión con email y contraseña.
+- Sincronización manual inicial de categorías y movimientos.
 - Cierre de sesión sin borrar datos locales.
 - Funcionamiento offline.
 
@@ -222,23 +225,49 @@ $env:SCISONOMICS_JWT_SECRET="dev-secret-change-me"
 $env:SCISONOMICS_CLOUD_DATABASE_URL="sqlite:///./modern_app/cloud_backend/scisonomics_cloud_dev.db"
 
 python -m uvicorn modern_app.cloud_backend.app.main:app --reload --host 127.0.0.1 --port 9000
+```
+
 Frontend/Tauri en desarrollo con cuenta:
 
+```powershell
 cd C:\dev\scisonomics\modern_app\frontend
 
 $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 npm run tauri:dev
-Posibles mejoras futuras
-Sincronización manual con la nube.
-Sincronización automática entre dispositivos.
-Google OAuth completamente configurado.
-Exportación específica del reporte anual.
-Importación desde plantilla oficial de Excel o CSV.
-Backups automáticos configurables.
-Restauración guiada con historial de copias.
-Sistema de actualización automática.
-Versión mobile.
-Autor
+```
+
+---
+
+## Sincronización manual
+
+La sincronización manual inicial requiere una cuenta iniciada y backend cloud configurado.
+
+Al tocar “Sincronizar ahora”, ScisoNomics:
+
+- Sube cambios pendientes de categorías y movimientos.
+- Descarga categorías y movimientos del usuario autenticado.
+- Resuelve conflictos simples usando `updated_at` con estrategia last write wins.
+- Mantiene los datos en SQLite local.
+
+No sincroniza todavía presupuestos, metas, gastos fijos, reportes, copias de seguridad ni archivos `.db`.
+
+---
+
+## Posibles mejoras futuras
+
+- Sincronización automática entre dispositivos.
+- Sincronización de presupuestos, metas y gastos fijos.
+- Google OAuth completamente configurado.
+- Exportación específica del reporte anual.
+- Importación desde plantilla oficial de Excel o CSV.
+- Backups automáticos configurables.
+- Restauración guiada con historial de copias.
+- Sistema de actualización automática.
+- Versión mobile.
+
+---
+
+## Autor
 
 Desarrollado por Ian Acevedo.

@@ -71,7 +71,7 @@ const SECTION_GUIDES = {
     key: "scisonomics_onboarding_configuracion_seen",
     match: (pathname: string) => pathname.startsWith("/configuracion"),
     title: "Configuracion y copias de seguridad",
-    text: "Desde Configuracion podes administrar copias de seguridad, volver a ver las guias y acceder a tu cuenta opcional. Por ahora, tus datos siguen guardandose localmente y la sincronizacion cloud estara disponible en una proxima version.",
+    text: "Desde Configuracion podes administrar copias de seguridad, volver a ver las guias y acceder a tu cuenta opcional. Tus datos siguen guardandose localmente y la sincronizacion inicial es manual.",
   },
 } as const;
 

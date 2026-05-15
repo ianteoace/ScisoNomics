@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 from tempfile import gettempdir, mkdtemp
-from typing import Literal
+from typing import Any, Literal
 import csv
 import io
 import logging
@@ -25,7 +25,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.0.0")
+app = FastAPI(title="Registro Finanzas API", version="2.1.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -588,6 +588,217 @@ def sync_status(service: FinanceService = Depends(get_service)):
         "sync_ready": all(bool(info.get("sync_ready")) for info in tables.values()),
         "tables": tables,
     }
+
+
+def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return dict(row) if row is not None else None
+
+
+def _parse_sync_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+
+def _remote_is_newer(remote_updated_at: Any, local_updated_at: Any) -> bool:
+    remote_dt = _parse_sync_datetime(remote_updated_at)
+    local_dt = _parse_sync_datetime(local_updated_at)
+    if remote_dt is None or local_dt is None:
+        return False
+    return remote_dt > local_dt
+
+
+@app.get("/sync/pending")
+def sync_pending(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        categorias = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT sync_id, nombre, tipo, created_at, updated_at, deleted_at, sync_status, last_synced_at
+                FROM categorias
+                WHERE sync_status IN ('pending', 'deleted')
+                   OR last_synced_at IS NULL
+                   OR sync_status IS NULL
+                """
+            ).fetchall()
+        ]
+        movimientos = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT
+                  m.sync_id, m.fecha, m.tipo, m.monto, m.descripcion, m.categoria_id,
+                  c.sync_id AS categoria_sync_id,
+                  m.created_at, m.updated_at, m.deleted_at, m.sync_status, m.last_synced_at
+                FROM movimientos m
+                LEFT JOIN categorias c ON c.id = m.categoria_id
+                WHERE m.sync_status IN ('pending', 'deleted')
+                   OR m.last_synced_at IS NULL
+                   OR m.sync_status IS NULL
+                """
+            ).fetchall()
+        ]
+    return {"ok": True, "categorias": categorias, "movimientos": movimientos}
+
+
+@app.post("/sync/mark-synced")
+async def sync_mark_synced(request: Request, service: FinanceService = Depends(get_service)):
+    payload = await request.json()
+    categorias = [str(v) for v in payload.get("categorias", []) if v]
+    movimientos = [str(v) for v in payload.get("movimientos", []) if v]
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with service.db.connect() as conn:
+        for sync_id in categorias:
+            conn.execute(
+                """
+                UPDATE categorias
+                SET sync_status = CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'synced' END,
+                    last_synced_at = ?
+                WHERE sync_id = ?
+                """,
+                (now, sync_id),
+            )
+        for sync_id in movimientos:
+            conn.execute(
+                """
+                UPDATE movimientos
+                SET sync_status = CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'synced' END,
+                    last_synced_at = ?
+                WHERE sync_id = ?
+                """,
+                (now, sync_id),
+            )
+    return {"ok": True, "marked": {"categorias": len(categorias), "movimientos": len(movimientos)}}
+
+
+@app.post("/sync/apply-remote")
+async def sync_apply_remote(request: Request, service: FinanceService = Depends(get_service)):
+    payload = await request.json()
+    remote_categorias = payload.get("categorias", []) or []
+    remote_movimientos = payload.get("movimientos", []) or []
+    now = datetime.now().isoformat(timespec="seconds")
+    result = {
+        "categorias_inserted": 0,
+        "categorias_updated": 0,
+        "movimientos_inserted": 0,
+        "movimientos_updated": 0,
+        "movimientos_skipped": 0,
+    }
+
+    with service.db.connect() as conn:
+        for item in remote_categorias:
+            sync_id = str(item.get("sync_id") or "").strip()
+            nombre = str(item.get("nombre") or "").strip()
+            tipo = str(item.get("tipo") or "").strip()
+            if not sync_id or not nombre or tipo not in {"ingreso", "gasto", "ahorro", "inversion"}:
+                continue
+
+            local = conn.execute("SELECT * FROM categorias WHERE sync_id = ?", (sync_id,)).fetchone()
+            if local:
+                if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    conn.execute(
+                        """
+                        UPDATE categorias
+                        SET nombre = ?, tipo = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                        WHERE sync_id = ?
+                        """,
+                        (nombre, tipo, item.get("updated_at") or now, item.get("deleted_at"), now, sync_id),
+                    )
+                    result["categorias_updated"] += 1
+                continue
+
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO categorias (nombre, tipo, sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'synced', ?)
+                    """,
+                    (nombre, tipo, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now),
+                )
+                result["categorias_inserted"] += 1
+            except sqlite3.IntegrityError:
+                existing = conn.execute(
+                    "SELECT * FROM categorias WHERE nombre = ? AND tipo = ?",
+                    (nombre, tipo),
+                ).fetchone()
+                if existing and _remote_is_newer(item.get("updated_at"), existing["updated_at"]):
+                    conn.execute(
+                        """
+                        UPDATE categorias
+                        SET sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                        WHERE id = ?
+                        """,
+                        (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, existing["id"]),
+                    )
+                    result["categorias_updated"] += 1
+
+        for item in remote_movimientos:
+            sync_id = str(item.get("sync_id") or "").strip()
+            categoria_sync_id = str(item.get("categoria_sync_id") or "").strip()
+            categoria = conn.execute("SELECT id FROM categorias WHERE sync_id = ?", (categoria_sync_id,)).fetchone()
+            if not sync_id or not categoria:
+                result["movimientos_skipped"] += 1
+                continue
+
+            local = conn.execute("SELECT * FROM movimientos WHERE sync_id = ?", (sync_id,)).fetchone()
+            values = (
+                item.get("fecha"),
+                item.get("tipo"),
+                categoria["id"],
+                item.get("descripcion") or "",
+                float(item.get("monto") or 0),
+                item.get("updated_at") or now,
+                item.get("deleted_at"),
+                now,
+                sync_id,
+            )
+            if local:
+                if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    conn.execute(
+                        """
+                        UPDATE movimientos
+                        SET fecha = ?, tipo = ?, categoria_id = ?, descripcion = ?, monto = ?,
+                            updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                        WHERE sync_id = ?
+                        """,
+                        values,
+                    )
+                    result["movimientos_updated"] += 1
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO movimientos (
+                    fecha, tipo, categoria_id, descripcion, monto,
+                    sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?)
+                """,
+                (
+                    item.get("fecha"),
+                    item.get("tipo"),
+                    categoria["id"],
+                    item.get("descripcion") or "",
+                    float(item.get("monto") or 0),
+                    sync_id,
+                    item.get("created_at") or now,
+                    item.get("updated_at") or now,
+                    item.get("deleted_at"),
+                    now,
+                ),
+            )
+            result["movimientos_inserted"] += 1
+
+    return {"ok": True, "result": result}
 
 
 @app.post("/backup/export")
