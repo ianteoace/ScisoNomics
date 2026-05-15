@@ -24,7 +24,11 @@ def _b64url_decode(value: str) -> bytes:
 
 
 def get_jwt_secret() -> str:
-    return os.getenv("SCISONOMICS_JWT_SECRET", "dev-only-change-me-before-production")
+    secret = os.getenv("SCISONOMICS_JWT_SECRET", "").strip()
+    env = os.getenv("SCISONOMICS_ENV", "development").strip().lower()
+    if env == "production" and not secret:
+        raise RuntimeError("SCISONOMICS_JWT_SECRET es obligatorio en produccion.")
+    return secret or "dev-only-change-me-before-production"
 
 
 def get_token_expiration_minutes() -> int:

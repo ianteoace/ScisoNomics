@@ -10,17 +10,25 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from .auth import create_access_token, decode_access_token, hash_password, verify_password
-from .db import connect, get_database_path, init_db
+from .auth import create_access_token, decode_access_token, get_jwt_secret, hash_password, verify_password
+from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.1.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.1.1")
 
+
+def allowed_origins() -> list[str]:
+    raw = os.getenv("SCISONOMICS_ALLOWED_ORIGINS", "*").strip()
+    if raw == "*":
+        return ["*"]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+_allowed_origins = allowed_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allowed_origins,
+    allow_credentials=_allowed_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -31,6 +39,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 @app.on_event("startup")
 def startup() -> None:
+    get_jwt_secret()
     init_db()
 
 
@@ -108,7 +117,11 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
 @app.get("/health")
 def health():
     init_db()
-    return {"ok": True, "service": "scisonomics-cloud-auth", "database": str(get_database_path())}
+    database = get_database_engine()
+    response = {"ok": True, "service": "scisonomics-cloud-auth", "database": database, "version": app.version}
+    if database == "sqlite":
+        response["database_path"] = str(get_database_path())
+    return response
 
 
 @app.post("/auth/register", response_model=AuthResponse)
@@ -132,7 +145,8 @@ def register(payload: RegisterRequest):
                 (user_id,),
             ).fetchone()
     except Exception as exc:
-        if "UNIQUE" in str(exc).upper():
+        message = str(exc).lower()
+        if "unique" in message or "duplicate key" in message:
             raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese email.") from exc
         raise
 
@@ -348,12 +362,10 @@ def sync_pull(user: UserOut = Depends(get_current_user)):
 def sync_debug_counts(user: UserOut = Depends(get_current_user)):
     init_db()
     with connect() as conn:
-        categorias = int(
-            conn.execute("SELECT COUNT(*) FROM cloud_categorias WHERE user_id = ?", (user.id,)).fetchone()[0]
-        )
-        movimientos = int(
-            conn.execute("SELECT COUNT(*) FROM cloud_movimientos WHERE user_id = ?", (user.id,)).fetchone()[0]
-        )
+        categorias_row = conn.execute("SELECT COUNT(*) AS total FROM cloud_categorias WHERE user_id = ?", (user.id,)).fetchone()
+        movimientos_row = conn.execute("SELECT COUNT(*) AS total FROM cloud_movimientos WHERE user_id = ?", (user.id,)).fetchone()
+        categorias = int(categorias_row["total"] if isinstance(categorias_row, dict) else categorias_row[0])
+        movimientos = int(movimientos_row["total"] if isinstance(movimientos_row, dict) else movimientos_row[0])
     return {"ok": True, "user_id": user.id, "categorias": categorias, "movimientos": movimientos}
 
 

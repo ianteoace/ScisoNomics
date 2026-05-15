@@ -254,6 +254,52 @@ No sincroniza todavía presupuestos, metas, gastos fijos, reportes, copias de se
 
 ---
 
+## Deploy backend cloud
+
+El backend cloud/auth puede desplegarse en Railway con FastAPI y PostgreSQL.
+
+Archivo de configuración:
+
+- `railway.json`
+
+Start command:
+
+```bash
+python -m uvicorn modern_app.cloud_backend.app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Variables necesarias en Railway:
+
+```bash
+SCISONOMICS_ENV=production
+SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
+DATABASE_URL=postgresql://...
+SCISONOMICS_ALLOWED_ORIGINS=*
+SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
+```
+
+La prioridad para elegir base cloud es:
+
+1. `SCISONOMICS_CLOUD_DATABASE_URL`
+2. `DATABASE_URL`
+3. SQLite local de desarrollo
+
+Healthcheck:
+
+```text
+GET /health
+```
+
+La app desktop debe configurarse antes del build con:
+
+```powershell
+$env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="https://TU_BACKEND_RAILWAY"
+```
+
+No hay sincronización automática en esta versión. La sincronización sigue siendo manual y limitada a categorías y movimientos.
+
+---
+
 ## Posibles mejoras futuras
 
 - Sincronización automática entre dispositivos.

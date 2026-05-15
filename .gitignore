@@ -27,6 +27,9 @@ modern_app/backend/dist/
 *.db
 *.sqlite
 *.sqlite3
+modern_app/cloud_backend/*.db
+modern_app/cloud_backend/*.sqlite
+modern_app/cloud_backend/*.sqlite3
 *.db-journal
 *.db-wal
 *.db-shm
