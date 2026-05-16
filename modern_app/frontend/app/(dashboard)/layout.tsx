@@ -6,6 +6,7 @@ import { Toaster } from "sonner";
 
 import { BackendStartupGate } from "../../components/app/BackendStartupGate";
 import { Sidebar } from "../../components/layout/Sidebar";
+import { AutoSyncProvider } from "../../components/sync/AutoSyncProvider";
 import { Topbar } from "../../components/layout/Topbar";
 import { Modal } from "../../components/ui/Modal";
 import { DashboardUiProvider } from "../../hooks/useDashboardUi";
@@ -152,13 +153,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <DashboardUiProvider>
       <BackendStartupGate>
-        <div className={`min-h-screen lg:grid ${collapsed ? "lg:grid-cols-[84px_1fr]" : "lg:grid-cols-[250px_1fr]"}`}>
-          <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
-          <div className="p-4 lg:p-6">
-            <Topbar />
-            {children}
+        <AutoSyncProvider>
+          <div className={`min-h-screen lg:grid ${collapsed ? "lg:grid-cols-[84px_1fr]" : "lg:grid-cols-[250px_1fr]"}`}>
+            <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
+            <div className="p-4 lg:p-6">
+              <Topbar />
+              {children}
+            </div>
           </div>
-        </div>
+        </AutoSyncProvider>
         <Modal open={onboardingOpen && !!activeGuide} title={activeGuide?.title || "Guia"} onClose={completeOnboarding}>
           <p className="text-sm text-slate-600 dark:text-slate-300">{activeGuide?.text}</p>
           <div className="mt-6 flex justify-end">

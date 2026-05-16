@@ -12,7 +12,16 @@ import {
   setStoredToken,
   type CloudUser,
 } from "../../services/cloudAuth";
-import { getLastManualSyncAt, runManualSync } from "../../services/cloudSync";
+import {
+  getLastAutoSyncAt,
+  getLastManualSyncAt,
+  getLastSyncError,
+  isAutoSyncEnabled,
+  isSyncInFlight,
+  runManualSync,
+  setAutoSyncEnabled,
+  SYNC_STATE_CHANGED_EVENT,
+} from "../../services/cloudSync";
 
 type Mode = "login" | "register";
 
@@ -30,6 +39,9 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("Sin sincronizar");
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [lastAutoSyncAt, setLastAutoSyncAt] = useState<string | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [autoSyncEnabled, setAutoSyncEnabledState] = useState(false);
   const [syncSummary, setSyncSummary] = useState("");
   const [user, setUser] = useState<CloudUser | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
@@ -52,6 +64,9 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     let cancelled = false;
     async function loadSession() {
       setLastSyncAt(getLastManualSyncAt());
+      setLastAutoSyncAt(getLastAutoSyncAt());
+      setLastSyncError(getLastSyncError());
+      setAutoSyncEnabledState(isAutoSyncEnabled());
       if (!configured) {
         setLoadingSession(false);
         return;
@@ -79,6 +94,19 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       cancelled = true;
     };
   }, [configured]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const refreshSyncState = () => {
+      setLastSyncAt(getLastManualSyncAt());
+      setLastAutoSyncAt(getLastAutoSyncAt());
+      setLastSyncError(getLastSyncError());
+      setAutoSyncEnabledState(isAutoSyncEnabled());
+      setSyncing(isSyncInFlight());
+    };
+    window.addEventListener(SYNC_STATE_CHANGED_EVENT, refreshSyncState);
+    return () => window.removeEventListener(SYNC_STATE_CHANGED_EVENT, refreshSyncState);
+  }, []);
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -145,6 +173,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     try {
       const result = await runManualSync(token, user?.email);
       setLastSyncAt(result.syncedAt);
+      setLastSyncError(null);
       setSyncMessage("Sincronizacion completada");
       const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
       const appliedTotal = Object.values(result.applied).reduce((sum, value) => sum + Number(value || 0), 0);
@@ -159,6 +188,12 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     } finally {
       setSyncing(false);
     }
+  }
+
+  function handleAutoSyncToggle(enabled: boolean) {
+    setAutoSyncEnabled(enabled);
+    setAutoSyncEnabledState(enabled);
+    setSyncMessage(enabled ? "Sincronizacion automatica activada" : "Sincronizacion desactivada");
   }
 
   async function handleGoogleLogin() {
@@ -215,22 +250,37 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
             {tokenMode === "persistent" ? <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">Recordarme activado</p> : null}
           </div>
           <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-900 dark:text-sky-100">
-            La sincronizacion cloud esta en etapa inicial y es manual. Tus datos siguen guardandose localmente en este dispositivo.
+            La sincronizacion cloud es opcional. Tus datos siguen guardandose localmente en este dispositivo.
           </p>
           {configured ? (
             <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-4">
                 <div>
-                  <p className="font-semibold">Sincronizacion manual</p>
+                  <p className="font-semibold">Sincronizacion</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    {syncMessage}
+                    {syncing ? "Sincronizando..." : autoSyncEnabled ? "Sincronizacion automatica activada" : syncMessage}
                     {lastSyncAt ? ` · Ultima sincronizacion: ${new Date(lastSyncAt).toLocaleString()}` : ""}
                   </p>
                   {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
+                  {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Ultima sincronizacion automatica: {new Date(lastAutoSyncAt).toLocaleString()}</p> : null}
+                  {lastSyncError ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Ultimo intento fallido: {lastSyncError}</p> : null}
                   <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                    Esta version sincroniza manualmente categorias, movimientos, metas, gastos programados, gastos fijos y presupuestos. Los borrados tambien se sincronizan de forma segura.
+                    ScisoNomics puede sincronizar tus datos manualmente o de forma automatica si activas esta opcion. Cuando esta activada, la app intenta sincronizar al abrirse y despues de cambios importantes.
                   </p>
                 </div>
+                <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+                  <span>
+                    <span className="block font-medium">Sincronizar automaticamente</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Opcional. Nunca reemplaza el modo local.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5 rounded border-slate-300"
+                    checked={autoSyncEnabled}
+                    onChange={(event) => handleAutoSyncToggle(event.target.checked)}
+                    disabled={syncing}
+                  />
+                </label>
                 <button className="btn" onClick={handleManualSync} disabled={syncing}>
                   {syncing ? "Sincronizando..." : "Sincronizar ahora"}
                 </button>
@@ -346,8 +396,8 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
             <div className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
               <p>La cuenta es opcional.</p>
               <p>Tus datos siguen guardandose localmente en este equipo.</p>
-              <p>La sincronizacion es manual y solo se ejecuta cuando tocas Sincronizar ahora.</p>
-              <p>No se suben movimientos, categorias, presupuestos, metas ni gastos a la nube.</p>
+              <p>La sincronizacion automatica es opcional y puede desactivarse en cualquier momento.</p>
+              <p>No se sube la base de datos completa ni se reemplaza el modo local.</p>
             </div>
           </aside>
         </section>

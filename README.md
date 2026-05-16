@@ -6,7 +6,7 @@ Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías
 
 La aplicación funciona con enfoque **local-first**: los datos principales se guardan en una base SQLite dentro del equipo del usuario y la app puede utilizarse sin conexión a internet.
 
-A partir de la versión `v2.2.0`, ScisoNomics incorpora sincronización manual ampliada con soft delete para que los borrados sincronizables también se propaguen al backend cloud.
+A partir de la versión `v2.3.0`, ScisoNomics incorpora sincronización automática opcional, manteniendo la sincronización manual y el funcionamiento local-first.
 
 ---
 
@@ -14,30 +14,30 @@ A partir de la versión `v2.2.0`, ScisoNomics incorpora sincronización manual a
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v2.2.0](../../releases/tag/v2.2.0)
+[Descargar ScisoNomics v2.3.0](../../releases/tag/v2.3.0)
 
 ---
 
 ## Versión actual
 
-**Versión estable actual:** `v2.2.0`
+**Versión estable actual:** `v2.3.0`
 
 ---
 
-## Novedades de v2.2.0
+## Novedades de v2.3.0
 
-- Sincronización manual ampliada.
-- Soft delete para borrados sincronizables.
-- Los borrados se propagan al backend cloud sin borrar físicamente la base local.
-- Sync manual para categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
-- Validación por tabla para evitar marcar datos locales como sincronizados si el cloud no confirma recepción.
-- Diagnóstico cloud ampliado con conteos de registros borrados.
+- Sincronización automática opcional.
+- Switch para activar o desactivar sync automática desde Cuenta.
+- Sync al iniciar si hay sesión y la opción está activada.
+- Sync después de cambios importantes con debounce.
+- Mejora del estado de sincronización: última sync manual, última sync automática y último error.
+- La sincronización manual sigue disponible.
 
 ### Notas de esta versión
 
 - La cuenta sigue siendo opcional.
 - La app sigue funcionando offline.
-- La sincronización automática todavía no está activa.
+- La sincronización automática viene desactivada por defecto.
 - No se sube la base `.db` completa.
 - Tags y relaciones de tags quedan fuera de esta versión.
 - Los datos financieros siguen guardándose localmente en SQLite.
@@ -124,9 +124,7 @@ Logs técnicos:
 %LOCALAPPDATA%\ScisoNomics\logs
 ```
 
-La versión `v2.2.0` incorpora sincronización manual ampliada y soft delete para borrados sincronizables. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
-
-La sincronización no es automática. Solo se ejecuta cuando el usuario toca **“Sincronizar ahora”**.
+La versión `v2.3.0` agrega sincronización automática opcional. Si está desactivada, la app funciona igual que antes y solo sincroniza cuando el usuario toca **“Sincronizar ahora”**. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
 
 ---
 
@@ -151,13 +149,13 @@ Importante:
 - Cerrar sesión no borra los datos locales.
 - La sincronización manual incluye categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
 - No se sube la base `.db` completa.
-- No hay sincronización automática en esta versión.
+- La sincronización automática es opcional y viene desactivada por defecto.
 
 ---
 
-## Sincronización manual
+## Sincronización
 
-La sincronización manual requiere una cuenta iniciada y backend cloud configurado.
+La sincronización requiere una cuenta iniciada y backend cloud configurado.
 
 Al tocar **“Sincronizar ahora”**, ScisoNomics:
 
@@ -168,6 +166,8 @@ Al tocar **“Sincronizar ahora”**, ScisoNomics:
 - Descarga datos sincronizados del usuario autenticado, incluyendo registros con borrado lógico.
 - Aplica cambios remotos en SQLite local.
 - Resuelve conflictos simples usando `updated_at` con estrategia `last write wins`.
+
+Si el usuario activa **“Sincronizar automáticamente”**, ScisoNomics intenta sincronizar al abrirse y después de cambios importantes usando debounce. Si falla, los cambios quedan guardados localmente y se puede reintentar más adelante.
 
 No sincroniza todavía:
 
@@ -202,7 +202,7 @@ No sincroniza todavía:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_2.2.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_2.3.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -212,7 +212,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v2.2.0`
+Versión estable actual: `v2.3.0`
 
 Funcionalidades validadas:
 
@@ -382,7 +382,7 @@ Respuesta esperada:
   "ok": true,
   "service": "scisonomics-cloud-auth",
   "database": "postgresql",
-  "version": "2.2.0"
+  "version": "2.3.0"
 }
 ```
 
@@ -392,7 +392,7 @@ La app desktop debe configurarse antes del build con:
 $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="https://TU_BACKEND_RAILWAY"
 ```
 
-No hay sincronización automática en esta versión. La sincronización sigue siendo manual e incluye categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
+La sincronización automática es opcional y viene desactivada por defecto. La sincronización manual sigue disponible.
 
 ---
 

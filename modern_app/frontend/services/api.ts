@@ -1,37 +1,44 @@
 import { API_URL, getJSON, sendJSON } from "./http";
+import { notifyDataChanged } from "./cloudSync";
 import { getLocalDateInputValue } from "../lib/date";
 import type { AnnualStatsResponse, BackupState, Categoria, GastoFijo, GastoProgramado, MetaAhorro, MovimientosResponse, Presupuesto, SettingsInfo, StatsResponse, Tag } from "../types/domain";
+
+async function syncMutation<T>(operation: Promise<T>): Promise<T> {
+  const result = await operation;
+  notifyDataChanged();
+  return result;
+}
 
 export const api = {
   movimientos: (month: number, year: number, tipo: string, search: string, categoria = "", minMonto?: number, maxMonto?: number) =>
     getJSON<MovimientosResponse>(`/movimientos?month=${month}&year=${year}&tipo=${tipo}&search=${encodeURIComponent(search)}&categoria=${encodeURIComponent(categoria)}${minMonto !== undefined ? `&min_monto=${minMonto}` : ""}${maxMonto !== undefined ? `&max_monto=${maxMonto}` : ""}`),
-  createMovimiento: (payload: unknown) => sendJSON<{ ok: boolean }>("/movimientos", "POST", payload),
-  updateMovimiento: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/movimientos/${id}`, "PUT", payload),
-  deleteMovimiento: (id: number) => sendJSON<{ ok: boolean }>(`/movimientos/${id}`, "DELETE"),
+  createMovimiento: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/movimientos", "POST", payload)),
+  updateMovimiento: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/movimientos/${id}`, "PUT", payload)),
+  deleteMovimiento: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/movimientos/${id}`, "DELETE")),
 
   categorias: (tipo: "todos" | "ingreso" | "gasto" | "ahorro" | "inversion" = "todos") => getJSON<Categoria[]>(`/categorias?tipo=${tipo}`),
-  createCategoria: (payload: unknown) => sendJSON<{ ok: boolean }>("/categorias", "POST", payload),
-  updateCategoria: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/categorias/${id}`, "PUT", payload),
-  deleteCategoria: (id: number) => sendJSON<{ ok: boolean }>(`/categorias/${id}`, "DELETE"),
+  createCategoria: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/categorias", "POST", payload)),
+  updateCategoria: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/categorias/${id}`, "PUT", payload)),
+  deleteCategoria: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/categorias/${id}`, "DELETE")),
 
   gastosFijos: () => getJSON<GastoFijo[]>("/gastos-fijos"),
-  createGastoFijo: (payload: unknown) => sendJSON<{ ok: boolean }>("/gastos-fijos", "POST", payload),
-  updateGastoFijo: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/gastos-fijos/${id}`, "PUT", payload),
-  deleteGastoFijo: (id: number) => sendJSON<{ ok: boolean }>(`/gastos-fijos/${id}`, "DELETE"),
+  createGastoFijo: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/gastos-fijos", "POST", payload)),
+  updateGastoFijo: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/gastos-fijos/${id}`, "PUT", payload)),
+  deleteGastoFijo: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/gastos-fijos/${id}`, "DELETE")),
 
   gastosProgramados: (estado = "todos", dias?: number) =>
     getJSON<GastoProgramado[]>(`/gastos-programados?estado=${estado}${dias ? `&dias=${dias}` : ""}`),
-  createGastoProgramado: (payload: unknown) => sendJSON<{ ok: boolean }>("/gastos-programados", "POST", payload),
-  updateGastoProgramado: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/gastos-programados/${id}`, "PUT", payload),
-  deleteGastoProgramado: (id: number) => sendJSON<{ ok: boolean }>(`/gastos-programados/${id}`, "DELETE"),
-  marcarPagado: (id: number) => sendJSON<{ changed: boolean }>(`/gastos-programados/${id}/marcar-pagado`, "POST"),
+  createGastoProgramado: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/gastos-programados", "POST", payload)),
+  updateGastoProgramado: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/gastos-programados/${id}`, "PUT", payload)),
+  deleteGastoProgramado: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/gastos-programados/${id}`, "DELETE")),
+  marcarPagado: (id: number) => syncMutation(sendJSON<{ changed: boolean }>(`/gastos-programados/${id}/marcar-pagado`, "POST")),
 
   stats: (month: number, year: number) => getJSON<StatsResponse>(`/estadisticas?month=${month}&year=${year}`),
   statsAnual: (year: number) => getJSON<AnnualStatsResponse>(`/estadisticas/anual?year=${year}`),
   resumenMensual: (month: number, year: number) => getJSON<any>(`/resumen-mensual?month=${month}&year=${year}`),
   presupuestos: (month: number, year: number) => getJSON<Presupuesto[]>(`/presupuestos?month=${month}&year=${year}`),
-  upsertPresupuesto: (payload: unknown) => sendJSON<{ ok: boolean }>("/presupuestos", "POST", payload),
-  deletePresupuesto: (id: number) => sendJSON<{ ok: boolean }>(`/presupuestos/${id}`, "DELETE"),
+  upsertPresupuesto: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/presupuestos", "POST", payload)),
+  deletePresupuesto: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/presupuestos/${id}`, "DELETE")),
   settingsInfo: () => getJSON<SettingsInfo>("/settings/info"),
   backups: () => getJSON<BackupState>("/backups"),
   createBackup: () => sendJSON<{ ok: boolean; file: string; name: string }>("/backups/create", "POST"),
@@ -39,9 +46,9 @@ export const api = {
   setBackupFrequency: (frecuencia: string) => sendJSON<{ ok: boolean }>("/backups/frequency", "POST", { frecuencia }),
 
   metas: () => getJSON<MetaAhorro[]>("/metas"),
-  createMeta: (payload: unknown) => sendJSON<{ ok: boolean }>("/metas", "POST", payload),
-  updateMeta: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/metas/${id}`, "PUT", payload),
-  deleteMeta: (id: number) => sendJSON<{ ok: boolean }>(`/metas/${id}`, "DELETE"),
+  createMeta: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/metas", "POST", payload)),
+  updateMeta: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/metas/${id}`, "PUT", payload)),
+  deleteMeta: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/metas/${id}`, "DELETE")),
 
   tags: () => getJSON<Tag[]>("/tags"),
   createTag: (payload: unknown) => sendJSON<{ ok: boolean }>("/tags", "POST", payload),
