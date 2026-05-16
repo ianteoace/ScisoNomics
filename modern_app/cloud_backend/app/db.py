@@ -157,6 +157,96 @@ def _init_sqlite() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_movimientos_user ON cloud_movimientos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_metas_ahorro (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                monto_objetivo REAL,
+                monto_inicial REAL,
+                fecha_objetivo TEXT,
+                descripcion TEXT,
+                estado TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_metas_ahorro_user ON cloud_metas_ahorro(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_gastos_programados (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                descripcion TEXT,
+                categoria_sync_id TEXT,
+                monto_estimado REAL,
+                fecha_vencimiento TEXT,
+                estado TEXT,
+                es_recurrente INTEGER,
+                frecuencia TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_gastos_programados_user ON cloud_gastos_programados(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_gastos_fijos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                descripcion TEXT,
+                categoria_sync_id TEXT,
+                monto REAL,
+                dia_vencimiento INTEGER,
+                activo INTEGER,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_gastos_fijos_user ON cloud_gastos_fijos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_presupuestos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                categoria_sync_id TEXT,
+                mes INTEGER,
+                anio INTEGER,
+                monto REAL,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")
 
 
 def _init_postgres() -> None:
@@ -216,3 +306,89 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_movimientos_user ON cloud_movimientos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_metas_ahorro (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                monto_objetivo DOUBLE PRECISION,
+                monto_inicial DOUBLE PRECISION,
+                fecha_objetivo TEXT,
+                descripcion TEXT,
+                estado TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_metas_ahorro_user ON cloud_metas_ahorro(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_gastos_programados (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                descripcion TEXT,
+                categoria_sync_id TEXT,
+                monto_estimado DOUBLE PRECISION,
+                fecha_vencimiento TEXT,
+                estado TEXT,
+                es_recurrente INTEGER,
+                frecuencia TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_gastos_programados_user ON cloud_gastos_programados(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_gastos_fijos (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                descripcion TEXT,
+                categoria_sync_id TEXT,
+                monto DOUBLE PRECISION,
+                dia_vencimiento INTEGER,
+                activo INTEGER,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_gastos_fijos_user ON cloud_gastos_fijos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_presupuestos (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                categoria_sync_id TEXT,
+                mes INTEGER,
+                anio INTEGER,
+                monto DOUBLE PRECISION,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")

@@ -80,11 +80,28 @@ class FinanceService:
     def _new_sync_id(self) -> str:
         return str(uuid4())
 
+    def _active_clause(self, alias: str | None = None) -> str:
+        prefix = f"{alias}." if alias else ""
+        return f"({prefix}deleted_at IS NULL OR {prefix}deleted_at = '')"
+
+    def _soft_delete(self, conn: sqlite3.Connection, table: str, row_id: int) -> int:
+        result = conn.execute(
+            f"""
+            UPDATE {table}
+            SET deleted_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP,
+                sync_status = 'pending'
+            WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+            """,
+            (row_id,),
+        )
+        return int(result.rowcount or 0)
+
     def list_categorias(self, tipo: str | None = None) -> list[dict]:
-        query = "SELECT id, nombre, tipo FROM categorias"
+        query = "SELECT id, nombre, tipo FROM categorias WHERE (deleted_at IS NULL OR deleted_at = '')"
         params: tuple = ()
         if tipo:
-            query += " WHERE tipo = ?"
+            query += " AND tipo = ?"
             params = (tipo,)
         query += " ORDER BY tipo, nombre"
         with self.db.connect() as conn:
@@ -131,7 +148,7 @@ class FinanceService:
     def categoria_in_use(self, categoria_id: int) -> bool:
         with self.db.connect() as conn:
             mov = conn.execute(
-                "SELECT 1 FROM movimientos WHERE categoria_id = ? LIMIT 1",
+                "SELECT 1 FROM movimientos WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
                 (categoria_id,),
             ).fetchone()
         return bool(mov)
@@ -141,11 +158,19 @@ class FinanceService:
             raise ValueError("No se puede eliminar esta categoria porque tiene movimientos asociados.")
         try:
             with self.db.connect() as conn:
-                conn.execute("DELETE FROM presupuestos WHERE categoria_id = ?", (categoria_id,))
-                conn.execute("DELETE FROM gastos_programados WHERE categoria_id = ?", (categoria_id,))
-                conn.execute("DELETE FROM gastos_fijos WHERE categoria_id = ?", (categoria_id,))
-                deleted = conn.execute("DELETE FROM categorias WHERE id = ?", (categoria_id,))
-                if deleted.rowcount == 0:
+                conn.execute(
+                    "UPDATE presupuestos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
+                    (categoria_id,),
+                )
+                conn.execute(
+                    "UPDATE gastos_programados SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
+                    (categoria_id,),
+                )
+                conn.execute(
+                    "UPDATE gastos_fijos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
+                    (categoria_id,),
+                )
+                if self._soft_delete(conn, "categorias", categoria_id) == 0:
                     raise ValueError("No se encontro la categoria a eliminar.")
         except sqlite3.IntegrityError as exc:
             raise ValueError("No se puede eliminar esta categoria porque tiene movimientos asociados.") from exc
@@ -154,9 +179,9 @@ class FinanceService:
 
     def list_movimientos(self, month: int, year: int, tipo: str | None = None) -> list[dict]:
         self.apply_fixed_expenses_for_month(month, year)
-        where = "WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?"
+        where = "WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ? AND (m.deleted_at IS NULL OR m.deleted_at = '')"
         params: list[str] = [f"{month:02d}", str(year)]
-        if tipo in ("ingreso", "gasto", "ahorro"):
+        if tipo in ("ingreso", "gasto", "ahorro", "inversion"):
             where += " AND m.tipo = ?"
             params.append(tipo)
         with self.db.connect() as conn:
@@ -181,7 +206,8 @@ class FinanceService:
                             END
                         ), 0)
                         FROM movimientos m2
-                        WHERE m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id)
+                        WHERE (m2.deleted_at IS NULL OR m2.deleted_at = '')
+                          AND (m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id))
                     ) AS saldo_acumulado
                 FROM movimientos m
                 JOIN categorias c ON c.id = m.categoria_id
@@ -204,6 +230,7 @@ class FinanceService:
                 FROM movimientos m
                 JOIN categorias c ON c.id = m.categoria_id
                 WHERE strftime('%Y', m.fecha) = ?
+                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
                 (str(year),),
@@ -271,7 +298,7 @@ class FinanceService:
     def delete_movimiento(self, movimiento_id: int) -> None:
         try:
             with self.db.connect() as conn:
-                conn.execute("DELETE FROM movimientos WHERE id = ?", (movimiento_id,))
+                self._soft_delete(conn, "movimientos", movimiento_id)
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al eliminar movimiento: {exc}") from exc
 
@@ -282,7 +309,7 @@ class FinanceService:
                 SELECT id, fecha, tipo, categoria_id, descripcion, monto
                     , meta_id, COALESCE(nota, '') AS nota
                 FROM movimientos
-                WHERE id = ?
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (movimiento_id,),
             ).fetchone()
@@ -356,6 +383,7 @@ class FinanceService:
                 """
                 SELECT id, nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado
                 FROM metas_ahorro
+                WHERE deleted_at IS NULL OR deleted_at = ''
                 ORDER BY created_at DESC, id DESC
                 """
             ).fetchall()
@@ -372,7 +400,7 @@ class FinanceService:
 
     def _get_ahorro_asignado(self, conn: sqlite3.Connection, meta_id: int) -> float:
         row = conn.execute(
-            "SELECT COALESCE(SUM(monto), 0) AS total FROM movimientos WHERE tipo = 'ahorro' AND meta_id = ?",
+            "SELECT COALESCE(SUM(monto), 0) AS total FROM movimientos WHERE tipo = 'ahorro' AND meta_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
             (meta_id,),
         ).fetchone()
         return float(row["total"] or 0.0)
@@ -408,7 +436,7 @@ class FinanceService:
                 "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ?",
                 (meta_id,),
             )
-            conn.execute("DELETE FROM metas_ahorro WHERE id = ?", (meta_id,))
+            self._soft_delete(conn, "metas_ahorro", meta_id)
 
     def get_calendario_mensual(self, month: int, year: int) -> list[dict]:
         with self.db.connect() as conn:
@@ -424,6 +452,7 @@ class FinanceService:
                 FROM movimientos m
                 JOIN categorias c ON c.id = m.categoria_id
                 WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
+                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
                 ORDER BY m.fecha ASC, m.id ASC
                 """,
                 (f"{month:02d}", str(year)),
@@ -452,6 +481,7 @@ class FinanceService:
                 JOIN categorias c ON c.id = m.categoria_id
                 WHERE m.tipo = 'gasto'
                 AND strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
+                AND (m.deleted_at IS NULL OR m.deleted_at = '')
                 ORDER BY m.monto DESC, m.fecha DESC
                 LIMIT 5
                 """,
@@ -666,9 +696,9 @@ class FinanceService:
 
     def get_month_summary(self, month: int, year: int, tipo: str | None = None) -> dict:
         self.apply_fixed_expenses_for_month(month, year)
-        where = "WHERE strftime('%m', fecha) = ? AND strftime('%Y', fecha) = ?"
+        where = "WHERE strftime('%m', fecha) = ? AND strftime('%Y', fecha) = ? AND (deleted_at IS NULL OR deleted_at = '')"
         params: list[str] = [f"{month:02d}", str(year)]
-        if tipo in ("ingreso", "gasto", "ahorro"):
+        if tipo in ("ingreso", "gasto", "ahorro", "inversion"):
             where += " AND tipo = ?"
             params.append(tipo)
         with self.db.connect() as conn:
@@ -705,6 +735,7 @@ class FinanceService:
                 ), 0) AS saldo
                 FROM movimientos
                 WHERE fecha < ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (inicio,),
             ).fetchone()
@@ -737,6 +768,7 @@ class FinanceService:
                     END
                 ), 0) AS saldo
                 FROM movimientos
+                WHERE deleted_at IS NULL OR deleted_at = ''
                 """
             ).fetchone()
         return float(row["saldo"] or 0.0)
@@ -754,6 +786,7 @@ class FinanceService:
                        gf.monto, gf.dia_vencimiento, gf.activo
                 FROM gastos_fijos gf
                 JOIN categorias c ON c.id = gf.categoria_id
+                WHERE gf.deleted_at IS NULL OR gf.deleted_at = ''
                 ORDER BY gf.activo DESC, gf.dia_vencimiento ASC
                 """
             ).fetchall()
@@ -793,7 +826,7 @@ class FinanceService:
     def delete_gasto_fijo(self, gasto_id: int) -> None:
         try:
             with self.db.connect() as conn:
-                conn.execute("DELETE FROM gastos_fijos WHERE id = ?", (gasto_id,))
+                self._soft_delete(conn, "gastos_fijos", gasto_id)
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al eliminar gasto fijo: {exc}") from exc
 
@@ -803,7 +836,7 @@ class FinanceService:
                 """
                 SELECT id, categoria_id, descripcion, monto, dia_vencimiento, activo
                 FROM gastos_fijos
-                WHERE id = ?
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (gasto_id,),
             ).fetchone()
@@ -816,6 +849,7 @@ class FinanceService:
                 SELECT id, categoria_id, descripcion, monto, dia_vencimiento
                 FROM gastos_fijos
                 WHERE activo = 1
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """
             ).fetchall()
 
@@ -835,6 +869,7 @@ class FinanceService:
                       AND categoria_id = ?
                       AND descripcion = ?
                       AND monto = ?
+                      AND (deleted_at IS NULL OR deleted_at = '')
                     LIMIT 1
                     """,
                     (movement_date, row["categoria_id"], desc, row["monto"]),
@@ -875,6 +910,8 @@ class FinanceService:
                 WHERE m.tipo = ?
                   AND strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
+                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                  AND (c.deleted_at IS NULL OR c.deleted_at = '')
                 GROUP BY c.id, c.nombre
                 HAVING total > 0
                 ORDER BY total DESC
@@ -899,6 +936,7 @@ class FinanceService:
                   AND m.categoria_id = ?
                   AND strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
+                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
                 (category_id, f"{month:02d}", str(year)),
@@ -915,6 +953,7 @@ class FinanceService:
                     SUM(CASE WHEN tipo = 'gasto' THEN monto ELSE 0 END) AS gastos
                 FROM movimientos
                 WHERE strftime('%Y', fecha) = ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 GROUP BY strftime('%m', fecha)
                 ORDER BY mes
                 """,
@@ -941,7 +980,7 @@ class FinanceService:
             FROM gastos_programados gp
             JOIN categorias c ON c.id = gp.categoria_id
         """
-        where: list[str] = []
+        where: list[str] = ["(gp.deleted_at IS NULL OR gp.deleted_at = '')"]
         params: list = []
 
         if filtro_estado in ("pendiente", "pagado", "cancelado"):
@@ -1017,7 +1056,7 @@ class FinanceService:
     def delete_gasto_programado(self, gasto_id: int) -> None:
         try:
             with self.db.connect() as conn:
-                conn.execute("DELETE FROM gastos_programados WHERE id = ?", (gasto_id,))
+                self._soft_delete(conn, "gastos_programados", gasto_id)
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al eliminar gasto programado: {exc}") from exc
 
@@ -1027,7 +1066,7 @@ class FinanceService:
                 """
                 SELECT id, descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
                 FROM gastos_programados
-                WHERE id = ?
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (gasto_id,),
             ).fetchone()
@@ -1039,7 +1078,7 @@ class FinanceService:
                 """
                 SELECT id, descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
                 FROM gastos_programados
-                WHERE id = ?
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (gasto_id,),
             ).fetchone()
@@ -1084,6 +1123,7 @@ class FinanceService:
                       AND categoria_id = ?
                       AND monto_estimado = ?
                       AND fecha_vencimiento = ?
+                      AND (deleted_at IS NULL OR deleted_at = '')
                     LIMIT 1
                     """,
                     (row["descripcion"], row["categoria_id"], row["monto_estimado"], next_due_iso),
@@ -1144,6 +1184,7 @@ class FinanceService:
                 WHERE estado = 'pendiente'
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (hoy, (date.today() + timedelta(days=30)).isoformat()),
             ).fetchone()
@@ -1153,6 +1194,7 @@ class FinanceService:
                 SELECT COALESCE(SUM(monto_estimado), 0) AS total
                 FROM gastos_programados
                 WHERE estado = 'pendiente' AND fecha_vencimiento < ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (hoy,),
             ).fetchone()
@@ -1164,6 +1206,7 @@ class FinanceService:
                 WHERE estado = 'pagado'
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (inicio_actual, fin_actual),
             ).fetchone()
@@ -1175,6 +1218,7 @@ class FinanceService:
                     COALESCE(SUM(CASE WHEN tipo = 'gasto' THEN monto ELSE 0 END), 0) AS gastos
                 FROM movimientos
                 WHERE fecha >= ? AND fecha <= ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (inicio_mes, fin_mes),
             ).fetchone()
@@ -1186,6 +1230,7 @@ class FinanceService:
                 WHERE estado = 'pendiente'
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
+                  AND (deleted_at IS NULL OR deleted_at = '')
                 """,
                 (inicio_mes, fin_mes),
             ).fetchone()
@@ -1238,7 +1283,10 @@ class FinanceService:
                  AND m.tipo = 'gasto'
                  AND strftime('%m', m.fecha) = printf('%02d', p.mes)
                  AND strftime('%Y', m.fecha) = CAST(p.anio AS TEXT)
+                 AND (m.deleted_at IS NULL OR m.deleted_at = '')
                 WHERE p.mes = ? AND p.anio = ?
+                  AND (p.deleted_at IS NULL OR p.deleted_at = '')
+                  AND (c.deleted_at IS NULL OR c.deleted_at = '')
                 GROUP BY p.id, p.categoria_id, c.nombre, p.mes, p.anio, p.monto
                 ORDER BY c.nombre
                 """,
@@ -1271,14 +1319,14 @@ class FinanceService:
                 INSERT INTO presupuestos (categoria_id, mes, anio, monto, sync_id, created_at, updated_at, sync_status)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 ON CONFLICT(categoria_id, mes, anio)
-                DO UPDATE SET monto = excluded.monto, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
+                DO UPDATE SET monto = excluded.monto, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 """,
                 (data.categoria_id, data.mes, data.anio, data.monto, self._new_sync_id()),
             )
 
     def delete_presupuesto(self, presupuesto_id: int) -> None:
         with self.db.connect() as conn:
-            conn.execute("DELETE FROM presupuestos WHERE id = ?", (presupuesto_id,))
+            self._soft_delete(conn, "presupuestos", presupuesto_id)
 
     def get_resumen_mensual_potente(self, month: int, year: int) -> dict:
         summary = self.get_resumen_mensual_con_saldo(month, year)
@@ -1315,6 +1363,8 @@ class FinanceService:
                 WHERE strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
                   AND lower(c.nombre) LIKE '%invers%'
+                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                  AND (c.deleted_at IS NULL OR c.deleted_at = '')
                 """,
                 (f"{month:02d}", str(year)),
             ).fetchone()

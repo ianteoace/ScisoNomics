@@ -120,4 +120,4 @@ npm run tauri:build
 - SQLite sigue siendo la base de datos.
 - Exportacion Excel reutiliza `finance_app/exporter.py`.
 - La cuenta opcional de v2.0 no sincroniza datos financieros. El backend cloud esta separado del backend local.
-- En v2.1 la sincronizacion manual inicial solo alcanza categorias y movimientos, siempre iniciada por el usuario.
+- En v2.2 la sincronizacion manual incluye categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos, siempre iniciada por el usuario.

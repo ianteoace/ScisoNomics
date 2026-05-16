@@ -17,11 +17,25 @@ def main() -> None:
     if not db_path.exists():
         raise FileNotFoundError(f"No existe la DB local: {db_path}")
 
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.execute("UPDATE categorias SET sync_status = 'pending', last_synced_at = NULL")
-        conn.execute("UPDATE movimientos SET sync_status = 'pending', last_synced_at = NULL")
+    tables = [
+        "categorias",
+        "movimientos",
+        "metas_ahorro",
+        "gastos_programados",
+        "gastos_fijos",
+        "presupuestos",
+    ]
 
-    print("Estado de sync local reseteado a pending para categorias y movimientos.")
+    with sqlite3.connect(str(db_path)) as conn:
+        existing = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        for table in tables:
+            if table in existing:
+                conn.execute(f"UPDATE {table} SET sync_status = 'pending', last_synced_at = NULL")
+
+    print("Estado de sync local reseteado a pending para tablas v2.2.0.")
     print(db_path)
 
 

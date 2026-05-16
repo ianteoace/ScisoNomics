@@ -6,7 +6,7 @@ Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías
 
 La aplicación funciona con enfoque **local-first**: los datos principales se guardan en una base SQLite dentro del equipo del usuario y la app puede utilizarse sin conexión a internet.
 
-A partir de la versión `v2.1.1`, ScisoNomics incorpora backend cloud real desplegado en Railway con PostgreSQL, cuenta opcional y sincronización manual inicial para categorías y movimientos.
+A partir de la versión `v2.2.0`, ScisoNomics incorpora sincronización manual ampliada con soft delete para que los borrados sincronizables también se propaguen al backend cloud.
 
 ---
 
@@ -14,26 +14,24 @@ A partir de la versión `v2.1.1`, ScisoNomics incorpora backend cloud real despl
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v2.1.1](../../releases/tag/v2.1.1)
+[Descargar ScisoNomics v2.2.0](../../releases/tag/v2.2.0)
 
 ---
 
 ## Versión actual
 
-**Versión estable actual:** `v2.1.1`
+**Versión estable actual:** `v2.2.0`
 
 ---
 
-## Novedades de v2.1.1
+## Novedades de v2.2.0
 
-- Backend cloud/auth desplegado en Railway.
-- Compatibilidad del backend cloud con PostgreSQL.
-- Compatibilidad mantenida con SQLite local para desarrollo.
-- Conexión de la app desktop a backend cloud público mediante `NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL`.
-- Registro, inicio de sesión, sesión actual y healthchecks validados contra Railway.
-- Sincronización manual inicial para categorías y movimientos.
-- Validación reforzada para evitar marcar datos locales como sincronizados si el cloud no confirma recepción.
-- Documentación agregada para deploy cloud.
+- Sincronización manual ampliada.
+- Soft delete para borrados sincronizables.
+- Los borrados se propagan al backend cloud sin borrar físicamente la base local.
+- Sync manual para categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
+- Validación por tabla para evitar marcar datos locales como sincronizados si el cloud no confirma recepción.
+- Diagnóstico cloud ampliado con conteos de registros borrados.
 
 ### Notas de esta versión
 
@@ -41,7 +39,7 @@ La versión estable para Windows está disponible en la sección de Releases:
 - La app sigue funcionando offline.
 - La sincronización automática todavía no está activa.
 - No se sube la base `.db` completa.
-- Todavía no se sincronizan presupuestos, metas, gastos fijos, gastos programados ni tags.
+- Tags y relaciones de tags quedan fuera de esta versión.
 - Los datos financieros siguen guardándose localmente en SQLite.
 - El backend cloud productivo usa PostgreSQL en Railway.
 
@@ -84,7 +82,7 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Base preparada para inicio de sesión con Google.
 - Backend cloud/auth real desplegable en Railway.
 - Soporte cloud con PostgreSQL.
-- Sincronización manual inicial de categorías y movimientos.
+- Sincronización manual ampliada para categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
 - Modo claro y modo oscuro.
 - Aplicación instalable para Windows.
 
@@ -126,7 +124,7 @@ Logs técnicos:
 %LOCALAPPDATA%\ScisoNomics\logs
 ```
 
-La versión `v2.1.1` incorpora backend cloud productivo desplegado en Railway con PostgreSQL. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
+La versión `v2.2.0` incorpora sincronización manual ampliada y soft delete para borrados sincronizables. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
 
 La sincronización no es automática. Solo se ejecuta cuando el usuario toca **“Sincronizar ahora”**.
 
@@ -143,7 +141,7 @@ Actualmente la cuenta permite:
 - Cerrar sesión.
 - Usar la opción “Recordarme”.
 - Preparar la base para futuro inicio de sesión con Google.
-- Habilitar sincronización manual inicial de categorías y movimientos.
+- Habilitar sincronización manual ampliada.
 
 Importante:
 
@@ -151,7 +149,7 @@ Importante:
 - La app puede usarse sin internet.
 - Los datos financieros siguen guardándose localmente.
 - Cerrar sesión no borra los datos locales.
-- La sincronización manual inicial solo incluye categorías y movimientos.
+- La sincronización manual incluye categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
 - No se sube la base `.db` completa.
 - No hay sincronización automática en esta versión.
 
@@ -159,25 +157,22 @@ Importante:
 
 ## Sincronización manual
 
-La sincronización manual inicial requiere una cuenta iniciada y backend cloud configurado.
+La sincronización manual requiere una cuenta iniciada y backend cloud configurado.
 
 Al tocar **“Sincronizar ahora”**, ScisoNomics:
 
-- Lee los registros locales pendientes de categorías y movimientos.
+- Lee los registros locales pendientes de categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
 - Sube cambios pendientes al backend cloud.
 - Valida que el cloud confirme los registros recibidos y guardados.
 - Marca como sincronizados solo los registros aceptados por el cloud.
-- Descarga categorías y movimientos del usuario autenticado.
+- Descarga datos sincronizados del usuario autenticado, incluyendo registros con borrado lógico.
 - Aplica cambios remotos en SQLite local.
 - Resuelve conflictos simples usando `updated_at` con estrategia `last write wins`.
 
 No sincroniza todavía:
 
-- Presupuestos.
-- Metas de ahorro.
-- Gastos fijos.
-- Gastos programados.
 - Tags.
+- Relaciones de tags.
 - Reportes.
 - Copias de seguridad.
 - Archivos `.db`.
@@ -207,7 +202,7 @@ No sincroniza todavía:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_2.1.1_x64-setup.exe`.
+2. Descargar `ScisoNomics_2.2.0_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -217,7 +212,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v2.1.1`
+Versión estable actual: `v2.2.0`
 
 Funcionalidades validadas:
 
@@ -244,7 +239,8 @@ Funcionalidades validadas:
 - Registro e inicio de sesión con email y contraseña.
 - Backend cloud/auth desplegado en Railway.
 - Backend cloud compatible con PostgreSQL.
-- Sincronización manual inicial de categorías y movimientos.
+- Sincronización manual ampliada.
+- Soft delete para borrados sincronizables.
 - Cierre de sesión sin borrar datos locales.
 - Funcionamiento offline.
 
@@ -386,7 +382,7 @@ Respuesta esperada:
   "ok": true,
   "service": "scisonomics-cloud-auth",
   "database": "postgresql",
-  "version": "2.1.1"
+  "version": "2.2.0"
 }
 ```
 
@@ -396,7 +392,7 @@ La app desktop debe configurarse antes del build con:
 $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="https://TU_BACKEND_RAILWAY"
 ```
 
-No hay sincronización automática en esta versión. La sincronización sigue siendo manual y limitada a categorías y movimientos.
+No hay sincronización automática en esta versión. La sincronización sigue siendo manual e incluye categorías, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos.
 
 ---
 

@@ -57,6 +57,6 @@ SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`
 - `SCISONOMICS_GOOGLE_REDIRECT_URI`
 
-La sincronizacion manual inicial acepta categorias y movimientos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
+La sincronizacion manual acepta categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
 
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.

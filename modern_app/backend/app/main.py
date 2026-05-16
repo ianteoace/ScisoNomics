@@ -25,7 +25,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.1.1")
+app = FastAPI(title="Registro Finanzas API", version="2.2.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -369,6 +369,7 @@ def get_stats_anual(year: int = Query(...), service: FinanceService = Depends(ge
               COUNT(*) AS movimientos
             FROM movimientos
             WHERE strftime('%Y', fecha) = ?
+              AND (deleted_at IS NULL OR deleted_at = '')
             """,
             (str(year),),
         ).fetchone()
@@ -383,6 +384,7 @@ def get_stats_anual(year: int = Query(...), service: FinanceService = Depends(ge
               COALESCE(SUM(CASE WHEN tipo='inversion' THEN monto ELSE 0 END), 0) AS inversiones
             FROM movimientos
             WHERE strftime('%Y', fecha) = ?
+              AND (deleted_at IS NULL OR deleted_at = '')
             GROUP BY strftime('%m', fecha)
             ORDER BY mes
             """,
@@ -395,6 +397,8 @@ def get_stats_anual(year: int = Query(...), service: FinanceService = Depends(ge
             FROM movimientos m
             JOIN categorias c ON c.id = m.categoria_id
             WHERE strftime('%Y', m.fecha) = ? AND m.tipo = 'gasto'
+              AND (m.deleted_at IS NULL OR m.deleted_at = '')
+              AND (c.deleted_at IS NULL OR c.deleted_at = '')
             GROUP BY c.nombre
             HAVING total > 0
             ORDER BY total DESC
@@ -614,88 +618,165 @@ def _remote_is_newer(remote_updated_at: Any, local_updated_at: Any) -> bool:
     return remote_dt > local_dt
 
 
+SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+
+
+SYNC_SELECTS: dict[str, str] = {
+    "categorias": """
+        SELECT sync_id, nombre, tipo, created_at, updated_at, deleted_at, sync_status, last_synced_at
+        FROM categorias
+    """,
+    "movimientos": """
+        SELECT
+          m.sync_id, m.fecha, m.tipo, m.monto, m.descripcion, m.categoria_id,
+          c.sync_id AS categoria_sync_id,
+          m.created_at, m.updated_at, m.deleted_at, m.sync_status, m.last_synced_at
+        FROM movimientos m
+        LEFT JOIN categorias c ON c.id = m.categoria_id
+    """,
+    "metas_ahorro": """
+        SELECT sync_id, nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado,
+               created_at, updated_at, deleted_at, sync_status, last_synced_at
+        FROM metas_ahorro
+    """,
+    "gastos_programados": """
+        SELECT gp.sync_id, gp.descripcion, gp.monto_estimado, gp.fecha_vencimiento, gp.estado,
+               gp.es_recurrente, gp.frecuencia, gp.categoria_id, c.sync_id AS categoria_sync_id,
+               gp.created_at, gp.updated_at, gp.deleted_at, gp.sync_status, gp.last_synced_at
+        FROM gastos_programados gp
+        LEFT JOIN categorias c ON c.id = gp.categoria_id
+    """,
+    "gastos_fijos": """
+        SELECT gf.sync_id, gf.descripcion, gf.monto, gf.dia_vencimiento, gf.activo,
+               gf.categoria_id, c.sync_id AS categoria_sync_id,
+               gf.created_at, gf.updated_at, gf.deleted_at, gf.sync_status, gf.last_synced_at
+        FROM gastos_fijos gf
+        LEFT JOIN categorias c ON c.id = gf.categoria_id
+    """,
+    "presupuestos": """
+        SELECT p.sync_id, p.mes, p.anio, p.monto, p.categoria_id, c.sync_id AS categoria_sync_id,
+               p.created_at, p.updated_at, p.deleted_at, p.sync_status, p.last_synced_at
+        FROM presupuestos p
+        LEFT JOIN categorias c ON c.id = p.categoria_id
+    """,
+}
+
+SYNC_STATUS_PREFIX: dict[str, str] = {
+    "categorias": "",
+    "movimientos": "m.",
+    "metas_ahorro": "",
+    "gastos_programados": "gp.",
+    "gastos_fijos": "gf.",
+    "presupuestos": "p.",
+}
+
+
+def _sync_pending_rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    prefix = SYNC_STATUS_PREFIX[table]
+    query = f"""
+    {SYNC_SELECTS[table]}
+    WHERE {prefix}sync_status = 'pending' OR {prefix}sync_status IS NULL OR trim({prefix}sync_status) = ''
+    """
+    return [dict(row) for row in conn.execute(query).fetchall()]
+
+
+def _local_category_id(conn: sqlite3.Connection, item: dict[str, Any]) -> int | None:
+    categoria_sync_id = str(item.get("categoria_sync_id") or "").strip()
+    if categoria_sync_id:
+        row = conn.execute("SELECT id FROM categorias WHERE sync_id = ?", (categoria_sync_id,)).fetchone()
+        if row:
+            return int(row["id"])
+    categoria_id = item.get("categoria_id")
+    if categoria_id is not None:
+        row = conn.execute("SELECT id FROM categorias WHERE id = ?", (categoria_id,)).fetchone()
+        if row:
+            return int(row["id"])
+    return None
+
+
+def _sync_status_value(item: dict[str, Any]) -> str:
+    return "synced"
+
+
+def _apply_simple_remote(
+    conn: sqlite3.Connection,
+    table: str,
+    item: dict[str, Any],
+    fields: list[str],
+    result: dict[str, int],
+    now: str,
+) -> None:
+    sync_id = str(item.get("sync_id") or "").strip()
+    if not sync_id:
+        result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
+        return
+    local = conn.execute(f"SELECT * FROM {table} WHERE sync_id = ?", (sync_id,)).fetchone()
+    values = [item.get(field) for field in fields]
+    if local:
+        if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+            assignments = ", ".join([f"{field} = ?" for field in fields])
+            conn.execute(
+                f"""
+                UPDATE {table}
+                SET {assignments},
+                    updated_at = ?, deleted_at = ?, sync_status = ?, last_synced_at = ?
+                WHERE sync_id = ?
+                """,
+                (*values, item.get("updated_at") or now, item.get("deleted_at"), _sync_status_value(item), now, sync_id),
+            )
+            result[f"{table}_updated"] = result.get(f"{table}_updated", 0) + 1
+        return
+
+    columns = ", ".join([*fields, "sync_id", "created_at", "updated_at", "deleted_at", "sync_status", "last_synced_at"])
+    placeholders = ", ".join(["?"] * (len(fields) + 6))
+    conn.execute(
+        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+        (*values, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), _sync_status_value(item), now),
+    )
+    result[f"{table}_inserted"] = result.get(f"{table}_inserted", 0) + 1
+
+
 @app.get("/sync/pending")
 def sync_pending(service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
     with service.db.connect() as conn:
-        categorias = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT sync_id, nombre, tipo, created_at, updated_at, deleted_at, sync_status, last_synced_at
-                FROM categorias
-                WHERE sync_status IN ('pending', 'deleted')
-                   OR last_synced_at IS NULL
-                   OR sync_status IS NULL
-                """
-            ).fetchall()
-        ]
-        movimientos = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT
-                  m.sync_id, m.fecha, m.tipo, m.monto, m.descripcion, m.categoria_id,
-                  c.sync_id AS categoria_sync_id,
-                  m.created_at, m.updated_at, m.deleted_at, m.sync_status, m.last_synced_at
-                FROM movimientos m
-                LEFT JOIN categorias c ON c.id = m.categoria_id
-                WHERE m.sync_status IN ('pending', 'deleted')
-                   OR m.last_synced_at IS NULL
-                   OR m.sync_status IS NULL
-                """
-            ).fetchall()
-        ]
-    return {"ok": True, "categorias": categorias, "movimientos": movimientos}
+        payload = {table: _sync_pending_rows(conn, table) for table in SYNC_TABLES}
+    return {"ok": True, **payload}
 
 
 @app.post("/sync/mark-synced")
 async def sync_mark_synced(request: Request, service: FinanceService = Depends(get_service)):
     payload = await request.json()
-    categorias = [str(v) for v in payload.get("categorias", []) if v]
-    movimientos = [str(v) for v in payload.get("movimientos", []) if v]
+    accepted = {table: [str(v) for v in payload.get(table, []) if v] for table in SYNC_TABLES}
     now = datetime.now().isoformat(timespec="seconds")
 
     with service.db.connect() as conn:
-        for sync_id in categorias:
-            conn.execute(
-                """
-                UPDATE categorias
-                SET sync_status = CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'synced' END,
-                    last_synced_at = ?
-                WHERE sync_id = ?
-                """,
-                (now, sync_id),
-            )
-        for sync_id in movimientos:
-            conn.execute(
-                """
-                UPDATE movimientos
-                SET sync_status = CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE 'synced' END,
-                    last_synced_at = ?
-                WHERE sync_id = ?
-                """,
-                (now, sync_id),
-            )
-    return {"ok": True, "marked": {"categorias": len(categorias), "movimientos": len(movimientos)}}
+        for table, sync_ids in accepted.items():
+            for sync_id in sync_ids:
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET sync_status = 'synced',
+                        last_synced_at = ?
+                    WHERE sync_id = ?
+                    """,
+                    (now, sync_id),
+                )
+    return {"ok": True, "marked": {table: len(values) for table, values in accepted.items()}}
 
 
 @app.post("/sync/apply-remote")
 async def sync_apply_remote(request: Request, service: FinanceService = Depends(get_service)):
     payload = await request.json()
-    remote_categorias = payload.get("categorias", []) or []
-    remote_movimientos = payload.get("movimientos", []) or []
     now = datetime.now().isoformat(timespec="seconds")
-    result = {
-        "categorias_inserted": 0,
-        "categorias_updated": 0,
-        "movimientos_inserted": 0,
-        "movimientos_updated": 0,
-        "movimientos_skipped": 0,
+    result: dict[str, int] = {
+        f"{table}_{suffix}": 0
+        for table in SYNC_TABLES
+        for suffix in ("inserted", "updated", "skipped")
     }
 
     with service.db.connect() as conn:
-        for item in remote_categorias:
+        for item in payload.get("categorias", []) or []:
             sync_id = str(item.get("sync_id") or "").strip()
             nombre = str(item.get("nombre") or "").strip()
             tipo = str(item.get("tipo") or "").strip()
@@ -741,11 +822,37 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                     )
                     result["categorias_updated"] += 1
 
-        for item in remote_movimientos:
+        for item in payload.get("metas_ahorro", []) or []:
+            _apply_simple_remote(
+                conn,
+                "metas_ahorro",
+                item,
+                ["nombre", "monto_objetivo", "monto_inicial", "fecha_objetivo", "descripcion", "estado"],
+                result,
+                now,
+            )
+
+        for table, fields in {
+            "gastos_fijos": ["descripcion", "monto", "dia_vencimiento", "activo"],
+            "gastos_programados": ["descripcion", "monto_estimado", "fecha_vencimiento", "estado", "es_recurrente", "frecuencia"],
+            "presupuestos": ["mes", "anio", "monto"],
+        }.items():
+            for item in payload.get(table, []) or []:
+                categoria_id = _local_category_id(conn, item)
+                if categoria_id is None:
+                    result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
+                    continue
+                local_item = dict(item)
+                local_item["categoria_id"] = categoria_id
+                try:
+                    _apply_simple_remote(conn, table, local_item, ["categoria_id", *fields], result, now)
+                except sqlite3.IntegrityError:
+                    result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
+
+        for item in payload.get("movimientos", []) or []:
             sync_id = str(item.get("sync_id") or "").strip()
-            categoria_sync_id = str(item.get("categoria_sync_id") or "").strip()
-            categoria = conn.execute("SELECT id FROM categorias WHERE sync_id = ?", (categoria_sync_id,)).fetchone()
-            if not sync_id or not categoria:
+            categoria_id = _local_category_id(conn, item)
+            if not sync_id or categoria_id is None:
                 result["movimientos_skipped"] += 1
                 continue
 
@@ -753,7 +860,7 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
             values = (
                 item.get("fecha"),
                 item.get("tipo"),
-                categoria["id"],
+                categoria_id,
                 item.get("descripcion") or "",
                 float(item.get("monto") or 0),
                 item.get("updated_at") or now,
@@ -786,7 +893,7 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                 (
                     item.get("fecha"),
                     item.get("tipo"),
-                    categoria["id"],
+                    categoria_id,
                     item.get("descripcion") or "",
                     float(item.get("monto") or 0),
                     sync_id,

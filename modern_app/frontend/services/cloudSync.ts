@@ -3,6 +3,10 @@ import { API_URL } from "./http";
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
+const SYNC_TABLES = ["categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos"] as const;
+type SyncTable = (typeof SYNC_TABLES)[number];
+type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
+type AcceptedPayload = Record<SyncTable, string[]>;
 
 async function parseResponse<T>(response: Response, fallback: string): Promise<T> {
   if (!response.ok) {
@@ -70,11 +74,23 @@ function setLastManualSyncAt(value: string) {
 }
 
 export async function getLocalPending() {
-  return localGet<{ ok: boolean; categorias: unknown[]; movimientos: unknown[] }>("/sync/pending");
+  return localGet<SyncPayload>("/sync/pending");
 }
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function countByTable(payload: Partial<Record<SyncTable, unknown[]>>) {
+  return Object.fromEntries(SYNC_TABLES.map((table) => [table, Array.isArray(payload[table]) ? payload[table]!.length : 0])) as Record<SyncTable, number>;
+}
+
+function acceptedByTable(value: Partial<Record<SyncTable, unknown>>) {
+  return Object.fromEntries(SYNC_TABLES.map((table) => [table, asStringArray(value[table])])) as AcceptedPayload;
+}
+
+function emptyPayloadFromPending(pending: SyncPayload) {
+  return Object.fromEntries(SYNC_TABLES.map((table) => [table, pending[table] || []])) as Record<SyncTable, unknown[]>;
 }
 
 export async function runManualSync(token: string, userEmail?: string) {
@@ -88,83 +104,57 @@ export async function runManualSync(token: string, userEmail?: string) {
   });
 
   const pending = await getLocalPending();
-  const pendingCategorias = pending.categorias.length;
-  const pendingMovimientos = pending.movimientos.length;
-  console.info(`${LOG_PREFIX} pending`, {
-    user: userEmail || "usuario autenticado",
-    categorias: pendingCategorias,
-    movimientos: pendingMovimientos,
-  });
+  const pendingCounts = countByTable(pending);
+  console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", ...pendingCounts });
 
   const pushResult = await cloudPost<{
     ok: boolean;
-    accepted: { categorias: unknown; movimientos: unknown };
-    ignored: { categorias: number; movimientos: number };
-    counts?: {
-      categorias_received: number;
-      categorias_saved: number;
-      movimientos_received: number;
-      movimientos_saved: number;
-    };
-  }>("/sync/push", token, {
-    categorias: pending.categorias,
-    movimientos: pending.movimientos,
-  });
+    accepted: Partial<Record<SyncTable, unknown>>;
+    ignored: Record<SyncTable, number>;
+    counts?: Record<string, number>;
+  }>("/sync/push", token, emptyPayloadFromPending(pending));
 
-  const accepted = {
-    categorias: asStringArray(pushResult.accepted?.categorias),
-    movimientos: asStringArray(pushResult.accepted?.movimientos),
-  };
-  const counts = pushResult.counts || {
-    categorias_received: -1,
-    categorias_saved: -1,
-    movimientos_received: -1,
-    movimientos_saved: -1,
-  };
+  const accepted = acceptedByTable(pushResult.accepted || {});
+  const counts = pushResult.counts || {};
+  const acceptedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, accepted[table].length])) as Record<SyncTable, number>;
   console.info(`${LOG_PREFIX} push result`, {
     user: userEmail || "usuario autenticado",
     counts,
-    acceptedCounts: { categorias: accepted.categorias.length, movimientos: accepted.movimientos.length },
+    acceptedCounts,
   });
 
   if (!pushResult.ok) {
     throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
   }
-  if (
-    accepted.categorias.length !== pendingCategorias ||
-    accepted.movimientos.length !== pendingMovimientos ||
-    counts.categorias_received !== pendingCategorias ||
-    counts.categorias_saved !== pendingCategorias ||
-    counts.movimientos_received !== pendingMovimientos ||
-    counts.movimientos_saved !== pendingMovimientos
-  ) {
+  const hasMismatch = SYNC_TABLES.some((table) => {
+    const pendingCount = pendingCounts[table];
+    return (
+      accepted[table].length !== pendingCount ||
+      counts[`${table}_received`] !== pendingCount ||
+      counts[`${table}_saved`] !== pendingCount
+    );
+  });
+  if (hasMismatch) {
     console.error(`${LOG_PREFIX} cloud confirmation mismatch`, {
-      pending: { categorias: pendingCategorias, movimientos: pendingMovimientos },
-      accepted: { categorias: accepted.categorias.length, movimientos: accepted.movimientos.length },
+      pending: pendingCounts,
+      accepted: acceptedCounts,
       counts,
     });
     throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
   }
 
   let markSyncedExecuted = false;
-  if (accepted.categorias.length || accepted.movimientos.length) {
+  if (SYNC_TABLES.some((table) => accepted[table].length > 0)) {
     await localPost("/sync/mark-synced", accepted);
     markSyncedExecuted = true;
-    console.info(`${LOG_PREFIX} mark-synced`, {
-      executed: true,
-      categorias: accepted.categorias.length,
-      movimientos: accepted.movimientos.length,
-    });
+    console.info(`${LOG_PREFIX} mark-synced`, { executed: true, ...acceptedCounts });
   }
   if (!markSyncedExecuted) {
-    console.info(`${LOG_PREFIX} mark-synced`, { executed: false, categorias: 0, movimientos: 0 });
+    console.info(`${LOG_PREFIX} mark-synced`, { executed: false, ...Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) });
   }
 
-  const remote = await cloudGet<{ ok: boolean; categorias: unknown[]; movimientos: unknown[] }>("/sync/pull", token);
-  console.info(`${LOG_PREFIX} pull`, {
-    categorias: remote.categorias.length,
-    movimientos: remote.movimientos.length,
-  });
+  const remote = await cloudGet<SyncPayload>("/sync/pull", token);
+  console.info(`${LOG_PREFIX} pull`, countByTable(remote));
   const applyResult = await localPost<{ ok: boolean; result: Record<string, number> }>("/sync/apply-remote", remote);
   console.info(`${LOG_PREFIX} apply-remote`, { result: applyResult.result });
 
@@ -173,10 +163,7 @@ export async function runManualSync(token: string, userEmail?: string) {
 
   return {
     syncedAt,
-    uploaded: {
-      categorias: accepted.categorias.length,
-      movimientos: accepted.movimientos.length,
-    },
+    uploaded: acceptedCounts,
     ignored: pushResult.ignored,
     applied: applyResult.result,
   };

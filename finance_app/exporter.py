@@ -629,11 +629,14 @@ def _list_movimientos_between(service, desde: str, hasta: str) -> list[dict]:
                         END
                     ), 0)
                     FROM movimientos m2
-                    WHERE m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id)
+                    WHERE (m2.deleted_at IS NULL OR m2.deleted_at = '')
+                      AND (m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id))
                 ) AS saldo_acumulado
             FROM movimientos m
             JOIN categorias c ON c.id = m.categoria_id
             WHERE m.fecha >= ? AND m.fecha <= ?
+              AND (m.deleted_at IS NULL OR m.deleted_at = '')
+              AND (c.deleted_at IS NULL OR c.deleted_at = '')
             ORDER BY m.fecha DESC, m.id DESC
             """,
             (desde, hasta),

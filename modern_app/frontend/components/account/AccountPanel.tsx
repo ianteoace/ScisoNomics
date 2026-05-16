@@ -146,8 +146,10 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       const result = await runManualSync(token, user?.email);
       setLastSyncAt(result.syncedAt);
       setSyncMessage("Sincronizacion completada");
+      const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
+      const appliedTotal = Object.values(result.applied).reduce((sum, value) => sum + Number(value || 0), 0);
       setSyncSummary(
-        `Subidos: ${result.uploaded.categorias} categorias y ${result.uploaded.movimientos} movimientos. Aplicados: ${result.applied.categorias_inserted + result.applied.categorias_updated} categorias y ${result.applied.movimientos_inserted + result.applied.movimientos_updated} movimientos.`,
+        `Confirmados en la nube: ${uploadedTotal}. Cambios remotos aplicados: ${appliedTotal}.`,
       );
       showSuccess("Sincronizacion completada correctamente.");
     } catch (error) {
@@ -226,7 +228,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                   </p>
                   {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
                   <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                    Esta version sincroniza manualmente categorias y movimientos. Tus datos siguen guardandose localmente.
+                    Esta version sincroniza manualmente categorias, movimientos, metas, gastos programados, gastos fijos y presupuestos. Los borrados tambien se sincronizan de forma segura.
                   </p>
                 </div>
                 <button className="btn" onClick={handleManualSync} disabled={syncing}>

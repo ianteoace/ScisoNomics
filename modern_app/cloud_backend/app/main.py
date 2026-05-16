@@ -15,7 +15,7 @@ from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.1.1")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.2.0")
 
 
 def allowed_origins() -> list[str]:
@@ -90,6 +90,136 @@ def incoming_is_newer(incoming_updated_at: Any, stored_updated_at: Any) -> bool:
     if stored_dt is None:
         return True
     return incoming_dt >= stored_dt
+
+
+SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+
+SYNC_CONFIG: dict[str, dict[str, Any]] = {
+    "categorias": {
+        "table": "cloud_categorias",
+        "required": ("nombre", "tipo"),
+        "fields": ("nombre", "tipo", "color", "icono"),
+        "order": "nombre",
+    },
+    "movimientos": {
+        "table": "cloud_movimientos",
+        "required": ("tipo", "fecha"),
+        "fields": ("tipo", "monto", "descripcion", "categoria_id", "categoria_sync_id", "fecha"),
+        "order": "fecha DESC, id DESC",
+    },
+    "metas_ahorro": {
+        "table": "cloud_metas_ahorro",
+        "required": ("nombre",),
+        "fields": ("nombre", "monto_objetivo", "monto_inicial", "fecha_objetivo", "descripcion", "estado"),
+        "order": "created_at DESC, id DESC",
+    },
+    "gastos_programados": {
+        "table": "cloud_gastos_programados",
+        "required": ("descripcion",),
+        "fields": ("descripcion", "categoria_sync_id", "monto_estimado", "fecha_vencimiento", "estado", "es_recurrente", "frecuencia"),
+        "order": "fecha_vencimiento ASC, id DESC",
+    },
+    "gastos_fijos": {
+        "table": "cloud_gastos_fijos",
+        "required": ("descripcion",),
+        "fields": ("descripcion", "categoria_sync_id", "monto", "dia_vencimiento", "activo"),
+        "order": "dia_vencimiento ASC, id DESC",
+    },
+    "presupuestos": {
+        "table": "cloud_presupuestos",
+        "required": ("mes", "anio"),
+        "fields": ("categoria_sync_id", "mes", "anio", "monto"),
+        "order": "anio DESC, mes DESC, id DESC",
+    },
+}
+
+
+def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
+    sync_id = str(item.get("sync_id") or "").strip()
+    if not sync_id:
+        return False
+    return all(item.get(field) not in (None, "") for field in config["required"])
+
+
+def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str) -> tuple[list[str], int]:
+    config = SYNC_CONFIG[key]
+    table = config["table"]
+    fields = list(config["fields"])
+    accepted: list[str] = []
+    ignored = 0
+
+    for item in items:
+        if not isinstance(item, dict) or not _valid_sync_item(item, config):
+            ignored += 1
+            continue
+        sync_id = str(item.get("sync_id") or "").strip()
+        existing = conn.execute(
+            f"SELECT updated_at FROM {table} WHERE user_id = ? AND sync_id = ?",
+            (user_id, sync_id),
+        ).fetchone()
+
+        if existing and not incoming_is_newer(item.get("updated_at"), existing["updated_at"]):
+            accepted.append(sync_id)
+            continue
+
+        base_columns = ["user_id", "sync_id", *fields, "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at"]
+        placeholders = ", ".join(["?"] * len(base_columns))
+        update_assignments = ", ".join(
+            [
+                *(f"{field} = excluded.{field}" for field in fields),
+                f"created_at = COALESCE({table}.created_at, excluded.created_at)",
+                "updated_at = excluded.updated_at",
+                "deleted_at = excluded.deleted_at",
+                "sync_status = excluded.sync_status",
+                "remote_updated_at = excluded.remote_updated_at",
+            ]
+        )
+        values = [
+            user_id,
+            sync_id,
+            *(item.get(field) for field in fields),
+            item.get("created_at") or now,
+            item.get("updated_at") or now,
+            item.get("deleted_at"),
+            item.get("sync_status") or "synced",
+            now,
+        ]
+        conn.execute(
+            f"""
+            INSERT INTO {table} ({", ".join(base_columns)})
+            VALUES ({placeholders})
+            ON CONFLICT(user_id, sync_id) DO UPDATE SET {update_assignments}
+            """,
+            tuple(values),
+        )
+        saved = conn.execute(
+            f"SELECT 1 FROM {table} WHERE user_id = ? AND sync_id = ?",
+            (user_id, sync_id),
+        ).fetchone()
+        if saved:
+            accepted.append(sync_id)
+        else:
+            ignored += 1
+
+    return accepted, ignored
+
+
+def _pull_table(conn, user_id: str, key: str) -> list[dict[str, Any]]:
+    config = SYNC_CONFIG[key]
+    table = config["table"]
+    fields = ", ".join([*config["fields"], "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at"])
+    return [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT sync_id, {fields}
+            FROM {table}
+            WHERE user_id = ?
+            ORDER BY {config["order"]}
+            """,
+            (user_id,),
+        ).fetchall()
+    ]
 
 
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
@@ -188,139 +318,23 @@ def sync_health(user: UserOut = Depends(get_current_user)):
 @app.post("/sync/push")
 async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current_user)):
     init_db()
-    categorias = payload.get("categorias", []) or []
-    movimientos = payload.get("movimientos", []) or []
-    accepted = {"categorias": [], "movimientos": []}
-    ignored = {"categorias": 0, "movimientos": 0}
-    received = {"categorias": len(categorias), "movimientos": len(movimientos)}
+    accepted = {table: [] for table in SYNC_TABLES}
+    ignored = {table: 0 for table in SYNC_TABLES}
+    received = {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
     now = now_iso()
 
     with connect() as conn:
-        for item in categorias:
-            sync_id = str(item.get("sync_id") or "").strip()
-            nombre = str(item.get("nombre") or "").strip()
-            tipo = str(item.get("tipo") or "").strip()
-            if not sync_id or not nombre or not tipo:
-                ignored["categorias"] += 1
-                continue
+        for table in SYNC_TABLES:
+            items = payload.get(table, []) or []
+            table_accepted, table_ignored = _push_table(conn, user.id, table, items, now)
+            accepted[table] = table_accepted
+            ignored[table] = table_ignored
 
-            existing = conn.execute(
-                "SELECT updated_at FROM cloud_categorias WHERE user_id = ? AND sync_id = ?",
-                (user.id, sync_id),
-            ).fetchone()
-            if existing and not incoming_is_newer(item.get("updated_at"), existing["updated_at"]):
-                ignored["categorias"] += 1
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO cloud_categorias (
-                    user_id, sync_id, nombre, tipo, color, icono, created_at, updated_at,
-                    deleted_at, sync_status, remote_updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, sync_id) DO UPDATE SET
-                    nombre = excluded.nombre,
-                    tipo = excluded.tipo,
-                    color = excluded.color,
-                    icono = excluded.icono,
-                    created_at = COALESCE(cloud_categorias.created_at, excluded.created_at),
-                    updated_at = excluded.updated_at,
-                    deleted_at = excluded.deleted_at,
-                    sync_status = excluded.sync_status,
-                    remote_updated_at = excluded.remote_updated_at
-                """,
-                (
-                    user.id,
-                    sync_id,
-                    nombre,
-                    tipo,
-                    item.get("color"),
-                    item.get("icono"),
-                    item.get("created_at") or now,
-                    item.get("updated_at") or now,
-                    item.get("deleted_at"),
-                    item.get("sync_status") or "synced",
-                    now,
-                ),
-            )
-            saved = conn.execute(
-                "SELECT 1 FROM cloud_categorias WHERE user_id = ? AND sync_id = ?",
-                (user.id, sync_id),
-            ).fetchone()
-            if saved:
-                accepted["categorias"].append(sync_id)
-            else:
-                ignored["categorias"] += 1
-
-        for item in movimientos:
-            sync_id = str(item.get("sync_id") or "").strip()
-            tipo = str(item.get("tipo") or "").strip()
-            fecha = str(item.get("fecha") or "").strip()
-            if not sync_id or not tipo or not fecha:
-                ignored["movimientos"] += 1
-                continue
-
-            existing = conn.execute(
-                "SELECT updated_at FROM cloud_movimientos WHERE user_id = ? AND sync_id = ?",
-                (user.id, sync_id),
-            ).fetchone()
-            if existing and not incoming_is_newer(item.get("updated_at"), existing["updated_at"]):
-                ignored["movimientos"] += 1
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO cloud_movimientos (
-                    user_id, sync_id, tipo, monto, descripcion, categoria_id, categoria_sync_id,
-                    fecha, created_at, updated_at, deleted_at, sync_status, remote_updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, sync_id) DO UPDATE SET
-                    tipo = excluded.tipo,
-                    monto = excluded.monto,
-                    descripcion = excluded.descripcion,
-                    categoria_id = excluded.categoria_id,
-                    categoria_sync_id = excluded.categoria_sync_id,
-                    fecha = excluded.fecha,
-                    created_at = COALESCE(cloud_movimientos.created_at, excluded.created_at),
-                    updated_at = excluded.updated_at,
-                    deleted_at = excluded.deleted_at,
-                    sync_status = excluded.sync_status,
-                    remote_updated_at = excluded.remote_updated_at
-                """,
-                (
-                    user.id,
-                    sync_id,
-                    tipo,
-                    float(item.get("monto") or 0),
-                    item.get("descripcion") or "",
-                    item.get("categoria_id"),
-                    item.get("categoria_sync_id"),
-                    fecha,
-                    item.get("created_at") or now,
-                    item.get("updated_at") or now,
-                    item.get("deleted_at"),
-                    item.get("sync_status") or "synced",
-                    now,
-                ),
-            )
-            saved = conn.execute(
-                "SELECT 1 FROM cloud_movimientos WHERE user_id = ? AND sync_id = ?",
-                (user.id, sync_id),
-            ).fetchone()
-            if saved:
-                accepted["movimientos"].append(sync_id)
-            else:
-                ignored["movimientos"] += 1
-
-    counts = {
-        "categorias_received": received["categorias"],
-        "categorias_saved": len(accepted["categorias"]),
-        "movimientos_received": received["movimientos"],
-        "movimientos_saved": len(accepted["movimientos"]),
-    }
-    if (received["categorias"] and not accepted["categorias"]) or (received["movimientos"] and not accepted["movimientos"]):
+    counts = {}
+    for table in SYNC_TABLES:
+        counts[f"{table}_received"] = received[table]
+        counts[f"{table}_saved"] = len(accepted[table])
+    if any(received[table] != len(accepted[table]) for table in SYNC_TABLES):
         raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
     return {"ok": True, "accepted": accepted, "ignored": ignored, "counts": counts}
 
@@ -329,44 +343,26 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
 def sync_pull(user: UserOut = Depends(get_current_user)):
     init_db()
     with connect() as conn:
-        categorias = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT sync_id, nombre, tipo, color, icono, created_at, updated_at,
-                       deleted_at, sync_status, remote_updated_at
-                FROM cloud_categorias
-                WHERE user_id = ?
-                ORDER BY nombre
-                """,
-                (user.id,),
-            ).fetchall()
-        ]
-        movimientos = [
-            dict(row)
-            for row in conn.execute(
-                """
-                SELECT sync_id, tipo, monto, descripcion, categoria_id, categoria_sync_id,
-                       fecha, created_at, updated_at, deleted_at, sync_status, remote_updated_at
-                FROM cloud_movimientos
-                WHERE user_id = ?
-                ORDER BY fecha DESC, id DESC
-                """,
-                (user.id,),
-            ).fetchall()
-        ]
-    return {"ok": True, "categorias": categorias, "movimientos": movimientos}
+        payload = {table: _pull_table(conn, user.id, table) for table in SYNC_TABLES}
+    return {"ok": True, **payload}
 
 
 @app.get("/sync/debug-counts")
 def sync_debug_counts(user: UserOut = Depends(get_current_user)):
     init_db()
     with connect() as conn:
-        categorias_row = conn.execute("SELECT COUNT(*) AS total FROM cloud_categorias WHERE user_id = ?", (user.id,)).fetchone()
-        movimientos_row = conn.execute("SELECT COUNT(*) AS total FROM cloud_movimientos WHERE user_id = ?", (user.id,)).fetchone()
-        categorias = int(categorias_row["total"] if isinstance(categorias_row, dict) else categorias_row[0])
-        movimientos = int(movimientos_row["total"] if isinstance(movimientos_row, dict) else movimientos_row[0])
-    return {"ok": True, "user_id": user.id, "categorias": categorias, "movimientos": movimientos}
+        counts: dict[str, int] = {}
+        deleted: dict[str, int] = {}
+        for table in SYNC_TABLES:
+            cloud_table = SYNC_CONFIG[table]["table"]
+            row = conn.execute(f"SELECT COUNT(*) AS total FROM {cloud_table} WHERE user_id = ?", (user.id,)).fetchone()
+            deleted_row = conn.execute(
+                f"SELECT COUNT(*) AS total FROM {cloud_table} WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at <> ''",
+                (user.id,),
+            ).fetchone()
+            counts[table] = int(row["total"] if isinstance(row, dict) else row[0])
+            deleted[table] = int(deleted_row["total"] if isinstance(deleted_row, dict) else deleted_row[0])
+    return {"ok": True, "user_id": user.id, **counts, "deleted": deleted}
 
 
 @app.get("/auth/google/start")
