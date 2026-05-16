@@ -1,7 +1,7 @@
 {
   "name": "registro-finanzas-web",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",

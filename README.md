@@ -12,7 +12,7 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 
 La versión estable para Windows está disponible en la sección de Releases:
 
-[Descargar ScisoNomics v2.1.0](../../releases/tag/v2.1.0)
+[Descargar ScisoNomics v2.1.1](../../releases/tag/v2.1.1)
 
 ---
 
@@ -89,7 +89,7 @@ Logs técnicos:
 
 `%LOCALAPPDATA%\ScisoNomics\logs`
 
-La versión 2.1.0 incorpora sincronización manual inicial para categorías y movimientos. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
+La versión 2.1.1 incorpora sincronización manual inicial para categorías y movimientos y deja preparado el backend cloud para Railway con PostgreSQL. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
 
 La sincronización no es automática. Solo se ejecuta cuando el usuario toca “Sincronizar ahora”.
 
@@ -141,7 +141,7 @@ Importante:
 ## Instalación
 
 1. Ir a la sección de Releases.
-2. Descargar `ScisoNomics_2.1.0_x64-setup.exe`.
+2. Descargar `ScisoNomics_2.1.1_x64-setup.exe`.
 3. Ejecutar el instalador.
 4. Abrir ScisoNomics desde el acceso directo o desde el menú de inicio.
 
@@ -151,7 +151,7 @@ En la primera apertura, la aplicación crea automáticamente la base de datos lo
 
 ## Estado del proyecto
 
-Versión estable actual: `v2.1.0`
+Versión estable actual: `v2.1.1`
 
 Funcionalidades validadas:
 
