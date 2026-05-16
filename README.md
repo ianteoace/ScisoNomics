@@ -2,9 +2,11 @@
 
 ScisoNomics es una aplicación de escritorio para gestión de finanzas personales.
 
-Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, administrar gastos fijos, visualizar estadísticas, consultar reportes, filtrar movimientos y exportar información a Excel.
+Permite registrar ingresos, gastos, ahorros e inversiones, organizar categorías, controlar presupuestos mensuales, crear metas de ahorro, administrar gastos fijos, visualizar estadísticas, consultar reportes, filtrar movimientos, exportar información a Excel y crear copias de seguridad locales.
 
-La aplicación funciona de forma local, sin necesidad de conexión a internet, y almacena los datos en una base SQLite dentro del equipo del usuario.
+La aplicación funciona con enfoque **local-first**: los datos principales se guardan en una base SQLite dentro del equipo del usuario y la app puede utilizarse sin conexión a internet.
+
+A partir de la versión `v2.1.1`, ScisoNomics incorpora backend cloud real desplegado en Railway con PostgreSQL, cuenta opcional y sincronización manual inicial para categorías y movimientos.
 
 ---
 
@@ -13,6 +15,35 @@ La aplicación funciona de forma local, sin necesidad de conexión a internet, y
 La versión estable para Windows está disponible en la sección de Releases:
 
 [Descargar ScisoNomics v2.1.1](../../releases/tag/v2.1.1)
+
+---
+
+## Versión actual
+
+**Versión estable actual:** `v2.1.1`
+
+---
+
+## Novedades de v2.1.1
+
+- Backend cloud/auth desplegado en Railway.
+- Compatibilidad del backend cloud con PostgreSQL.
+- Compatibilidad mantenida con SQLite local para desarrollo.
+- Conexión de la app desktop a backend cloud público mediante `NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL`.
+- Registro, inicio de sesión, sesión actual y healthchecks validados contra Railway.
+- Sincronización manual inicial para categorías y movimientos.
+- Validación reforzada para evitar marcar datos locales como sincronizados si el cloud no confirma recepción.
+- Documentación agregada para deploy cloud.
+
+### Notas de esta versión
+
+- La cuenta sigue siendo opcional.
+- La app sigue funcionando offline.
+- La sincronización automática todavía no está activa.
+- No se sube la base `.db` completa.
+- Todavía no se sincronizan presupuestos, metas, gastos fijos, gastos programados ni tags.
+- Los datos financieros siguen guardándose localmente en SQLite.
+- El backend cloud productivo usa PostgreSQL en Railway.
 
 ---
 
@@ -47,12 +78,12 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Base de datos SQLite local.
 - Creación automática de base de datos en primera instalación.
 - Backend local embebido como sidecar.
-- Preparación interna para futura sincronización cloud opcional.
-- Identificadores internos de sincronización para datos locales.
 - Cuenta de usuario opcional.
 - Login con email y contraseña.
 - Opción “Recordarme” para mantener la sesión iniciada.
 - Base preparada para inicio de sesión con Google.
+- Backend cloud/auth real desplegable en Railway.
+- Soporte cloud con PostgreSQL.
 - Sincronización manual inicial de categorías y movimientos.
 - Modo claro y modo oscuro.
 - Aplicación instalable para Windows.
@@ -67,7 +98,9 @@ La versión estable para Windows está disponible en la sección de Releases:
 - Backend cloud/auth: FastAPI
 - Base de datos local: SQLite
 - Base cloud de desarrollo: SQLite
-- Empaquetado backend: PyInstaller
+- Base cloud productiva: PostgreSQL
+- Deploy backend cloud: Railway
+- Empaquetado backend local: PyInstaller
 - Exportación Excel: OpenPyXL
 - Autenticación: JWT
 
@@ -83,15 +116,19 @@ Al iniciar la aplicación, ScisoNomics verifica que el backend local y la base d
 
 Base de datos local:
 
-`%LOCALAPPDATA%\RegistroFinanzas\data\finanzas.db`
+```text
+%LOCALAPPDATA%\RegistroFinanzas\data\finanzas.db
+```
 
 Logs técnicos:
 
-`%LOCALAPPDATA%\ScisoNomics\logs`
+```text
+%LOCALAPPDATA%\ScisoNomics\logs
+```
 
-La versión 2.1.1 incorpora sincronización manual inicial para categorías y movimientos y deja preparado el backend cloud para Railway con PostgreSQL. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
+La versión `v2.1.1` incorpora backend cloud productivo desplegado en Railway con PostgreSQL. La aplicación sigue siendo local-first: los datos financieros continúan guardándose localmente y la cuenta no es obligatoria.
 
-La sincronización no es automática. Solo se ejecuta cuando el usuario toca “Sincronizar ahora”.
+La sincronización no es automática. Solo se ejecuta cuando el usuario toca **“Sincronizar ahora”**.
 
 ---
 
@@ -106,6 +143,7 @@ Actualmente la cuenta permite:
 - Cerrar sesión.
 - Usar la opción “Recordarme”.
 - Preparar la base para futuro inicio de sesión con Google.
+- Habilitar sincronización manual inicial de categorías y movimientos.
 
 Importante:
 
@@ -115,6 +153,34 @@ Importante:
 - Cerrar sesión no borra los datos locales.
 - La sincronización manual inicial solo incluye categorías y movimientos.
 - No se sube la base `.db` completa.
+- No hay sincronización automática en esta versión.
+
+---
+
+## Sincronización manual
+
+La sincronización manual inicial requiere una cuenta iniciada y backend cloud configurado.
+
+Al tocar **“Sincronizar ahora”**, ScisoNomics:
+
+- Lee los registros locales pendientes de categorías y movimientos.
+- Sube cambios pendientes al backend cloud.
+- Valida que el cloud confirme los registros recibidos y guardados.
+- Marca como sincronizados solo los registros aceptados por el cloud.
+- Descarga categorías y movimientos del usuario autenticado.
+- Aplica cambios remotos en SQLite local.
+- Resuelve conflictos simples usando `updated_at` con estrategia `last write wins`.
+
+No sincroniza todavía:
+
+- Presupuestos.
+- Metas de ahorro.
+- Gastos fijos.
+- Gastos programados.
+- Tags.
+- Reportes.
+- Copias de seguridad.
+- Archivos `.db`.
 
 ---
 
@@ -173,10 +239,11 @@ Funcionalidades validadas:
 - Creación de copias de seguridad.
 - Restauración segura de copias de seguridad.
 - Guías contextuales por sección.
-- Preparación local-first para sincronización futura.
 - Diagnóstico local de estado de sincronización mediante `/sync/status`.
 - Cuenta de usuario opcional.
 - Registro e inicio de sesión con email y contraseña.
+- Backend cloud/auth desplegado en Railway.
+- Backend cloud compatible con PostgreSQL.
 - Sincronización manual inicial de categorías y movimientos.
 - Cierre de sesión sin borrar datos locales.
 - Funcionamiento offline.
@@ -221,6 +288,7 @@ Backend cloud/auth en desarrollo:
 ```powershell
 cd C:\dev\scisonomics
 
+$env:SCISONOMICS_ENV="development"
 $env:SCISONOMICS_JWT_SECRET="dev-secret-change-me"
 $env:SCISONOMICS_CLOUD_DATABASE_URL="sqlite:///./modern_app/cloud_backend/scisonomics_cloud_dev.db"
 
@@ -237,40 +305,33 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 npm run tauri:dev
 ```
 
----
+Frontend/Tauri apuntando al backend cloud productivo:
 
-## Sincronización manual
+```powershell
+cd C:\dev\scisonomics\modern_app\frontend
 
-La sincronización manual inicial requiere una cuenta iniciada y backend cloud configurado.
+$env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="https://TU_BACKEND_RAILWAY"
 
-Al tocar “Sincronizar ahora”, ScisoNomics:
-
-- Sube cambios pendientes de categorías y movimientos.
-- Descarga categorías y movimientos del usuario autenticado.
-- Resuelve conflictos simples usando `updated_at` con estrategia last write wins.
-- Mantiene los datos en SQLite local.
-
-No sincroniza todavía presupuestos, metas, gastos fijos, reportes, copias de seguridad ni archivos `.db`.
-
----
-
-## Deploy backend cloud
-
-El backend cloud/auth puede desplegarse en Railway con FastAPI y PostgreSQL.
-
-Archivo de configuración:
-
-- `railway.json`
-
-Start command:
-
-```bash
-python -m uvicorn modern_app.cloud_backend.app.main:app --host 0.0.0.0 --port $PORT
+npm run tauri:dev
 ```
 
-Variables necesarias en Railway:
+---
 
-```bash
+## Backend cloud
+
+El backend cloud/auth se encuentra en:
+
+```text
+modern_app/cloud_backend
+```
+
+En desarrollo puede funcionar con SQLite local.
+
+En producción está preparado para Railway + PostgreSQL.
+
+Variables principales:
+
+```env
 SCISONOMICS_ENV=production
 SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
 DATABASE_URL=postgresql://...
@@ -284,10 +345,49 @@ La prioridad para elegir base cloud es:
 2. `DATABASE_URL`
 3. SQLite local de desarrollo
 
+---
+
+## Deploy backend cloud
+
+El backend cloud/auth puede desplegarse en Railway con FastAPI y PostgreSQL.
+
+Archivo de configuración:
+
+```text
+railway.json
+```
+
+Start command:
+
+```bash
+python -m uvicorn modern_app.cloud_backend.app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Variables necesarias en Railway:
+
+```env
+SCISONOMICS_ENV=production
+SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+SCISONOMICS_ALLOWED_ORIGINS=*
+SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
+```
+
 Healthcheck:
 
 ```text
 GET /health
+```
+
+Respuesta esperada:
+
+```json
+{
+  "ok": true,
+  "service": "scisonomics-cloud-auth",
+  "database": "postgresql",
+  "version": "2.1.1"
+}
 ```
 
 La app desktop debe configurarse antes del build con:
@@ -300,10 +400,38 @@ No hay sincronización automática en esta versión. La sincronización sigue si
 
 ---
 
+## Build desktop
+
+Antes de generar una build productiva, configurar la URL del backend cloud:
+
+```powershell
+cd C:\dev\scisonomics\modern_app\frontend
+
+$env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="https://TU_BACKEND_RAILWAY"
+
+npm run build
+npm run tauri:build
+```
+
+Los instaladores se generan en:
+
+```text
+modern_app/frontend/src-tauri/target/release/bundle/nsis
+```
+
+y opcionalmente:
+
+```text
+modern_app/frontend/src-tauri/target/release/bundle/msi
+```
+
+---
+
 ## Posibles mejoras futuras
 
 - Sincronización automática entre dispositivos.
 - Sincronización de presupuestos, metas y gastos fijos.
+- Sincronización de gastos programados y tags.
 - Google OAuth completamente configurado.
 - Exportación específica del reporte anual.
 - Importación desde plantilla oficial de Excel o CSV.
