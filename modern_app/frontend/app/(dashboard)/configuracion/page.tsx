@@ -165,10 +165,10 @@ export default function ConfiguracionPage() {
       <section className="card p-5">
         <h3 className="text-lg font-semibold">Cuenta</h3>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Podes usar ScisoNomics sin cuenta. En futuras versiones, una cuenta te permitira respaldar y sincronizar tus datos entre dispositivos.
+          Podes usar ScisoNomics sin cuenta. La cuenta permite usar sincronizacion manual o automatica opcional sin reemplazar el modo local.
         </p>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Tus datos siguen guardandose localmente. La sincronizacion automatica es opcional y la sincronizacion manual sigue disponible.
+          Tus datos siguen guardandose localmente. Desde Administrar cuenta podes ver el centro de sincronizacion, cambios pendientes e historial reciente.
         </p>
         <div className="mt-4">
           <button className="btn-secondary" onClick={() => setAccountOpen(true)}>Administrar cuenta</button>
@@ -196,7 +196,7 @@ export default function ConfiguracionPage() {
         <h3 className="text-lg font-semibold">Acerca de ScisoNomics</h3>
         <div className="mt-2 space-y-1 text-sm text-slate-700 dark:text-slate-300">
           <p><strong>ScisoNomics</strong></p>
-          <p>Version 2.3.0</p>
+          <p>Version 2.4.0</p>
           <p>Aplicacion desktop para gestion de finanzas personales.</p>
           <p>Tus datos se guardan localmente en tu equipo.</p>
           <p className="text-slate-500 dark:text-slate-400">Next.js - Tauri - FastAPI - SQLite</p>

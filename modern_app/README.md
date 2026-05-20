@@ -14,7 +14,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 
 - `backend/`: API FastAPI sobre SQLite
 - `frontend/`: UI Next.js + Tauri
-- `cloud_backend/`: API FastAPI independiente para cuenta opcional y futura sincronizacion
+- `cloud_backend/`: API FastAPI independiente para cuenta opcional, sincronizacion cloud opcional y preparacion multi-dispositivo
 
 ## 1) Backend (FastAPI)
 
@@ -121,3 +121,4 @@ npm run tauri:build
 - Exportacion Excel reutiliza `finance_app/exporter.py`.
 - La cuenta opcional de v2.0 no sincroniza datos financieros. El backend cloud esta separado del backend local.
 - En v2.3 la sincronizacion automatica es opcional. Si esta desactivada, la sincronizacion sigue siendo manual y siempre iniciada por el usuario.
+- En v2.4 se agrega Centro de sincronizacion, historial local de sync, cambios pendientes por tabla e identificador local de dispositivo. No hay resolucion avanzada de conflictos y no se sube la base `.db` completa.

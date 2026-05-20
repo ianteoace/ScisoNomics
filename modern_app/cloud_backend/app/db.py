@@ -247,6 +247,22 @@ def _init_sqlite() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                device_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, device_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")
 
 
 def _init_postgres() -> None:
@@ -392,3 +408,18 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_devices (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                device_id TEXT NOT NULL,
+                device_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                UNIQUE(user_id, device_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")

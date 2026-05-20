@@ -8,9 +8,23 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.3.0**
+Versión estable actual: **v2.4.0**
 
-[Descargar ScisoNomics v2.3.0](../../releases/tag/v2.3.0)
+[Descargar ScisoNomics v2.4.0](../../releases/tag/v2.4.0)
+
+---
+
+## Novedades de v2.4.0
+
+- Se agregó un Centro de sincronización dentro de Configuración → Cuenta.
+- Se incorporó historial local de sincronizaciones manuales y automáticas.
+- Se muestra un resumen de cambios pendientes por tabla.
+- Se agregó identificador local de dispositivo para preparar uso multi-dispositivo.
+- El backend cloud registra dispositivos vistos por cuenta.
+- Se mejoró el diagnóstico de errores de sincronización con mensajes amigables.
+- La sincronización automática sigue siendo opcional y desactivada por defecto.
+- No hay resolución avanzada de conflictos todavía.
+- No se sube la base `.db` completa.
 
 ---
 

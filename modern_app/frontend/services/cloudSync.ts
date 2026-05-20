@@ -14,6 +14,42 @@ type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
 type AcceptedPayload = Record<SyncTable, string[]>;
 type SyncMode = "manual" | "auto";
 
+export type SyncOverview = {
+  ok: boolean;
+  version: string;
+  device_id: string;
+  device_name: string;
+  has_pending: boolean;
+  pending_total: number;
+  deleted_pending_total: number;
+  tables: Record<SyncTable, { total: number; pending: number; deleted_pending: number; missing_sync_id: number }>;
+  last_success: SyncHistoryItem | null;
+  last_error: SyncHistoryItem | null;
+};
+
+export type SyncHistoryItem = {
+  sync_id: string;
+  device_id: string | null;
+  mode: SyncMode;
+  status: "success" | "error" | "skipped";
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number;
+  pending_total: number;
+  pushed_total: number;
+  pulled_total: number;
+  deleted_total: number;
+  error_message: string | null;
+  details?: Record<string, unknown> | null;
+};
+
+type DeviceInfo = {
+  ok: boolean;
+  device_id: string;
+  device_name: string;
+  app_version: string;
+};
+
 let syncInFlight = false;
 
 function emitSyncStateChanged() {
@@ -162,12 +198,77 @@ export async function getLocalPending() {
   return localGet<SyncPayload>("/sync/pending");
 }
 
+export async function getDeviceInfo() {
+  return localGet<DeviceInfo>("/device/info");
+}
+
+export async function getSyncOverview() {
+  return localGet<SyncOverview>("/sync/overview");
+}
+
+export async function getSyncHistory(limit = 10) {
+  return localGet<{ ok: boolean; items: SyncHistoryItem[] }>(`/sync/history?limit=${limit}`);
+}
+
+async function recordSyncHistory(payload: {
+  sync_id: string;
+  device_id?: string;
+  mode: SyncMode;
+  status: "success" | "error" | "skipped";
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  pending_total: number;
+  pushed_total: number;
+  pulled_total: number;
+  deleted_total: number;
+  error_message?: string | null;
+  details?: Record<string, unknown>;
+}) {
+  try {
+    await localPost("/sync/history", payload);
+  } catch (error) {
+    console.warn(`${LOG_PREFIX} no se pudo registrar historial local`, error);
+  }
+}
+
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
 
 function countByTable(payload: Partial<Record<SyncTable, unknown[]>>) {
   return Object.fromEntries(SYNC_TABLES.map((table) => [table, Array.isArray(payload[table]) ? payload[table]!.length : 0])) as Record<SyncTable, number>;
+}
+
+function countDeletedByTable(payload: Partial<Record<SyncTable, unknown[]>>) {
+  return Object.fromEntries(
+    SYNC_TABLES.map((table) => [
+      table,
+      Array.isArray(payload[table])
+        ? payload[table]!.filter((item) => typeof item === "object" && item !== null && Boolean((item as { deleted_at?: unknown }).deleted_at)).length
+        : 0,
+    ]),
+  ) as Record<SyncTable, number>;
+}
+
+function totalCount(counts: Record<SyncTable, number>) {
+  return Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
+}
+
+function makeSyncId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `sync_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function friendlySyncError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) return "No se pudo conectar con el servicio cloud.";
+  if (normalized.includes("curso")) return "Hay otra sincronizacion en curso.";
+  if (normalized.includes("sesion")) return "No hay sesion iniciada.";
+  if (normalized.includes("confirmar") || normalized.includes("nube")) return "No se pudo confirmar la sincronizacion con la nube.";
+  if (normalized.includes("configurado")) return "El servicio cloud no esta configurado en este entorno.";
+  return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
 }
 
 function acceptedByTable(value: Partial<Record<SyncTable, unknown>>) {
@@ -189,6 +290,11 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
 
   syncInFlight = true;
   emitSyncStateChanged();
+  const historySyncId = makeSyncId();
+  const startedAt = new Date();
+  let deviceInfo: DeviceInfo | null = null;
+  let pendingCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) as Record<SyncTable, number>;
+  let deletedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) as Record<SyncTable, number>;
 
   console.info(`${LOG_PREFIX} start`, {
     cloudApiUrl: CLOUD_API_URL,
@@ -198,16 +304,22 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
   });
 
   try {
+    deviceInfo = await getDeviceInfo();
     const pending = await getLocalPending();
-    const pendingCounts = countByTable(pending);
-    console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, ...pendingCounts });
+    pendingCounts = countByTable(pending);
+    deletedCounts = countDeletedByTable(pending);
+    console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, device: deviceInfo.device_id, ...pendingCounts });
 
     const pushResult = await cloudPost<{
       ok: boolean;
       accepted: Partial<Record<SyncTable, unknown>>;
       ignored: Record<SyncTable, number>;
       counts?: Record<string, number>;
-    }>("/sync/push", token, emptyPayloadFromPending(pending));
+    }>("/sync/push", token, {
+      device_id: deviceInfo.device_id,
+      device_name: deviceInfo.device_name,
+      ...emptyPayloadFromPending(pending),
+    });
 
     const accepted = acceptedByTable(pushResult.accepted || {});
     const counts = pushResult.counts || {};
@@ -251,7 +363,8 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
     }
 
     const remote = await cloudGet<SyncPayload>("/sync/pull", token);
-    console.info(`${LOG_PREFIX} pull`, { mode, ...countByTable(remote) });
+    const pulledCounts = countByTable(remote);
+    console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
     const applyResult = await localPost<{ ok: boolean; result: Record<string, number> }>("/sync/apply-remote", remote);
     console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
 
@@ -259,16 +372,57 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
     if (mode === "auto") setLastAutoSyncAt(syncedAt);
     else setLastManualSyncAt(syncedAt);
     setLastSyncError(null);
+    await recordSyncHistory({
+      sync_id: historySyncId,
+      device_id: deviceInfo.device_id,
+      mode,
+      status: "success",
+      started_at: startedAt.toISOString(),
+      finished_at: syncedAt,
+      duration_ms: Date.now() - startedAt.getTime(),
+      pending_total: totalCount(pendingCounts),
+      pushed_total: totalCount(acceptedCounts),
+      pulled_total: totalCount(pulledCounts),
+      deleted_total: totalCount(deletedCounts),
+      error_message: null,
+      details: {
+        pending: pendingCounts,
+        pushed: acceptedCounts,
+        pulled: pulledCounts,
+        deleted: deletedCounts,
+        applied: applyResult.result,
+      },
+    });
 
     return {
       syncedAt,
       uploaded: acceptedCounts,
       ignored: pushResult.ignored,
       applied: applyResult.result,
+      pulled: pulledCounts,
     };
   } catch (error) {
-    if (mode === "auto") setLastSyncError(error instanceof Error ? error.message : "No se pudo sincronizar automaticamente.");
-    throw error;
+    const friendly = friendlySyncError(error);
+    setLastSyncError(friendly);
+    await recordSyncHistory({
+      sync_id: historySyncId,
+      device_id: deviceInfo?.device_id,
+      mode,
+      status: "error",
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - startedAt.getTime(),
+      pending_total: totalCount(pendingCounts),
+      pushed_total: 0,
+      pulled_total: 0,
+      deleted_total: totalCount(deletedCounts),
+      error_message: friendly,
+      details: {
+        pending: pendingCounts,
+        deleted: deletedCounts,
+      },
+    });
+    throw new Error(friendly);
   } finally {
     syncInFlight = false;
     emitSyncStateChanged();

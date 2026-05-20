@@ -44,6 +44,8 @@ SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 - `GET /sync/health`
 - `POST /sync/push`
 - `GET /sync/pull`
+- `GET /sync/debug-counts`
+- `GET /sync/devices`
 
 ## Variables
 
@@ -57,6 +59,8 @@ SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`
 - `SCISONOMICS_GOOGLE_REDIRECT_URI`
 
-La sincronizacion manual acepta categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
+La sincronizacion manual y automatica opcional acepta categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
+
+Desde v2.4.0 el backend cloud tambien registra dispositivos por usuario (`device_id`, `device_name`, `last_seen_at`) para preparar uso multi-dispositivo. No implementa resolucion avanzada de conflictos.
 
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.

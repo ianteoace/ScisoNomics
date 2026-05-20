@@ -115,6 +115,23 @@ class Database:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS sync_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sync_id TEXT NOT NULL UNIQUE,
+                    device_id TEXT,
+                    mode TEXT NOT NULL CHECK(mode IN ('manual', 'auto')),
+                    status TEXT NOT NULL CHECK(status IN ('success', 'error', 'skipped')),
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    duration_ms INTEGER DEFAULT 0,
+                    pending_total INTEGER DEFAULT 0,
+                    pushed_total INTEGER DEFAULT 0,
+                    pulled_total INTEGER DEFAULT 0,
+                    deleted_total INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    details_json TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_movimientos_fecha ON movimientos(fecha);
                 CREATE INDEX IF NOT EXISTS idx_movimientos_tipo ON movimientos(tipo);
                 CREATE INDEX IF NOT EXISTS idx_movimientos_categoria_id ON movimientos(categoria_id);
@@ -128,6 +145,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_metas_ahorro_estado ON metas_ahorro(estado);
                 CREATE INDEX IF NOT EXISTS idx_movimiento_tags_tag_id ON movimiento_tags(tag_id);
                 CREATE INDEX IF NOT EXISTS idx_movimiento_tags_movimiento_id ON movimiento_tags(movimiento_id);
+                CREATE INDEX IF NOT EXISTS idx_sync_history_finished_at ON sync_history(finished_at);
+                CREATE INDEX IF NOT EXISTS idx_sync_history_status ON sync_history(status);
 
                 """
                 )

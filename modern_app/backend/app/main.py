@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -6,9 +6,12 @@ from tempfile import gettempdir, mkdtemp
 from typing import Any, Literal
 import csv
 import io
+import json
 import logging
 import os
+import socket
 import sys
+from uuid import uuid4
 
 import shutil
 import sqlite3
@@ -25,7 +28,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.3.0")
+app = FastAPI(title="Registro Finanzas API", version="2.4.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -592,6 +595,235 @@ def sync_status(service: FinanceService = Depends(get_service)):
         "sync_ready": all(bool(info.get("sync_ready")) for info in tables.values()),
         "tables": tables,
     }
+
+
+def _ensure_sync_history_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sync_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sync_id TEXT NOT NULL UNIQUE,
+            device_id TEXT,
+            mode TEXT NOT NULL CHECK(mode IN ('manual', 'auto')),
+            status TEXT NOT NULL CHECK(status IN ('success', 'error', 'skipped')),
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            duration_ms INTEGER DEFAULT 0,
+            pending_total INTEGER DEFAULT 0,
+            pushed_total INTEGER DEFAULT 0,
+            pulled_total INTEGER DEFAULT 0,
+            deleted_total INTEGER DEFAULT 0,
+            error_message TEXT,
+            details_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_sync_history_finished_at ON sync_history(finished_at);
+        CREATE INDEX IF NOT EXISTS idx_sync_history_status ON sync_history(status);
+        """
+    )
+
+
+def _config_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM app_config WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row and row["value"] is not None else None
+
+
+def _config_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_config (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (key, value),
+    )
+
+
+def _get_or_create_device_info(conn: sqlite3.Connection) -> dict[str, str]:
+    device_id = _config_get(conn, "device_id")
+    if not device_id:
+        device_id = str(uuid4())
+        _config_set(conn, "device_id", device_id)
+
+    device_name = _config_get(conn, "device_name")
+    if not device_name:
+        device_name = socket.gethostname().strip() or "Este dispositivo"
+        _config_set(conn, "device_name", device_name)
+
+    return {"device_id": device_id, "device_name": device_name}
+
+
+def _sync_status_tables(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+    tables: dict[str, dict[str, int]] = {}
+    for table in SYNC_TABLES:
+        row = conn.execute(
+            f"""
+            SELECT
+              COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+              COALESCE(SUM(CASE WHEN sync_status = 'pending' AND deleted_at IS NOT NULL AND deleted_at <> '' THEN 1 ELSE 0 END), 0) AS deleted_pending,
+              COALESCE(SUM(CASE WHEN sync_id IS NULL OR trim(sync_id) = '' THEN 1 ELSE 0 END), 0) AS missing_sync_id
+            FROM {table}
+            """
+        ).fetchone()
+        tables[table] = {
+            "total": int(row["total"] or 0),
+            "pending": int(row["pending"] or 0),
+            "deleted_pending": int(row["deleted_pending"] or 0),
+            "missing_sync_id": int(row["missing_sync_id"] or 0),
+        }
+    return tables
+
+
+def _history_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    raw_details = item.pop("details_json", None)
+    if raw_details:
+        try:
+            item["details"] = json.loads(raw_details)
+        except json.JSONDecodeError:
+            item["details"] = None
+    else:
+        item["details"] = None
+    return item
+
+
+def _latest_history(conn: sqlite3.Connection, status: str) -> dict[str, Any] | None:
+    _ensure_sync_history_table(conn)
+    row = conn.execute(
+        """
+        SELECT sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
+               pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+        FROM sync_history
+        WHERE status = ?
+        ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (status,),
+    ).fetchone()
+    return _history_row(row)
+
+
+@app.get("/device/info")
+def device_info(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        info = _get_or_create_device_info(conn)
+    return {"ok": True, **info, "app_version": app.version}
+
+
+@app.get("/sync/overview")
+def sync_overview(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        device = _get_or_create_device_info(conn)
+        tables = _sync_status_tables(conn)
+        pending_total = sum(item["pending"] for item in tables.values())
+        deleted_pending_total = sum(item["deleted_pending"] for item in tables.values())
+        return {
+            "ok": True,
+            "version": app.version,
+            **device,
+            "has_pending": pending_total > 0,
+            "pending_total": pending_total,
+            "deleted_pending_total": deleted_pending_total,
+            "tables": tables,
+            "last_success": _latest_history(conn, "success"),
+            "last_error": _latest_history(conn, "error"),
+        }
+
+
+@app.get("/sync/history")
+def sync_history(
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    service: FinanceService = Depends(get_service),
+):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        _ensure_sync_history_table(conn)
+        rows = conn.execute(
+            """
+            SELECT sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
+                   pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+            FROM sync_history
+            ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+    return {"ok": True, "items": [_history_row(row) for row in rows]}
+
+
+@app.get("/sync/history/latest")
+def sync_history_latest(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        return {
+            "ok": True,
+            "last_success": _latest_history(conn, "success"),
+            "last_error": _latest_history(conn, "error"),
+        }
+
+
+@app.post("/sync/history")
+async def sync_history_create(request: Request, service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    payload = await request.json()
+    sync_id = str(payload.get("sync_id") or uuid4())
+    mode = str(payload.get("mode") or "manual")
+    status = str(payload.get("status") or "success")
+    if mode not in {"manual", "auto"}:
+        raise HTTPException(status_code=400, detail="Modo de sincronizacion invalido.")
+    if status not in {"success", "error", "skipped"}:
+        raise HTTPException(status_code=400, detail="Estado de sincronizacion invalido.")
+
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+    started_at = str(payload.get("started_at") or datetime.now().isoformat(timespec="seconds"))
+    finished_at = payload.get("finished_at")
+    with service.db.connect() as conn:
+        _ensure_sync_history_table(conn)
+        device = _get_or_create_device_info(conn)
+        device_id = str(payload.get("device_id") or device["device_id"])
+        conn.execute(
+            """
+            INSERT INTO sync_history (
+                sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
+                pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sync_id) DO UPDATE SET
+                device_id = excluded.device_id,
+                mode = excluded.mode,
+                status = excluded.status,
+                started_at = excluded.started_at,
+                finished_at = excluded.finished_at,
+                duration_ms = excluded.duration_ms,
+                pending_total = excluded.pending_total,
+                pushed_total = excluded.pushed_total,
+                pulled_total = excluded.pulled_total,
+                deleted_total = excluded.deleted_total,
+                error_message = excluded.error_message,
+                details_json = excluded.details_json
+            """,
+            (
+                sync_id,
+                device_id,
+                mode,
+                status,
+                started_at,
+                str(finished_at) if finished_at else None,
+                int(payload.get("duration_ms") or 0),
+                int(payload.get("pending_total") or 0),
+                int(payload.get("pushed_total") or 0),
+                int(payload.get("pulled_total") or 0),
+                int(payload.get("deleted_total") or 0),
+                str(payload.get("error_message")) if payload.get("error_message") else None,
+                json.dumps(details, ensure_ascii=True),
+            ),
+        )
+    return {"ok": True, "sync_id": sync_id}
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

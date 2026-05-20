@@ -16,11 +16,15 @@ import {
   getLastAutoSyncAt,
   getLastManualSyncAt,
   getLastSyncError,
+  getSyncHistory,
+  getSyncOverview,
   isAutoSyncEnabled,
   isSyncInFlight,
   runManualSync,
   setAutoSyncEnabled,
   SYNC_STATE_CHANGED_EVENT,
+  type SyncHistoryItem,
+  type SyncOverview,
 } from "../../services/cloudSync";
 
 type Mode = "login" | "register";
@@ -43,6 +47,11 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(false);
   const [syncSummary, setSyncSummary] = useState("");
+  const [syncOverview, setSyncOverview] = useState<SyncOverview | null>(null);
+  const [syncHistory, setSyncHistory] = useState<SyncHistoryItem[]>([]);
+  const [syncCenterLoading, setSyncCenterLoading] = useState(false);
+  const [showPending, setShowPending] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -107,6 +116,25 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     window.addEventListener(SYNC_STATE_CHANGED_EVENT, refreshSyncState);
     return () => window.removeEventListener(SYNC_STATE_CHANGED_EVENT, refreshSyncState);
   }, []);
+
+  async function refreshSyncCenter() {
+    if (!configured || !user) return;
+    setSyncCenterLoading(true);
+    try {
+      const [overview, history] = await Promise.all([getSyncOverview(), getSyncHistory(10)]);
+      setSyncOverview(overview);
+      setSyncHistory(history.items || []);
+    } catch (error) {
+      console.warn("No se pudo cargar el centro de sincronizacion:", error);
+    } finally {
+      setSyncCenterLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshSyncCenter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configured, user?.id]);
 
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -176,10 +204,11 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       setLastSyncError(null);
       setSyncMessage("Sincronizacion completada");
       const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
-      const appliedTotal = Object.values(result.applied).reduce((sum, value) => sum + Number(value || 0), 0);
+      const pulledTotal = Object.values(result.pulled || {}).reduce((sum, value) => sum + Number(value || 0), 0);
       setSyncSummary(
-        `Confirmados en la nube: ${uploadedTotal}. Cambios remotos aplicados: ${appliedTotal}.`,
+        `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}.`,
       );
+      await refreshSyncCenter();
       showSuccess("Sincronizacion completada correctamente.");
     } catch (error) {
       console.error("Error sincronizando:", error);
@@ -194,6 +223,28 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setAutoSyncEnabled(enabled);
     setAutoSyncEnabledState(enabled);
     setSyncMessage(enabled ? "Sincronizacion automatica activada" : "Sincronizacion desactivada");
+  }
+
+  function formatDate(value?: string | null) {
+    if (!value) return "Sin datos";
+    return new Date(value).toLocaleString();
+  }
+
+  function tableLabel(table: string) {
+    const labels: Record<string, string> = {
+      categorias: "Categorias",
+      movimientos: "Movimientos",
+      metas_ahorro: "Metas",
+      gastos_programados: "Gastos programados",
+      gastos_fijos: "Gastos fijos",
+      presupuestos: "Presupuestos",
+    };
+    return labels[table] || table;
+  }
+
+  function shortDeviceId(value?: string | null) {
+    if (!value) return "Sin identificar";
+    return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
   }
 
   async function handleGoogleLogin() {
@@ -268,6 +319,27 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                     ScisoNomics puede sincronizar tus datos manualmente o de forma automatica si activas esta opcion. Cuando esta activada, la app intenta sincronizar al abrirse y despues de cambios importantes.
                   </p>
                 </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Dispositivo actual</p>
+                    <p className="mt-1 text-sm font-semibold">{syncOverview?.device_name || "Este dispositivo"}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{shortDeviceId(syncOverview?.device_id)}</p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Cambios pendientes</p>
+                    <p className="mt-1 text-sm font-semibold">{syncOverview ? `${syncOverview.pending_total} pendientes` : "Sin datos"}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {syncOverview?.deleted_pending_total ? `${syncOverview.deleted_pending_total} borrados pendientes` : "Sin borrados pendientes"}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Ultima sync exitosa</p>
+                    <p className="mt-1 text-sm font-semibold">{formatDate(syncOverview?.last_success?.finished_at || lastSyncAt || lastAutoSyncAt)}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {syncOverview?.last_success ? `${syncOverview.last_success.mode === "auto" ? "Automatica" : "Manual"} - Enviados: ${syncOverview.last_success.pushed_total} - Recibidos: ${syncOverview.last_success.pulled_total}` : "Sin historial"}
+                    </p>
+                  </div>
+                </div>
                 <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
                   <span>
                     <span className="block font-medium">Sincronizar automaticamente</span>
@@ -281,9 +353,76 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                     disabled={syncing}
                   />
                 </label>
-                <button className="btn" onClick={handleManualSync} disabled={syncing}>
-                  {syncing ? "Sincronizando..." : "Sincronizar ahora"}
-                </button>
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                  <button className="btn" onClick={handleManualSync} disabled={syncing}>
+                    {syncing ? "Sincronizando..." : "Sincronizar ahora"}
+                  </button>
+                  <button className="btn-secondary" onClick={refreshSyncCenter} disabled={syncCenterLoading}>
+                    {syncCenterLoading ? "Actualizando..." : "Actualizar estado"}
+                  </button>
+                  <button className="btn-secondary" type="button" onClick={() => setShowPending((value) => !value)}>
+                    {showPending ? "Ocultar pendientes" : "Ver pendientes"}
+                  </button>
+                  <button className="btn-secondary" type="button" onClick={() => setShowHistory((value) => !value)}>
+                    {showHistory ? "Ocultar historial" : "Ver historial"}
+                  </button>
+                </div>
+                {showPending ? (
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="font-semibold">Cambios pendientes</p>
+                    {syncOverview && syncOverview.pending_total === 0 ? (
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todo esta sincronizado en este dispositivo.</p>
+                    ) : null}
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {syncOverview
+                        ? Object.entries(syncOverview.tables).map(([table, data]) => (
+                            <div key={table} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium">{tableLabel(table)}</span>
+                                <span>{data.pending} pendientes</span>
+                              </div>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                Borrados: {data.deleted_pending} - Sin sync_id: {data.missing_sync_id}
+                              </p>
+                            </div>
+                          ))
+                        : <p className="text-sm text-slate-500 dark:text-slate-400">Actualiza el estado para ver pendientes.</p>}
+                    </div>
+                  </div>
+                ) : null}
+                {showHistory ? (
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-semibold">Historial reciente</p>
+                      <button className="text-sm font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={refreshSyncCenter}>
+                        Actualizar historial
+                      </button>
+                    </div>
+                    {syncHistory.length === 0 ? (
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todavia no hay sincronizaciones registradas.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {syncHistory.slice(0, 10).map((item) => (
+                          <div key={item.sync_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                              <span className="font-medium">{formatDate(item.finished_at || item.started_at)}</span>
+                              <span className={item.status === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
+                                {item.mode === "auto" ? "Automatica" : "Manual"} - {item.status === "success" ? "Exitosa" : item.status === "skipped" ? "Omitida" : "Error"}
+                              </span>
+                            </div>
+                            {item.status === "success" ? (
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                Enviados: {item.pushed_total} - Recibidos: {item.pulled_total} - Borrados: {item.deleted_total} - {(item.duration_ms / 1000).toFixed(1)}s
+                              </p>
+                            ) : (
+                              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{item.error_message || "No se pudo sincronizar."}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}

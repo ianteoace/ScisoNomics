@@ -15,7 +15,7 @@ from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.3.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.4.0")
 
 
 def allowed_origins() -> list[str]:
@@ -222,6 +222,24 @@ def _pull_table(conn, user_id: str, key: str) -> list[dict[str, Any]]:
     ]
 
 
+def _upsert_device(conn, user_id: str, device_id: Any, device_name: Any, now: str) -> None:
+    clean_device_id = str(device_id or "").strip()
+    if not clean_device_id:
+        return
+    clean_device_name = str(device_name or "Este dispositivo").strip()[:120] or "Este dispositivo"
+    conn.execute(
+        """
+        INSERT INTO cloud_devices (user_id, device_id, device_name, created_at, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, device_id) DO UPDATE SET
+            device_name = excluded.device_name,
+            updated_at = excluded.updated_at,
+            last_seen_at = excluded.last_seen_at
+        """,
+        (user_id, clean_device_id, clean_device_name, now, now, now),
+    )
+
+
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -324,6 +342,7 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
     now = now_iso()
 
     with connect() as conn:
+        _upsert_device(conn, user.id, payload.get("device_id"), payload.get("device_name"), now)
         for table in SYNC_TABLES:
             items = payload.get(table, []) or []
             table_accepted, table_ignored = _push_table(conn, user.id, table, items, now)
@@ -363,6 +382,22 @@ def sync_debug_counts(user: UserOut = Depends(get_current_user)):
             counts[table] = int(row["total"] if isinstance(row, dict) else row[0])
             deleted[table] = int(deleted_row["total"] if isinstance(deleted_row, dict) else deleted_row[0])
     return {"ok": True, "user_id": user.id, **counts, "deleted": deleted}
+
+
+@app.get("/sync/devices")
+def sync_devices(user: UserOut = Depends(get_current_user)):
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT device_id, device_name, created_at, updated_at, last_seen_at
+            FROM cloud_devices
+            WHERE user_id = ?
+            ORDER BY last_seen_at DESC
+            """,
+            (user.id,),
+        ).fetchall()
+    return {"ok": True, "devices": [dict(row) for row in rows]}
 
 
 @app.get("/auth/google/start")
