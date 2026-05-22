@@ -128,7 +128,27 @@ class Database:
                     pushed_total INTEGER DEFAULT 0,
                     pulled_total INTEGER DEFAULT 0,
                     deleted_total INTEGER DEFAULT 0,
+                    conflicts_total INTEGER DEFAULT 0,
+                    remote_changes_total INTEGER DEFAULT 0,
+                    applied_remote_total INTEGER DEFAULT 0,
+                    kept_local_total INTEGER DEFAULT 0,
                     error_message TEXT,
+                    details_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_conflicts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conflict_id TEXT NOT NULL UNIQUE,
+                    table_name TEXT NOT NULL,
+                    record_sync_id TEXT NOT NULL,
+                    local_updated_at TEXT,
+                    remote_updated_at TEXT,
+                    last_synced_at TEXT,
+                    resolution TEXT NOT NULL CHECK(resolution IN ('kept_local', 'applied_remote', 'ignored')),
+                    remote_device_id TEXT,
+                    remote_device_name TEXT,
+                    detected_at TEXT NOT NULL,
+                    resolved_at TEXT,
                     details_json TEXT
                 );
 
@@ -147,6 +167,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_movimiento_tags_movimiento_id ON movimiento_tags(movimiento_id);
                 CREATE INDEX IF NOT EXISTS idx_sync_history_finished_at ON sync_history(finished_at);
                 CREATE INDEX IF NOT EXISTS idx_sync_history_status ON sync_history(status);
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_detected_at ON sync_conflicts(detected_at);
+                CREATE INDEX IF NOT EXISTS idx_sync_conflicts_record ON sync_conflicts(table_name, record_sync_id);
 
                 """
                 )
@@ -438,6 +460,9 @@ class Database:
             "deleted_at": "TEXT",
             "sync_status": "TEXT",
             "last_synced_at": "TEXT",
+            "last_remote_device_id": "TEXT",
+            "last_remote_device_name": "TEXT",
+            "last_remote_updated_at": "TEXT",
         }
         for name, definition in sync_columns.items():
             if name not in columns:

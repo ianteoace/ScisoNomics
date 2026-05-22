@@ -16,6 +16,8 @@ import {
   getLastAutoSyncAt,
   getLastManualSyncAt,
   getLastSyncError,
+  getCloudDevices,
+  getSyncConflicts,
   getSyncHistory,
   getSyncOverview,
   isAutoSyncEnabled,
@@ -23,6 +25,8 @@ import {
   runManualSync,
   setAutoSyncEnabled,
   SYNC_STATE_CHANGED_EVENT,
+  type CloudDevice,
+  type SyncConflictItem,
   type SyncHistoryItem,
   type SyncOverview,
 } from "../../services/cloudSync";
@@ -49,9 +53,13 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [syncSummary, setSyncSummary] = useState("");
   const [syncOverview, setSyncOverview] = useState<SyncOverview | null>(null);
   const [syncHistory, setSyncHistory] = useState<SyncHistoryItem[]>([]);
+  const [syncConflicts, setSyncConflicts] = useState<SyncConflictItem[]>([]);
+  const [cloudDevices, setCloudDevices] = useState<CloudDevice[]>([]);
   const [syncCenterLoading, setSyncCenterLoading] = useState(false);
   const [showPending, setShowPending] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showDevices, setShowDevices] = useState(false);
+  const [showConflicts, setShowConflicts] = useState(false);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -121,9 +129,17 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     if (!configured || !user) return;
     setSyncCenterLoading(true);
     try {
-      const [overview, history] = await Promise.all([getSyncOverview(), getSyncHistory(10)]);
+      const token = getStoredToken();
+      const [overview, history, conflicts, devices] = await Promise.all([
+        getSyncOverview(),
+        getSyncHistory(10),
+        getSyncConflicts(10),
+        token ? getCloudDevices(token).catch(() => ({ ok: false, devices: [] })) : Promise.resolve({ ok: false, devices: [] }),
+      ]);
       setSyncOverview(overview);
       setSyncHistory(history.items || []);
+      setSyncConflicts(conflicts.items || []);
+      setCloudDevices(devices.devices || []);
     } catch (error) {
       console.warn("No se pudo cargar el centro de sincronizacion:", error);
     } finally {
@@ -206,7 +222,9 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
       const pulledTotal = Object.values(result.pulled || {}).reduce((sum, value) => sum + Number(value || 0), 0);
       setSyncSummary(
-        `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}.`,
+        result.conflictsTotal
+          ? `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}. Se resolvieron ${result.conflictsTotal} cambios entre dispositivos.`
+          : `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}.`,
       );
       await refreshSyncCenter();
       showSuccess("Sincronizacion completada correctamente.");
@@ -245,6 +263,12 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   function shortDeviceId(value?: string | null) {
     if (!value) return "Sin identificar";
     return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
+  }
+
+  function resolutionLabel(value: string) {
+    if (value === "kept_local") return "Se conservo local";
+    if (value === "applied_remote") return "Se aplico remoto";
+    return "Ignorado";
   }
 
   async function handleGoogleLogin() {
@@ -366,6 +390,25 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                   <button className="btn-secondary" type="button" onClick={() => setShowHistory((value) => !value)}>
                     {showHistory ? "Ocultar historial" : "Ver historial"}
                   </button>
+                  <button className="btn-secondary" type="button" onClick={() => setShowDevices((value) => !value)}>
+                    {showDevices ? "Ocultar dispositivos" : "Ver dispositivos"}
+                  </button>
+                  <button className="btn-secondary" type="button" onClick={() => setShowConflicts((value) => !value)}>
+                    {showConflicts ? "Ocultar conflictos" : "Ver conflictos"}
+                  </button>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-800">
+                  <p className="font-semibold">Multi-dispositivo</p>
+                  <p className="mt-1 text-slate-500 dark:text-slate-400">
+                    ScisoNomics conserva automaticamente la version mas reciente cuando un dato cambia en mas de un dispositivo.
+                  </p>
+                  {syncOverview?.conflicts_recent ? (
+                    <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-amber-800 dark:text-amber-200">
+                      Se detectaron cambios en mas de un dispositivo. Se conservo la version mas reciente.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-slate-500 dark:text-slate-400">Sin conflictos recientes.</p>
+                  )}
                 </div>
                 {showPending ? (
                   <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
@@ -390,6 +433,56 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                     </div>
                   </div>
                 ) : null}
+                {showDevices ? (
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="font-semibold">Dispositivos vinculados</p>
+                    {cloudDevices.length === 0 ? (
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No se pudieron cargar dispositivos vinculados o todavia no hay otros dispositivos.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {cloudDevices.map((device) => {
+                          const isCurrent = device.device_id === syncOverview?.device_id;
+                          return (
+                            <div key={device.device_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium">{device.device_name || "Este dispositivo"}</span>
+                                {isCurrent ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300">Este dispositivo</span> : null}
+                              </div>
+                              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                ID: {shortDeviceId(device.device_id)} - Ultima actividad: {formatDate(device.last_seen_at)}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {showConflicts ? (
+                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                    <p className="font-semibold">Conflictos y cambios remotos</p>
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                      Total: {syncOverview?.conflicts_total ?? 0} - Recientes: {syncOverview?.conflicts_recent ?? 0}
+                    </p>
+                    {syncConflicts.length === 0 ? (
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Sin conflictos recientes.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {syncConflicts.map((conflict) => (
+                          <div key={conflict.conflict_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                              <span className="font-medium">{tableLabel(conflict.table_name)}</span>
+                              <span className="text-amber-700 dark:text-amber-300">{resolutionLabel(conflict.resolution)}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                              Detectado: {formatDate(conflict.detected_at)} - Origen: {conflict.remote_device_name || shortDeviceId(conflict.remote_device_id)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 {showHistory ? (
                   <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
                     <div className="flex items-center justify-between gap-2">
@@ -412,7 +505,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                             </div>
                             {item.status === "success" ? (
                               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                                Enviados: {item.pushed_total} - Recibidos: {item.pulled_total} - Borrados: {item.deleted_total} - {(item.duration_ms / 1000).toFixed(1)}s
+                                Enviados: {item.pushed_total} - Recibidos: {item.pulled_total} - Borrados: {item.deleted_total} - Conflictos: {item.conflicts_total || 0} - {(item.duration_ms / 1000).toFixed(1)}s
                               </p>
                             ) : (
                               <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{item.error_message || "No se pudo sincronizar."}</p>

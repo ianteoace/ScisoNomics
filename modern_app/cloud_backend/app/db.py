@@ -98,6 +98,42 @@ def init_db() -> None:
         _init_sqlite()
 
 
+SYNC_CLOUD_TABLES = (
+    "cloud_categorias",
+    "cloud_movimientos",
+    "cloud_metas_ahorro",
+    "cloud_gastos_programados",
+    "cloud_gastos_fijos",
+    "cloud_presupuestos",
+)
+
+
+def _ensure_column(conn: CloudConnection, table: str, column: str, definition: str) -> None:
+    if conn.engine == "sqlite":
+        columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        return
+
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = ? AND column_name = ?
+        """,
+        (table, column),
+    ).fetchone()
+    if not row:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _ensure_origin_columns(conn: CloudConnection) -> None:
+    for table in SYNC_CLOUD_TABLES:
+        _ensure_column(conn, table, "last_modified_device_id", "TEXT")
+        _ensure_column(conn, table, "last_modified_device_name", "TEXT")
+        _ensure_column(conn, table, "last_modified_at", "TEXT")
+
+
 def _init_sqlite() -> None:
     with connect() as conn:
         conn.execute(
@@ -263,6 +299,7 @@ def _init_sqlite() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")
+        _ensure_origin_columns(conn)
 
 
 def _init_postgres() -> None:
@@ -423,3 +460,4 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")
+        _ensure_origin_columns(conn)

@@ -8,9 +8,24 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.4.0**
+Versión estable actual: **v2.5.0**
 
-[Descargar ScisoNomics v2.4.0](../../releases/tag/v2.4.0)
+[Descargar ScisoNomics v2.5.0](../../releases/tag/v2.5.0)
+
+---
+
+## Novedades de v2.5.0
+
+- Se agregó preparación multi-dispositivo real.
+- Los registros sincronizados guardan metadata del dispositivo que los modificó.
+- Se agregó detección básica de conflictos.
+- Se registra un historial local de conflictos en `sync_conflicts`.
+- El Centro de sincronización muestra dispositivos vinculados.
+- El Centro de sincronización muestra conflictos y cambios remotos recientes.
+- Se mantiene la estrategia last-write-wins por `updated_at`.
+- No hay merge manual todavía.
+- No se sube la base `.db` completa.
+- La app sigue siendo local-first.
 
 ---
 

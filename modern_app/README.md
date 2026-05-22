@@ -122,3 +122,4 @@ npm run tauri:build
 - La cuenta opcional de v2.0 no sincroniza datos financieros. El backend cloud esta separado del backend local.
 - En v2.3 la sincronizacion automatica es opcional. Si esta desactivada, la sincronizacion sigue siendo manual y siempre iniciada por el usuario.
 - En v2.4 se agrega Centro de sincronizacion, historial local de sync, cambios pendientes por tabla e identificador local de dispositivo. No hay resolucion avanzada de conflictos y no se sube la base `.db` completa.
+- En v2.5 se agrega metadata de origen por dispositivo, deteccion basica de conflictos, registro local `sync_conflicts` y vista de dispositivos vinculados. La resolucion sigue siendo last-write-wins.

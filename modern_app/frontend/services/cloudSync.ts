@@ -25,6 +25,10 @@ export type SyncOverview = {
   tables: Record<SyncTable, { total: number; pending: number; deleted_pending: number; missing_sync_id: number }>;
   last_success: SyncHistoryItem | null;
   last_error: SyncHistoryItem | null;
+  last_remote_change_at?: string | null;
+  conflicts_total: number;
+  conflicts_recent: number;
+  latest_conflict?: SyncConflictItem | null;
 };
 
 export type SyncHistoryItem = {
@@ -39,8 +43,35 @@ export type SyncHistoryItem = {
   pushed_total: number;
   pulled_total: number;
   deleted_total: number;
+  conflicts_total?: number;
+  remote_changes_total?: number;
+  applied_remote_total?: number;
+  kept_local_total?: number;
   error_message: string | null;
   details?: Record<string, unknown> | null;
+};
+
+export type SyncConflictItem = {
+  conflict_id: string;
+  table_name: string;
+  record_sync_id: string;
+  local_updated_at: string | null;
+  remote_updated_at: string | null;
+  last_synced_at: string | null;
+  resolution: "kept_local" | "applied_remote" | "ignored";
+  remote_device_id: string | null;
+  remote_device_name: string | null;
+  detected_at: string;
+  resolved_at: string | null;
+  details?: Record<string, unknown> | null;
+};
+
+export type CloudDevice = {
+  device_id: string;
+  device_name: string | null;
+  created_at: string;
+  updated_at: string;
+  last_seen_at: string;
 };
 
 type DeviceInfo = {
@@ -222,6 +253,10 @@ async function recordSyncHistory(payload: {
   pushed_total: number;
   pulled_total: number;
   deleted_total: number;
+  conflicts_total?: number;
+  remote_changes_total?: number;
+  applied_remote_total?: number;
+  kept_local_total?: number;
   error_message?: string | null;
   details?: Record<string, unknown>;
 }) {
@@ -230,6 +265,14 @@ async function recordSyncHistory(payload: {
   } catch (error) {
     console.warn(`${LOG_PREFIX} no se pudo registrar historial local`, error);
   }
+}
+
+export async function getSyncConflicts(limit = 10) {
+  return localGet<{ ok: boolean; items: SyncConflictItem[] }>(`/sync/conflicts?limit=${limit}`);
+}
+
+export async function getCloudDevices(token: string) {
+  return cloudGet<{ ok: boolean; devices: CloudDevice[] }>("/sync/devices", token);
 }
 
 function asStringArray(value: unknown): string[] {
@@ -352,6 +395,25 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
       throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
     }
 
+    const remote = await cloudGet<SyncPayload>("/sync/pull", token);
+    const pulledCounts = countByTable(remote);
+    console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
+    const applyResult = await localPost<{
+      ok: boolean;
+      result: Record<string, number>;
+      applied?: Record<SyncTable, number>;
+      kept_local?: Record<SyncTable, number>;
+      conflicts?: { total: number; by_table: Record<string, number> };
+      remote_changes_total?: number;
+      applied_remote_total?: number;
+      kept_local_total?: number;
+    }>("/sync/apply-remote", remote);
+    console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
+    const conflictsTotal = Number(applyResult.conflicts?.total || 0);
+    const remoteChangesTotal = Number(applyResult.remote_changes_total || totalCount(pulledCounts));
+    const appliedRemoteTotal = Number(applyResult.applied_remote_total || 0);
+    const keptLocalTotal = Number(applyResult.kept_local_total || 0);
+
     let markSyncedExecuted = false;
     if (SYNC_TABLES.some((table) => accepted[table].length > 0)) {
       await localPost("/sync/mark-synced", accepted);
@@ -361,12 +423,6 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
     if (!markSyncedExecuted) {
       console.info(`${LOG_PREFIX} mark-synced`, { executed: false, mode, ...Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) });
     }
-
-    const remote = await cloudGet<SyncPayload>("/sync/pull", token);
-    const pulledCounts = countByTable(remote);
-    console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
-    const applyResult = await localPost<{ ok: boolean; result: Record<string, number> }>("/sync/apply-remote", remote);
-    console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
 
     const syncedAt = new Date().toISOString();
     if (mode === "auto") setLastAutoSyncAt(syncedAt);
@@ -384,6 +440,10 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
       pushed_total: totalCount(acceptedCounts),
       pulled_total: totalCount(pulledCounts),
       deleted_total: totalCount(deletedCounts),
+      conflicts_total: conflictsTotal,
+      remote_changes_total: remoteChangesTotal,
+      applied_remote_total: appliedRemoteTotal,
+      kept_local_total: keptLocalTotal,
       error_message: null,
       details: {
         pending: pendingCounts,
@@ -391,6 +451,8 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
         pulled: pulledCounts,
         deleted: deletedCounts,
         applied: applyResult.result,
+        conflicts: applyResult.conflicts,
+        kept_local: applyResult.kept_local,
       },
     });
 
@@ -400,6 +462,10 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
       ignored: pushResult.ignored,
       applied: applyResult.result,
       pulled: pulledCounts,
+      conflictsTotal,
+      remoteChangesTotal,
+      appliedRemoteTotal,
+      keptLocalTotal,
     };
   } catch (error) {
     const friendly = friendlySyncError(error);

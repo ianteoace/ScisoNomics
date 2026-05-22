@@ -28,7 +28,7 @@ from .deps import ensure_app_data_initialized, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.4.0")
+app = FastAPI(title="Registro Finanzas API", version="2.5.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -613,13 +613,42 @@ def _ensure_sync_history_table(conn: sqlite3.Connection) -> None:
             pushed_total INTEGER DEFAULT 0,
             pulled_total INTEGER DEFAULT 0,
             deleted_total INTEGER DEFAULT 0,
+            conflicts_total INTEGER DEFAULT 0,
+            remote_changes_total INTEGER DEFAULT 0,
+            applied_remote_total INTEGER DEFAULT 0,
+            kept_local_total INTEGER DEFAULT 0,
             error_message TEXT,
+            details_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS sync_conflicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conflict_id TEXT NOT NULL UNIQUE,
+            table_name TEXT NOT NULL,
+            record_sync_id TEXT NOT NULL,
+            local_updated_at TEXT,
+            remote_updated_at TEXT,
+            last_synced_at TEXT,
+            resolution TEXT NOT NULL CHECK(resolution IN ('kept_local', 'applied_remote', 'ignored')),
+            remote_device_id TEXT,
+            remote_device_name TEXT,
+            detected_at TEXT NOT NULL,
+            resolved_at TEXT,
             details_json TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_sync_history_finished_at ON sync_history(finished_at);
         CREATE INDEX IF NOT EXISTS idx_sync_history_status ON sync_history(status);
+        CREATE INDEX IF NOT EXISTS idx_sync_conflicts_detected_at ON sync_conflicts(detected_at);
+        CREATE INDEX IF NOT EXISTS idx_sync_conflicts_record ON sync_conflicts(table_name, record_sync_id);
         """
     )
+    for column in ("conflicts_total", "remote_changes_total", "applied_remote_total", "kept_local_total"):
+        _ensure_column(conn, "sync_history", column, "INTEGER DEFAULT 0")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _config_get(conn: sqlite3.Connection, key: str) -> str | None:
@@ -674,6 +703,24 @@ def _sync_status_tables(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     return tables
 
 
+def _last_remote_change_at(conn: sqlite3.Connection) -> str | None:
+    values: list[str] = []
+    for table in SYNC_TABLES:
+        row = conn.execute(
+            f"SELECT MAX(last_remote_updated_at) AS value FROM {table} WHERE last_remote_updated_at IS NOT NULL AND last_remote_updated_at <> ''"
+        ).fetchone()
+        if row and row["value"]:
+            values.append(str(row["value"]))
+    return max(values) if values else None
+
+
+def _ensure_sync_metadata_columns(conn: sqlite3.Connection) -> None:
+    for table in SYNC_TABLES:
+        _ensure_column(conn, table, "last_remote_device_id", "TEXT")
+        _ensure_column(conn, table, "last_remote_device_name", "TEXT")
+        _ensure_column(conn, table, "last_remote_updated_at", "TEXT")
+
+
 def _history_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
@@ -694,7 +741,9 @@ def _latest_history(conn: sqlite3.Connection, status: str) -> dict[str, Any] | N
     row = conn.execute(
         """
         SELECT sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
-               pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+               pending_total, pushed_total, pulled_total, deleted_total,
+               conflicts_total, remote_changes_total, applied_remote_total, kept_local_total,
+               error_message, details_json
         FROM sync_history
         WHERE status = ?
         ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
@@ -703,6 +752,48 @@ def _latest_history(conn: sqlite3.Connection, status: str) -> dict[str, Any] | N
         (status,),
     ).fetchone()
     return _history_row(row)
+
+
+def _conflict_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    item = dict(row)
+    raw_details = item.pop("details_json", None)
+    if raw_details:
+        try:
+            item["details"] = json.loads(raw_details)
+        except json.JSONDecodeError:
+            item["details"] = None
+    else:
+        item["details"] = None
+    return item
+
+
+def _conflict_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    _ensure_sync_history_table(conn)
+    total = int(conn.execute("SELECT COUNT(*) FROM sync_conflicts").fetchone()[0] or 0)
+    recent = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) FROM sync_conflicts
+            WHERE datetime(detected_at) >= datetime('now', '-7 days')
+            """
+        ).fetchone()[0]
+        or 0
+    )
+    latest = _conflict_row(
+        conn.execute(
+            """
+            SELECT conflict_id, table_name, record_sync_id, local_updated_at, remote_updated_at,
+                   last_synced_at, resolution, remote_device_id, remote_device_name,
+                   detected_at, resolved_at, details_json
+            FROM sync_conflicts
+            ORDER BY detected_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    )
+    return {"conflicts_total": total, "conflicts_recent": recent, "latest_conflict": latest}
 
 
 @app.get("/device/info")
@@ -717,6 +808,7 @@ def device_info(service: FinanceService = Depends(get_service)):
 def sync_overview(service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
     with service.db.connect() as conn:
+        _ensure_sync_metadata_columns(conn)
         device = _get_or_create_device_info(conn)
         tables = _sync_status_tables(conn)
         pending_total = sum(item["pending"] for item in tables.values())
@@ -731,7 +823,39 @@ def sync_overview(service: FinanceService = Depends(get_service)):
             "tables": tables,
             "last_success": _latest_history(conn, "success"),
             "last_error": _latest_history(conn, "error"),
+            "last_remote_change_at": _last_remote_change_at(conn),
+            **_conflict_summary(conn),
         }
+
+
+@app.get("/sync/conflicts")
+def sync_conflicts(
+    limit: int = Query(default=10, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    service: FinanceService = Depends(get_service),
+):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        _ensure_sync_history_table(conn)
+        rows = conn.execute(
+            """
+            SELECT conflict_id, table_name, record_sync_id, local_updated_at, remote_updated_at,
+                   last_synced_at, resolution, remote_device_id, remote_device_name,
+                   detected_at, resolved_at, details_json
+            FROM sync_conflicts
+            ORDER BY detected_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ).fetchall()
+    return {"ok": True, "items": [_conflict_row(row) for row in rows]}
+
+
+@app.get("/sync/conflicts/latest")
+def sync_conflicts_latest(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    with service.db.connect() as conn:
+        return {"ok": True, **_conflict_summary(conn)}
 
 
 @app.get("/sync/history")
@@ -746,7 +870,9 @@ def sync_history(
         rows = conn.execute(
             """
             SELECT sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
-                   pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+                   pending_total, pushed_total, pulled_total, deleted_total,
+                   conflicts_total, remote_changes_total, applied_remote_total, kept_local_total,
+                   error_message, details_json
             FROM sync_history
             ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
             LIMIT ? OFFSET ?
@@ -790,9 +916,11 @@ async def sync_history_create(request: Request, service: FinanceService = Depend
             """
             INSERT INTO sync_history (
                 sync_id, device_id, mode, status, started_at, finished_at, duration_ms,
-                pending_total, pushed_total, pulled_total, deleted_total, error_message, details_json
+                pending_total, pushed_total, pulled_total, deleted_total,
+                conflicts_total, remote_changes_total, applied_remote_total, kept_local_total,
+                error_message, details_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sync_id) DO UPDATE SET
                 device_id = excluded.device_id,
                 mode = excluded.mode,
@@ -804,6 +932,10 @@ async def sync_history_create(request: Request, service: FinanceService = Depend
                 pushed_total = excluded.pushed_total,
                 pulled_total = excluded.pulled_total,
                 deleted_total = excluded.deleted_total,
+                conflicts_total = excluded.conflicts_total,
+                remote_changes_total = excluded.remote_changes_total,
+                applied_remote_total = excluded.applied_remote_total,
+                kept_local_total = excluded.kept_local_total,
                 error_message = excluded.error_message,
                 details_json = excluded.details_json
             """,
@@ -819,6 +951,10 @@ async def sync_history_create(request: Request, service: FinanceService = Depend
                 int(payload.get("pushed_total") or 0),
                 int(payload.get("pulled_total") or 0),
                 int(payload.get("deleted_total") or 0),
+                int(payload.get("conflicts_total") or 0),
+                int(payload.get("remote_changes_total") or 0),
+                int(payload.get("applied_remote_total") or 0),
+                int(payload.get("kept_local_total") or 0),
                 str(payload.get("error_message")) if payload.get("error_message") else None,
                 json.dumps(details, ensure_ascii=True),
             ),
@@ -848,6 +984,79 @@ def _remote_is_newer(remote_updated_at: Any, local_updated_at: Any) -> bool:
     if remote_dt is None or local_dt is None:
         return False
     return remote_dt > local_dt
+
+
+def _changed_after(value: Any, baseline: Any) -> bool:
+    value_dt = _parse_sync_datetime(value)
+    baseline_dt = _parse_sync_datetime(baseline)
+    if value_dt is None or baseline_dt is None:
+        return False
+    return value_dt > baseline_dt
+
+
+def _basic_conflict_detected(local: sqlite3.Row, item: dict[str, Any], current_device_id: str | None = None) -> bool:
+    if str(local["sync_status"] or "") != "pending":
+        return False
+    remote_device_id = str(item.get("last_modified_device_id") or "").strip()
+    if current_device_id and remote_device_id and remote_device_id == current_device_id:
+        return False
+    last_synced_at = local["last_synced_at"]
+    return _changed_after(local["updated_at"], last_synced_at) and _changed_after(item.get("updated_at"), last_synced_at)
+
+
+def _record_sync_conflict(
+    conn: sqlite3.Connection,
+    table: str,
+    local: sqlite3.Row,
+    item: dict[str, Any],
+    resolution: str,
+    now: str,
+    result: dict[str, Any],
+) -> None:
+    conflict_id = str(uuid4())
+    remote_device_id = item.get("last_modified_device_id") or item.get("remote_device_id")
+    remote_device_name = item.get("last_modified_device_name") or item.get("remote_device_name")
+    conn.execute(
+        """
+        INSERT INTO sync_conflicts (
+            conflict_id, table_name, record_sync_id, local_updated_at, remote_updated_at,
+            last_synced_at, resolution, remote_device_id, remote_device_name,
+            detected_at, resolved_at, details_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            conflict_id,
+            table,
+            item.get("sync_id"),
+            local["updated_at"],
+            item.get("updated_at"),
+            local["last_synced_at"],
+            resolution,
+            remote_device_id,
+            remote_device_name,
+            now,
+            now,
+            json.dumps(
+                {
+                    "message": "Cambios detectados en mas de un dispositivo. Se aplico last-write-wins.",
+                    "local_sync_status": local["sync_status"],
+                },
+                ensure_ascii=True,
+            ),
+        ),
+    )
+    result["conflicts_total"] = int(result.get("conflicts_total", 0)) + 1
+    result.setdefault("conflicts_by_table", {})
+    result["conflicts_by_table"][table] = int(result["conflicts_by_table"].get(table, 0)) + 1
+
+
+def _remote_meta_values(item: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (
+        item.get("last_modified_device_id"),
+        item.get("last_modified_device_name"),
+        item.get("last_modified_at") or item.get("updated_at"),
+    )
 
 
 SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
@@ -937,6 +1146,7 @@ def _apply_simple_remote(
     fields: list[str],
     result: dict[str, int],
     now: str,
+    current_device_id: str | None = None,
 ) -> None:
     sync_id = str(item.get("sync_id") or "").strip()
     if not sync_id:
@@ -945,33 +1155,62 @@ def _apply_simple_remote(
     local = conn.execute(f"SELECT * FROM {table} WHERE sync_id = ?", (sync_id,)).fetchone()
     values = [item.get(field) for field in fields]
     if local:
+        conflict = _basic_conflict_detected(local, item, current_device_id)
+        if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+            _record_sync_conflict(conn, table, local, item, "kept_local", now, result)
+            result[f"{table}_kept_local"] = result.get(f"{table}_kept_local", 0) + 1
+            result["kept_local_total"] = int(result.get("kept_local_total", 0)) + 1
+            return
         if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+            if conflict:
+                _record_sync_conflict(conn, table, local, item, "applied_remote", now, result)
             assignments = ", ".join([f"{field} = ?" for field in fields])
             conn.execute(
                 f"""
                 UPDATE {table}
                 SET {assignments},
-                    updated_at = ?, deleted_at = ?, sync_status = ?, last_synced_at = ?
+                    updated_at = ?, deleted_at = ?, sync_status = ?, last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                 WHERE sync_id = ?
                 """,
-                (*values, item.get("updated_at") or now, item.get("deleted_at"), _sync_status_value(item), now, sync_id),
+                (
+                    *values,
+                    item.get("updated_at") or now,
+                    item.get("deleted_at"),
+                    _sync_status_value(item),
+                    now,
+                    *_remote_meta_values(item),
+                    sync_id,
+                ),
             )
             result[f"{table}_updated"] = result.get(f"{table}_updated", 0) + 1
+            result["applied_remote_total"] = int(result.get("applied_remote_total", 0)) + 1
         return
 
-    columns = ", ".join([*fields, "sync_id", "created_at", "updated_at", "deleted_at", "sync_status", "last_synced_at"])
-    placeholders = ", ".join(["?"] * (len(fields) + 6))
+    columns = ", ".join([*fields, "sync_id", "created_at", "updated_at", "deleted_at", "sync_status", "last_synced_at", "last_remote_device_id", "last_remote_device_name", "last_remote_updated_at"])
+    placeholders = ", ".join(["?"] * (len(fields) + 9))
     conn.execute(
         f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-        (*values, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), _sync_status_value(item), now),
+        (
+            *values,
+            sync_id,
+            item.get("created_at") or now,
+            item.get("updated_at") or now,
+            item.get("deleted_at"),
+            _sync_status_value(item),
+            now,
+            *_remote_meta_values(item),
+        ),
     )
     result[f"{table}_inserted"] = result.get(f"{table}_inserted", 0) + 1
+    result["applied_remote_total"] = int(result.get("applied_remote_total", 0)) + 1
 
 
 @app.get("/sync/pending")
 def sync_pending(service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
     with service.db.connect() as conn:
+        _ensure_sync_metadata_columns(conn)
         payload = {table: _sync_pending_rows(conn, table) for table in SYNC_TABLES}
     return {"ok": True, **payload}
 
@@ -983,6 +1222,7 @@ async def sync_mark_synced(request: Request, service: FinanceService = Depends(g
     now = datetime.now().isoformat(timespec="seconds")
 
     with service.db.connect() as conn:
+        _ensure_sync_metadata_columns(conn)
         for table, sync_ids in accepted.items():
             for sync_id in sync_ids:
                 conn.execute(
@@ -1001,13 +1241,22 @@ async def sync_mark_synced(request: Request, service: FinanceService = Depends(g
 async def sync_apply_remote(request: Request, service: FinanceService = Depends(get_service)):
     payload = await request.json()
     now = datetime.now().isoformat(timespec="seconds")
-    result: dict[str, int] = {
+    result: dict[str, Any] = {
         f"{table}_{suffix}": 0
         for table in SYNC_TABLES
-        for suffix in ("inserted", "updated", "skipped")
+        for suffix in ("inserted", "updated", "skipped", "kept_local")
     }
+    result["conflicts_total"] = 0
+    result["applied_remote_total"] = 0
+    result["kept_local_total"] = 0
+    result["remote_changes_total"] = sum(len(payload.get(table, []) or []) for table in SYNC_TABLES)
+    result["conflicts_by_table"] = {}
 
     with service.db.connect() as conn:
+        _ensure_sync_metadata_columns(conn)
+        _ensure_sync_history_table(conn)
+        current_device = _get_or_create_device_info(conn)
+        current_device_id = current_device["device_id"]
         for item in payload.get("categorias", []) or []:
             sync_id = str(item.get("sync_id") or "").strip()
             nombre = str(item.get("nombre") or "").strip()
@@ -1017,27 +1266,41 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
 
             local = conn.execute("SELECT * FROM categorias WHERE sync_id = ?", (sync_id,)).fetchone()
             if local:
+                conflict = _basic_conflict_detected(local, item, current_device_id)
+                if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    _record_sync_conflict(conn, "categorias", local, item, "kept_local", now, result)
+                    result["categorias_kept_local"] += 1
+                    result["kept_local_total"] += 1
+                    continue
                 if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    if conflict:
+                        _record_sync_conflict(conn, "categorias", local, item, "applied_remote", now, result)
                     conn.execute(
                         """
                         UPDATE categorias
-                        SET nombre = ?, tipo = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                        SET nombre = ?, tipo = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                         WHERE sync_id = ?
                         """,
-                        (nombre, tipo, item.get("updated_at") or now, item.get("deleted_at"), now, sync_id),
+                        (nombre, tipo, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), sync_id),
                     )
                     result["categorias_updated"] += 1
+                    result["applied_remote_total"] += 1
                 continue
 
             try:
                 conn.execute(
                     """
-                    INSERT INTO categorias (nombre, tipo, sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'synced', ?)
+                    INSERT INTO categorias (
+                        nombre, tipo, sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at,
+                        last_remote_device_id, last_remote_device_name, last_remote_updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
                     """,
-                    (nombre, tipo, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now),
+                    (nombre, tipo, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item)),
                 )
                 result["categorias_inserted"] += 1
+                result["applied_remote_total"] += 1
             except sqlite3.IntegrityError:
                 existing = conn.execute(
                     "SELECT * FROM categorias WHERE nombre = ? AND tipo = ?",
@@ -1047,12 +1310,14 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                     conn.execute(
                         """
                         UPDATE categorias
-                        SET sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                        SET sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                         WHERE id = ?
                         """,
-                        (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, existing["id"]),
+                        (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), existing["id"]),
                     )
                     result["categorias_updated"] += 1
+                    result["applied_remote_total"] += 1
 
         for item in payload.get("metas_ahorro", []) or []:
             _apply_simple_remote(
@@ -1062,6 +1327,7 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                 ["nombre", "monto_objetivo", "monto_inicial", "fecha_objetivo", "descripcion", "estado"],
                 result,
                 now,
+                current_device_id,
             )
 
         for table, fields in {
@@ -1077,7 +1343,7 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                 local_item = dict(item)
                 local_item["categoria_id"] = categoria_id
                 try:
-                    _apply_simple_remote(conn, table, local_item, ["categoria_id", *fields], result, now)
+                    _apply_simple_remote(conn, table, local_item, ["categoria_id", *fields], result, now, current_device_id)
                 except sqlite3.IntegrityError:
                     result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
 
@@ -1101,26 +1367,37 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                 sync_id,
             )
             if local:
+                conflict = _basic_conflict_detected(local, item, current_device_id)
+                if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    _record_sync_conflict(conn, "movimientos", local, item, "kept_local", now, result)
+                    result["movimientos_kept_local"] += 1
+                    result["kept_local_total"] += 1
+                    continue
                 if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                    if conflict:
+                        _record_sync_conflict(conn, "movimientos", local, item, "applied_remote", now, result)
                     conn.execute(
                         """
                         UPDATE movimientos
                         SET fecha = ?, tipo = ?, categoria_id = ?, descripcion = ?, monto = ?,
-                            updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?
+                            updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                         WHERE sync_id = ?
                         """,
-                        values,
+                        (*values[:-1], *_remote_meta_values(item), values[-1]),
                     )
                     result["movimientos_updated"] += 1
+                    result["applied_remote_total"] += 1
                 continue
 
             conn.execute(
                 """
                 INSERT INTO movimientos (
                     fecha, tipo, categoria_id, descripcion, monto,
-                    sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at
+                    sync_id, created_at, updated_at, deleted_at, sync_status, last_synced_at,
+                    last_remote_device_id, last_remote_device_name, last_remote_updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
                 """,
                 (
                     item.get("fecha"),
@@ -1133,11 +1410,27 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
                     item.get("updated_at") or now,
                     item.get("deleted_at"),
                     now,
+                    *_remote_meta_values(item),
                 ),
             )
             result["movimientos_inserted"] += 1
+            result["applied_remote_total"] += 1
 
-    return {"ok": True, "result": result}
+    applied = {table: int(result.get(f"{table}_inserted", 0)) + int(result.get(f"{table}_updated", 0)) for table in SYNC_TABLES}
+    kept_local = {table: int(result.get(f"{table}_kept_local", 0)) for table in SYNC_TABLES}
+    return {
+        "ok": True,
+        "result": result,
+        "applied": applied,
+        "kept_local": kept_local,
+        "conflicts": {
+            "total": int(result.get("conflicts_total", 0)),
+            "by_table": result.get("conflicts_by_table", {}),
+        },
+        "remote_changes_total": int(result.get("remote_changes_total", 0)),
+        "applied_remote_total": int(result.get("applied_remote_total", 0)),
+        "kept_local_total": int(result.get("kept_local_total", 0)),
+    }
 
 
 @app.post("/backup/export")

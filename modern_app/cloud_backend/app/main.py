@@ -15,7 +15,7 @@ from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.4.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.5.0")
 
 
 def allowed_origins() -> list[str]:
@@ -141,7 +141,7 @@ def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
     return all(item.get(field) not in (None, "") for field in config["required"])
 
 
-def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str) -> tuple[list[str], int]:
+def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str, device_id: str | None, device_name: str | None) -> tuple[list[str], int]:
     config = SYNC_CONFIG[key]
     table = config["table"]
     fields = list(config["fields"])
@@ -162,7 +162,11 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
             accepted.append(sync_id)
             continue
 
-        base_columns = ["user_id", "sync_id", *fields, "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at"]
+        last_modified_at = item.get("updated_at") or now
+        base_columns = [
+            "user_id", "sync_id", *fields, "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at",
+            "last_modified_device_id", "last_modified_device_name", "last_modified_at",
+        ]
         placeholders = ", ".join(["?"] * len(base_columns))
         update_assignments = ", ".join(
             [
@@ -172,6 +176,9 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
                 "deleted_at = excluded.deleted_at",
                 "sync_status = excluded.sync_status",
                 "remote_updated_at = excluded.remote_updated_at",
+                "last_modified_device_id = excluded.last_modified_device_id",
+                "last_modified_device_name = excluded.last_modified_device_name",
+                "last_modified_at = excluded.last_modified_at",
             ]
         )
         values = [
@@ -183,6 +190,9 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
             item.get("deleted_at"),
             item.get("sync_status") or "synced",
             now,
+            device_id,
+            device_name,
+            last_modified_at,
         ]
         conn.execute(
             f"""
@@ -207,7 +217,17 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
 def _pull_table(conn, user_id: str, key: str) -> list[dict[str, Any]]:
     config = SYNC_CONFIG[key]
     table = config["table"]
-    fields = ", ".join([*config["fields"], "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at"])
+    fields = ", ".join([
+        *config["fields"],
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "sync_status",
+        "remote_updated_at",
+        "last_modified_device_id",
+        "last_modified_device_name",
+        "last_modified_at",
+    ])
     return [
         dict(row)
         for row in conn.execute(
@@ -340,12 +360,14 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
     ignored = {table: 0 for table in SYNC_TABLES}
     received = {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
     now = now_iso()
+    device_id = str(payload.get("device_id") or "").strip() or None
+    device_name = str(payload.get("device_name") or "").strip() or None
 
     with connect() as conn:
-        _upsert_device(conn, user.id, payload.get("device_id"), payload.get("device_name"), now)
+        _upsert_device(conn, user.id, device_id, device_name, now)
         for table in SYNC_TABLES:
             items = payload.get(table, []) or []
-            table_accepted, table_ignored = _push_table(conn, user.id, table, items, now)
+            table_accepted, table_ignored = _push_table(conn, user.id, table, items, now, device_id, device_name)
             accepted[table] = table_accepted
             ignored[table] = table_ignored
 
@@ -355,7 +377,7 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
         counts[f"{table}_saved"] = len(accepted[table])
     if any(received[table] != len(accepted[table]) for table in SYNC_TABLES):
         raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
-    return {"ok": True, "accepted": accepted, "ignored": ignored, "counts": counts}
+    return {"ok": True, "accepted": accepted, "ignored": ignored, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
 
 
 @app.get("/sync/pull")

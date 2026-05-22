@@ -61,6 +61,8 @@ SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 
 La sincronizacion manual y automatica opcional acepta categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
 
-Desde v2.4.0 el backend cloud tambien registra dispositivos por usuario (`device_id`, `device_name`, `last_seen_at`) para preparar uso multi-dispositivo. No implementa resolucion avanzada de conflictos.
+Desde v2.4.0 el backend cloud tambien registra dispositivos por usuario (`device_id`, `device_name`, `last_seen_at`) para preparar uso multi-dispositivo.
+
+Desde v2.5.0 los registros cloud guardan metadata del ultimo dispositivo que los modifico (`last_modified_device_id`, `last_modified_device_name`, `last_modified_at`). La resolucion avanzada de conflictos no esta implementada; la app mantiene last-write-wins.
 
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.
