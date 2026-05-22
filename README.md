@@ -8,9 +8,22 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.6.0**
+Versión estable actual: **v2.7.0**
 
-[Descargar ScisoNomics v2.6.0](../../releases/tag/v2.6.0)
+[Descargar ScisoNomics v2.7.0](../../releases/tag/v2.7.0)
+
+---
+
+## Novedades de v2.7.0
+
+- Se agregó aislamiento local de cuentas con `owner_user_id` para evitar mezcla de datos entre usuarios.
+- Al cerrar sesión, los datos de la cuenta dejan de mostrarse y la sincronización automática se desactiva.
+- La sincronización local solo toma datos del usuario activo y no puede subir datos de otra cuenta.
+- Los datos locales sin cuenta quedan separados bajo el modo local y pueden asociarse manualmente a una cuenta.
+- Se corrigió el cierre accidental de modales al seleccionar texto y arrastrar fuera del contenido.
+- Se mejoró el contraste del modo claro en cards, inputs y botones.
+- Se prepara la experiencia final con versión visible y actualizaciones manuales desde GitHub Releases.
+- La app sigue siendo local-first, la cuenta sigue siendo opcional y no se sube la base `.db` completa.
 
 ---
 

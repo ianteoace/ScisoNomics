@@ -9,6 +9,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 - No se crea una base vacia en carpetas del proyecto.
 - Si falta la DB de AppData, el backend intenta copiar una vez desde `App registro/data/finanzas.db`.
 - Si no existe ninguna, la API responde error claro: `No se encontro la base de datos.`
+- Desde v2.7.0 los datos locales quedan aislados por cuenta con `owner_user_id`. El modo sin cuenta usa el owner `local`; cada cuenta cloud usa su `user_id`.
 
 ## Estructura
 

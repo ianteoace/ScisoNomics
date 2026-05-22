@@ -1,4 +1,10 @@
-﻿export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { getCurrentOwnerId } from "./cloudAuth";
+
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+
+export function localOwnerHeaders(extra?: HeadersInit): HeadersInit {
+  return { ...(extra || {}), "X-Scisonomics-Owner-Id": getCurrentOwnerId() };
+}
 
 function toConnectionError(error: unknown) {
   console.error("HTTP request could not reach local API", error);
@@ -40,7 +46,7 @@ async function parse<T>(res: Response): Promise<T> {
 export async function getJSON<T>(path: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+    res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: localOwnerHeaders() });
   } catch (error) {
     throw toConnectionError(error);
   }
@@ -52,7 +58,7 @@ export async function sendJSON<T>(path: string, method: string, body?: unknown):
   try {
     res = await fetch(`${API_URL}${path}`, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: localOwnerHeaders({ "Content-Type": "application/json" }),
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (error) {

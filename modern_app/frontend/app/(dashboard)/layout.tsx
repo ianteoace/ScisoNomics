@@ -10,6 +10,7 @@ import { AutoSyncProvider } from "../../components/sync/AutoSyncProvider";
 import { Topbar } from "../../components/layout/Topbar";
 import { Modal } from "../../components/ui/Modal";
 import { DashboardUiProvider } from "../../hooks/useDashboardUi";
+import { ACCOUNT_SESSION_CHANGED_EVENT } from "../../services/cloudAuth";
 
 const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
 
@@ -112,6 +113,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [collapsed, setCollapsed] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [activeGuide, setActiveGuide] = useState<(typeof SECTION_GUIDE_LIST)[number] | null>(null);
+  const [sessionVersion, setSessionVersion] = useState(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -129,6 +131,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setActiveGuide(guide);
     setOnboardingOpen(true);
   }, [currentPathname]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleSessionChanged = () => setSessionVersion((value) => value + 1);
+    window.addEventListener(ACCOUNT_SESSION_CHANGED_EVENT, handleSessionChanged);
+    return () => window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, handleSessionChanged);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -158,7 +167,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
             <div className="p-4 lg:p-6">
               <Topbar />
-              {children}
+              <div key={sessionVersion}>{children}</div>
             </div>
           </div>
         </AutoSyncProvider>

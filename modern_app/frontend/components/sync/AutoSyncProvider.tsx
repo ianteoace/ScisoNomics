@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, getStoredToken } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, getStoredToken, getStoredUser } from "../../services/cloudAuth";
 import { DATA_CHANGED_EVENT, isAutoSyncEnabled, isSyncInFlight, runAutoSync } from "../../services/cloudSync";
 
 const AUTO_SYNC_DEBOUNCE_MS = 7000;
@@ -31,6 +31,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       if (!isAutoSyncEnabled() || isSyncInFlight()) return;
       const token = getStoredToken();
       if (!token) return;
+      if (!getStoredUser()) return;
       const now = Date.now();
       if (lastErrorAtRef.current && now - lastErrorAtRef.current < AUTO_SYNC_ERROR_RETRY_MS && reason !== "auto_local_change") return;
       lastAttemptAtRef.current = now;

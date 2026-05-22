@@ -176,17 +176,19 @@ class Database:
                 self._recreate_categorias_validation_triggers(conn)
                 self._migrate_movimientos_meta_y_nota(conn)
                 self._migrate_sync_columns(conn)
+                self._migrate_owner_columns(conn)
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
                 self._seed_default_tags(conn)
                 self._migrate_sync_columns(conn)
+                self._migrate_owner_columns(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
                     return
                 raise
 
     def _seed_default_categories(self, conn: sqlite3.Connection) -> None:
-        count_row = conn.execute("SELECT COUNT(*) AS total FROM categorias").fetchone()
+        count_row = conn.execute("SELECT COUNT(*) AS total FROM categorias WHERE owner_user_id = 'local'").fetchone()
         if count_row and int(count_row["total"] or 0) > 0:
             return
 
@@ -201,7 +203,7 @@ class Database:
             ("Salud", "gasto"),
             ("Ahorro", "ahorro"),
         ]
-        conn.executemany("INSERT INTO categorias (nombre, tipo) VALUES (?, ?)", defaults)
+        conn.executemany("INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')", defaults)
 
     def _ensure_required_movement_categories(self, conn: sqlite3.Connection) -> None:
         migration_key = "migration_required_categories_v0241"
@@ -213,20 +215,20 @@ class Database:
             return
 
         tipo_ahorro = conn.execute(
-            "SELECT COUNT(*) FROM categorias WHERE tipo = 'ahorro'"
+            "SELECT COUNT(*) FROM categorias WHERE tipo = 'ahorro' AND owner_user_id = 'local'"
         ).fetchone()
         tipo_inversion = conn.execute(
-            "SELECT COUNT(*) FROM categorias WHERE tipo = 'inversion'"
+            "SELECT COUNT(*) FROM categorias WHERE tipo = 'inversion' AND owner_user_id = 'local'"
         ).fetchone()
 
         if int(tipo_ahorro[0] or 0) == 0:
             conn.execute(
-                "INSERT INTO categorias (nombre, tipo) VALUES (?, ?)",
+                "INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
                 ("Ahorro", "ahorro"),
             )
         if int(tipo_inversion[0] or 0) == 0:
             conn.execute(
-                "INSERT INTO categorias (nombre, tipo) VALUES (?, ?)",
+                "INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
                 ("Inversion", "inversion"),
             )
 
@@ -447,6 +449,102 @@ class Database:
             if table not in existing_tables:
                 continue
             self._ensure_sync_columns_for_table(conn, table)
+
+    def _migrate_owner_columns(self, conn: sqlite3.Connection) -> None:
+        user_tables = [
+            "movimientos",
+            "categorias",
+            "presupuestos",
+            "metas_ahorro",
+            "gastos_fijos",
+            "gastos_programados",
+            "tags",
+            "movimiento_tags",
+            "sync_history",
+            "sync_conflicts",
+        ]
+        existing_tables = {
+            str(row["name"])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        for table in user_tables:
+            if table not in existing_tables:
+                continue
+            columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "owner_user_id" not in columns:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT")
+            conn.execute(
+                f"UPDATE {table} SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''"
+            )
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_user_id ON {table}(owner_user_id)")
+        if "categorias" in existing_tables:
+            self._rebuild_categorias_owner_unique(conn)
+            self._recreate_categorias_validation_triggers(conn)
+
+    def _rebuild_categorias_owner_unique(self, conn: sqlite3.Connection) -> None:
+        create_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='categorias'"
+        ).fetchone()
+        if not create_sql or not create_sql[0]:
+            return
+        sql_text = str(create_sql[0]).lower()
+        if "unique(owner_user_id,nombre,tipo)" in sql_text.replace(" ", ""):
+            return
+
+        table_info = conn.execute("PRAGMA table_info(categorias)").fetchall()
+        if not table_info:
+            return
+        rows = conn.execute("SELECT * FROM categorias").fetchall()
+        old_foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute(
+                """
+                CREATE TABLE categorias_owner_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nombre TEXT NOT NULL,
+                    tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion')),
+                    sync_id TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    deleted_at TEXT,
+                    sync_status TEXT,
+                    last_synced_at TEXT,
+                    last_remote_device_id TEXT,
+                    last_remote_device_name TEXT,
+                    last_remote_updated_at TEXT,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
+                    UNIQUE(owner_user_id, nombre, tipo)
+                )
+                """
+            )
+            new_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(categorias_owner_new)").fetchall()}
+            old_columns = [str(row["name"]) for row in table_info]
+            shared = [name for name in old_columns if name in new_columns]
+            if "owner_user_id" not in shared and "owner_user_id" in new_columns:
+                shared.append("owner_user_id")
+            for row in rows:
+                values = []
+                for column in shared:
+                    if column in row.keys():
+                        values.append(row[column])
+                    elif column == "owner_user_id":
+                        values.append("local")
+                    else:
+                        values.append(None)
+                placeholders = ", ".join(["?"] * len(shared))
+                conn.execute(
+                    f"INSERT OR IGNORE INTO categorias_owner_new ({', '.join(shared)}) VALUES ({placeholders})",
+                    tuple(values),
+                )
+            conn.execute("DROP TABLE categorias")
+            conn.execute("ALTER TABLE categorias_owner_new RENAME TO categorias")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_owner_nombre_tipo ON categorias(owner_user_id, nombre, tipo)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_owner_user_id ON categorias(owner_user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_sync_status ON categorias(sync_status)")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_sync_id ON categorias(sync_id) WHERE sync_id IS NOT NULL")
+        finally:
+            conn.execute(f"PRAGMA foreign_keys = {int(old_foreign_keys)}")
 
     def _ensure_sync_columns_for_table(self, conn: sqlite3.Connection, table: str) -> None:
         columns = {

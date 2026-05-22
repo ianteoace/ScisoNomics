@@ -1,4 +1,4 @@
-import { API_URL } from "./http";
+import { API_URL, localOwnerHeaders } from "./http";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
@@ -112,7 +112,7 @@ async function parseResponse<T>(response: Response, fallback: string): Promise<T
 }
 
 async function localGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+  const response = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: localOwnerHeaders() });
   return parseResponse<T>(response, "No se pudo leer la informacion local para sincronizar.");
 }
 
@@ -120,7 +120,7 @@ async function localPost<T>(path: string, payload: unknown): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     method: "POST",
     cache: "no-store",
-    headers: { "Content-Type": "application/json" },
+    headers: localOwnerHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
   });
   return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.");
@@ -270,6 +270,22 @@ async function recordSyncHistory(payload: {
 
 export async function getSyncConflicts(limit = 10) {
   return localGet<{ ok: boolean; items: SyncConflictItem[] }>(`/sync/conflicts?limit=${limit}`);
+}
+
+export async function getLocalSessionContext() {
+  return localGet<{
+    ok: boolean;
+    owner_user_id: string;
+    mode: "cloud" | "local";
+    has_unassigned_data: boolean;
+    visible_data: Record<SyncTable, number>;
+  }>("/local-session/context");
+}
+
+export async function claimLocalData(ownerUserId: string) {
+  return localPost<{ ok: boolean; owner_user_id: string; claimed: Record<SyncTable, number> }>("/local-session/claim-local-data", {
+    owner_user_id: ownerUserId,
+  });
 }
 
 export async function getCloudDevices(token: string) {

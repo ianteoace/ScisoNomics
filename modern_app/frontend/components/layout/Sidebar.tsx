@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, CalendarClock, ChevronLeft, ChevronRight, CircleUserRound, CreditCard, Flag, LayoutDashboard, List, Settings, Tags, Wallet } from "lucide-react";
 import { motion } from "framer-motion";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, cloudAuth, getStoredToken, isCloudAuthConfigured, type CloudUser } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, cloudAuth, getStoredToken, getStoredUser, getTokenStorageMode, isCloudAuthConfigured, setStoredSession, type CloudUser } from "../../services/cloudAuth";
 
 const items = [
   { href: "/dashboard", label: "Inicio", icon: LayoutDashboard },
@@ -44,7 +44,10 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       try {
         const user = await cloudAuth.me(token);
-        if (!cancelled) setAccountUser(user);
+        if (!cancelled) {
+          if (getStoredUser()?.id !== user.id) setStoredSession(token, user, getTokenStorageMode() !== "session");
+          setAccountUser(user);
+        }
       } catch (error) {
         console.error("No se pudo cargar la cuenta en el sidebar:", error);
         if (!cancelled) setAccountUser(null);

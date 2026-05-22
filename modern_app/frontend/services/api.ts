@@ -1,4 +1,4 @@
-import { API_URL, getJSON, sendJSON } from "./http";
+import { API_URL, getJSON, localOwnerHeaders, sendJSON } from "./http";
 import { notifyDataChanged } from "./cloudSync";
 import { getLocalDateInputValue } from "../lib/date";
 import type { AnnualStatsResponse, BackupState, Categoria, GastoFijo, GastoProgramado, MetaAhorro, MovimientosResponse, Presupuesto, SettingsInfo, StatsResponse, Tag } from "../types/domain";
@@ -66,7 +66,7 @@ export const api = {
       params.set("month", String(month));
       params.set("year", String(year));
     }
-    const response = await fetch(`${API_URL}/export/excel?${params.toString()}`, { method: "GET" });
+    const response = await fetch(`${API_URL}/export/excel?${params.toString()}`, { method: "GET", headers: localOwnerHeaders() });
     if (!response.ok) {
       const text = await response.text();
       let detail = "No se pudo exportar el Excel.";
@@ -86,7 +86,7 @@ export const api = {
     return { blob, filename };
   },
   downloadBackup: async () => {
-    const response = await fetch(`${API_URL}/backup/download`, { method: "GET" });
+    const response = await fetch(`${API_URL}/backup/download`, { method: "GET", headers: localOwnerHeaders() });
     if (!response.ok) {
       const text = await response.text();
       console.error("Backup download failed", { status: response.status, response: text });
@@ -109,7 +109,7 @@ export const api = {
   restoreBackupFromPath: async (sourcePath: string) => {
     const response = await fetch(`${API_URL}/backup/restore`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: localOwnerHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ source_path: sourcePath }),
     });
     const text = await response.text();

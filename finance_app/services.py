@@ -11,10 +11,33 @@ import tempfile
 import logging
 from uuid import uuid4
 from pathlib import Path
+from contextvars import ContextVar
 
 from .db import Database
 
 _logger = logging.getLogger("scisonomics.backup")
+
+LOCAL_OWNER_ID = "local"
+_current_owner_id: ContextVar[str] = ContextVar("scisonomics_owner_user_id", default=LOCAL_OWNER_ID)
+
+
+def normalize_owner_id(value: str | None) -> str:
+    owner = str(value or "").strip()
+    if not owner or owner.lower() in {"null", "undefined", "none"}:
+        return LOCAL_OWNER_ID
+    return owner
+
+
+def set_current_owner_id(value: str | None):
+    return _current_owner_id.set(normalize_owner_id(value))
+
+
+def reset_current_owner_id(token) -> None:
+    _current_owner_id.reset(token)
+
+
+def get_current_owner_id() -> str:
+    return normalize_owner_id(_current_owner_id.get())
 
 
 @dataclass
@@ -84,6 +107,16 @@ class FinanceService:
         prefix = f"{alias}." if alias else ""
         return f"({prefix}deleted_at IS NULL OR {prefix}deleted_at = '')"
 
+    def _owner_id(self) -> str:
+        return get_current_owner_id()
+
+    def _owner_clause(self, alias: str | None = None) -> str:
+        prefix = f"{alias}." if alias else ""
+        return f"{prefix}owner_user_id = ?"
+
+    def _active_owner_clause(self, alias: str | None = None) -> str:
+        return f"{self._active_clause(alias)} AND {self._owner_clause(alias)}"
+
     def _soft_delete(self, conn: sqlite3.Connection, table: str, row_id: int) -> int:
         result = conn.execute(
             f"""
@@ -91,18 +124,18 @@ class FinanceService:
             SET deleted_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP,
                 sync_status = 'pending'
-            WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+            WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
             """,
-            (row_id,),
+            (row_id, self._owner_id()),
         )
         return int(result.rowcount or 0)
 
     def list_categorias(self, tipo: str | None = None) -> list[dict]:
-        query = "SELECT id, nombre, tipo FROM categorias WHERE (deleted_at IS NULL OR deleted_at = '')"
-        params: tuple = ()
+        query = "SELECT id, nombre, tipo FROM categorias WHERE (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?"
+        params: tuple = (self._owner_id(),)
         if tipo:
             query += " AND tipo = ?"
-            params = (tipo,)
+            params = (self._owner_id(), tipo)
         query += " ORDER BY tipo, nombre"
         with self.db.connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -118,10 +151,10 @@ class FinanceService:
             with self.db.connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO categorias (nombre, tipo, sync_id, created_at, updated_at, sync_status)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    INSERT INTO categorias (nombre, tipo, owner_user_id, sync_id, created_at, updated_at, sync_status)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (nombre, tipo, self._new_sync_id()),
+                    (nombre, tipo, self._owner_id(), self._new_sync_id()),
                 )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Ya existe una categoria con ese nombre y tipo.") from exc
@@ -137,8 +170,8 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 conn.execute(
-                    "UPDATE categorias SET nombre = ?, tipo = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
-                    (nombre, tipo, categoria_id),
+                    "UPDATE categorias SET nombre = ?, tipo = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
+                    (nombre, tipo, categoria_id, self._owner_id()),
                 )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Ya existe una categoria con ese nombre y tipo.") from exc
@@ -148,8 +181,8 @@ class FinanceService:
     def categoria_in_use(self, categoria_id: int) -> bool:
         with self.db.connect() as conn:
             mov = conn.execute(
-                "SELECT 1 FROM movimientos WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
-                (categoria_id,),
+                "SELECT 1 FROM movimientos WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ? LIMIT 1",
+                (categoria_id, self._owner_id()),
             ).fetchone()
         return bool(mov)
 
@@ -159,16 +192,16 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 conn.execute(
-                    "UPDATE presupuestos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
-                    (categoria_id,),
+                    "UPDATE presupuestos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
+                    (categoria_id, self._owner_id()),
                 )
                 conn.execute(
-                    "UPDATE gastos_programados SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
-                    (categoria_id,),
+                    "UPDATE gastos_programados SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
+                    (categoria_id, self._owner_id()),
                 )
                 conn.execute(
-                    "UPDATE gastos_fijos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
-                    (categoria_id,),
+                    "UPDATE gastos_fijos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
+                    (categoria_id, self._owner_id()),
                 )
                 if self._soft_delete(conn, "categorias", categoria_id) == 0:
                     raise ValueError("No se encontro la categoria a eliminar.")
@@ -179,8 +212,8 @@ class FinanceService:
 
     def list_movimientos(self, month: int, year: int, tipo: str | None = None) -> list[dict]:
         self.apply_fixed_expenses_for_month(month, year)
-        where = "WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ? AND (m.deleted_at IS NULL OR m.deleted_at = '')"
-        params: list[str] = [f"{month:02d}", str(year)]
+        where = "WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ? AND (m.deleted_at IS NULL OR m.deleted_at = '') AND m.owner_user_id = ?"
+        params: list[str] = [f"{month:02d}", str(year), self._owner_id()]
         if tipo in ("ingreso", "gasto", "ahorro", "inversion"):
             where += " AND m.tipo = ?"
             params.append(tipo)
@@ -207,6 +240,7 @@ class FinanceService:
                         ), 0)
                         FROM movimientos m2
                         WHERE (m2.deleted_at IS NULL OR m2.deleted_at = '')
+                          AND m2.owner_user_id = ?
                           AND (m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id))
                     ) AS saldo_acumulado
                 FROM movimientos m
@@ -215,7 +249,7 @@ class FinanceService:
                 {where}
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
-                tuple(params),
+                (self._owner_id(), *tuple(params)),
             ).fetchall()
         result = [dict(row) for row in rows]
         for row in result:
@@ -231,9 +265,10 @@ class FinanceService:
                 JOIN categorias c ON c.id = m.categoria_id
                 WHERE strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                  AND m.owner_user_id = ?
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
-                (str(year),),
+                (str(year), self._owner_id()),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -247,9 +282,9 @@ class FinanceService:
                     """
                     INSERT INTO movimientos (
                         fecha, tipo, categoria_id, descripcion, monto, meta_id, nota,
-                        sync_id, created_at, updated_at, sync_status
+                        owner_user_id, sync_id, created_at, updated_at, sync_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
                     (
                         data.fecha,
@@ -259,6 +294,7 @@ class FinanceService:
                         data.monto,
                         meta_id,
                         data.nota.strip(),
+                        self._owner_id(),
                         self._new_sync_id(),
                     ),
                 )
@@ -278,7 +314,7 @@ class FinanceService:
                     UPDATE movimientos
                     SET fecha = ?, tipo = ?, categoria_id = ?, descripcion = ?, monto = ?, meta_id = ?, nota = ?,
                         updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-                    WHERE id = ?
+                    WHERE id = ? AND owner_user_id = ?
                     """,
                     (
                         data.fecha,
@@ -289,6 +325,7 @@ class FinanceService:
                         meta_id,
                         data.nota.strip(),
                         movimiento_id,
+                        self._owner_id(),
                     ),
                 )
                 self._replace_movimiento_tags(conn, movimiento_id, data.tag_ids or [])
@@ -309,9 +346,9 @@ class FinanceService:
                 SELECT id, fecha, tipo, categoria_id, descripcion, monto
                     , meta_id, COALESCE(nota, '') AS nota
                 FROM movimientos
-                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 """,
-                (movimiento_id,),
+                (movimiento_id, self._owner_id()),
             ).fetchone()
         payload = dict(row) if row else None
         if payload:
@@ -319,16 +356,16 @@ class FinanceService:
         return payload
 
     def _replace_movimiento_tags(self, conn: sqlite3.Connection, movimiento_id: int, tag_ids: list[int]) -> None:
-        conn.execute("DELETE FROM movimiento_tags WHERE movimiento_id = ?", (movimiento_id,))
+        conn.execute("DELETE FROM movimiento_tags WHERE movimiento_id = ? AND owner_user_id = ?", (movimiento_id, self._owner_id()))
         unique_ids = sorted({int(tag_id) for tag_id in tag_ids if int(tag_id) > 0})
         conn.executemany(
             """
             INSERT INTO movimiento_tags (
-                movimiento_id, tag_id, sync_id, created_at, updated_at, sync_status
+                movimiento_id, tag_id, owner_user_id, sync_id, created_at, updated_at, sync_status
             )
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
             """,
-            [(movimiento_id, tag_id, self._new_sync_id()) for tag_id in unique_ids],
+            [(movimiento_id, tag_id, self._owner_id(), self._new_sync_id()) for tag_id in unique_ids],
         )
 
     def get_tags_for_movimiento(self, movimiento_id: int) -> list[dict]:
@@ -338,16 +375,16 @@ class FinanceService:
                 SELECT t.id, t.nombre, t.color
                 FROM movimiento_tags mt
                 JOIN tags t ON t.id = mt.tag_id
-                WHERE mt.movimiento_id = ?
+                WHERE mt.movimiento_id = ? AND mt.owner_user_id = ? AND t.owner_user_id = ?
                 ORDER BY t.nombre
                 """,
-                (movimiento_id,),
+                (movimiento_id, self._owner_id(), self._owner_id()),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def list_tags(self) -> list[dict]:
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT id, nombre, color FROM tags ORDER BY nombre").fetchall()
+            rows = conn.execute("SELECT id, nombre, color FROM tags WHERE owner_user_id = ? ORDER BY nombre", (self._owner_id(),)).fetchall()
         return [dict(row) for row in rows]
 
     def create_tag(self, data: TagInput) -> None:
@@ -357,10 +394,10 @@ class FinanceService:
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO tags (nombre, color, sync_id, created_at, updated_at, sync_status)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                INSERT INTO tags (nombre, color, owner_user_id, sync_id, created_at, updated_at, sync_status)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
-                (nombre, data.color, self._new_sync_id()),
+                (nombre, data.color, self._owner_id(), self._new_sync_id()),
             )
 
     def update_tag(self, tag_id: int, data: TagInput) -> None:
@@ -369,13 +406,13 @@ class FinanceService:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
             conn.execute(
-                "UPDATE tags SET nombre = ?, color = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
-                (nombre, data.color, tag_id),
+                "UPDATE tags SET nombre = ?, color = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
+                (nombre, data.color, tag_id, self._owner_id()),
             )
 
     def delete_tag(self, tag_id: int) -> None:
         with self.db.connect() as conn:
-            conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+            conn.execute("DELETE FROM tags WHERE id = ? AND owner_user_id = ?", (tag_id, self._owner_id()))
 
     def list_metas_ahorro(self) -> list[dict]:
         with self.db.connect() as conn:
@@ -383,9 +420,10 @@ class FinanceService:
                 """
                 SELECT id, nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado
                 FROM metas_ahorro
-                WHERE deleted_at IS NULL OR deleted_at = ''
+                WHERE (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 ORDER BY created_at DESC, id DESC
-                """
+                """,
+                (self._owner_id(),),
             ).fetchall()
             result = []
             for row in rows:
@@ -400,8 +438,8 @@ class FinanceService:
 
     def _get_ahorro_asignado(self, conn: sqlite3.Connection, meta_id: int) -> float:
         row = conn.execute(
-            "SELECT COALESCE(SUM(monto), 0) AS total FROM movimientos WHERE tipo = 'ahorro' AND meta_id = ? AND (deleted_at IS NULL OR deleted_at = '')",
-            (meta_id,),
+            "SELECT COALESCE(SUM(monto), 0) AS total FROM movimientos WHERE tipo = 'ahorro' AND meta_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
+            (meta_id, self._owner_id()),
         ).fetchone()
         return float(row["total"] or 0.0)
 
@@ -411,11 +449,11 @@ class FinanceService:
                 """
                 INSERT INTO metas_ahorro (
                     nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado,
-                    sync_id, created_at, updated_at, sync_status
+                    owner_user_id, sync_id, created_at, updated_at, sync_status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
-                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, self._new_sync_id()),
+                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, self._owner_id(), self._new_sync_id()),
             )
 
     def update_meta_ahorro(self, meta_id: int, data: MetaAhorroInput) -> None:
@@ -425,16 +463,16 @@ class FinanceService:
                 UPDATE metas_ahorro
                 SET nombre = ?, monto_objetivo = ?, monto_inicial = ?, fecha_objetivo = ?, descripcion = ?, estado = ?,
                     updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-                WHERE id = ?
+                WHERE id = ? AND owner_user_id = ?
                 """,
-                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, meta_id),
+                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, meta_id, self._owner_id()),
             )
 
     def delete_meta_ahorro(self, meta_id: int) -> None:
         with self.db.connect() as conn:
             conn.execute(
-                "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ?",
-                (meta_id,),
+                "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ? AND owner_user_id = ?",
+                (meta_id, self._owner_id()),
             )
             self._soft_delete(conn, "metas_ahorro", meta_id)
 
@@ -453,9 +491,10 @@ class FinanceService:
                 JOIN categorias c ON c.id = m.categoria_id
                 WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                  AND m.owner_user_id = ?
                 ORDER BY m.fecha ASC, m.id ASC
                 """,
-                (f"{month:02d}", str(year)),
+                (f"{month:02d}", str(year), self._owner_id()),
             ).fetchall()
             by_day: dict[str, dict] = {}
             for row in rows:
@@ -482,10 +521,11 @@ class FinanceService:
                 WHERE m.tipo = 'gasto'
                 AND strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
                 AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                AND m.owner_user_id = ?
                 ORDER BY m.monto DESC, m.fecha DESC
                 LIMIT 5
                 """,
-                (f"{month:02d}", str(year)),
+                (f"{month:02d}", str(year), self._owner_id()),
             ).fetchall()
             top_gastos = [dict(r) for r in rows]
         prev_month = 12 if month == 1 else month - 1
@@ -696,8 +736,8 @@ class FinanceService:
 
     def get_month_summary(self, month: int, year: int, tipo: str | None = None) -> dict:
         self.apply_fixed_expenses_for_month(month, year)
-        where = "WHERE strftime('%m', fecha) = ? AND strftime('%Y', fecha) = ? AND (deleted_at IS NULL OR deleted_at = '')"
-        params: list[str] = [f"{month:02d}", str(year)]
+        where = "WHERE strftime('%m', fecha) = ? AND strftime('%Y', fecha) = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?"
+        params: list[str] = [f"{month:02d}", str(year), self._owner_id()]
         if tipo in ("ingreso", "gasto", "ahorro", "inversion"):
             where += " AND tipo = ?"
             params.append(tipo)
@@ -736,8 +776,9 @@ class FinanceService:
                 FROM movimientos
                 WHERE fecha < ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (inicio,),
+                (inicio, self._owner_id()),
             ).fetchone()
         return float(row["saldo"] or 0.0)
 
@@ -768,8 +809,10 @@ class FinanceService:
                     END
                 ), 0) AS saldo
                 FROM movimientos
-                WHERE deleted_at IS NULL OR deleted_at = ''
+                WHERE (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 """
+                ,
+                (self._owner_id(),),
             ).fetchone()
         return float(row["saldo"] or 0.0)
 
@@ -786,9 +829,10 @@ class FinanceService:
                        gf.monto, gf.dia_vencimiento, gf.activo
                 FROM gastos_fijos gf
                 JOIN categorias c ON c.id = gf.categoria_id
-                WHERE gf.deleted_at IS NULL OR gf.deleted_at = ''
+                WHERE (gf.deleted_at IS NULL OR gf.deleted_at = '') AND gf.owner_user_id = ? AND c.owner_user_id = ?
                 ORDER BY gf.activo DESC, gf.dia_vencimiento ASC
-                """
+                """,
+                (self._owner_id(), self._owner_id()),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -799,11 +843,11 @@ class FinanceService:
                     """
                     INSERT INTO gastos_fijos (
                         categoria_id, descripcion, monto, dia_vencimiento, activo,
-                        sync_id, created_at, updated_at, sync_status
+                        owner_user_id, sync_id, created_at, updated_at, sync_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, self._new_sync_id()),
+                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, self._owner_id(), self._new_sync_id()),
                 )
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al crear gasto fijo: {exc}") from exc
@@ -816,9 +860,9 @@ class FinanceService:
                     UPDATE gastos_fijos
                     SET categoria_id = ?, descripcion = ?, monto = ?, dia_vencimiento = ?, activo = ?,
                         updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-                    WHERE id = ?
+                    WHERE id = ? AND owner_user_id = ?
                     """,
-                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, gasto_id),
+                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, gasto_id, self._owner_id()),
                 )
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al actualizar gasto fijo: {exc}") from exc
@@ -836,9 +880,9 @@ class FinanceService:
                 """
                 SELECT id, categoria_id, descripcion, monto, dia_vencimiento, activo
                 FROM gastos_fijos
-                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 """,
-                (gasto_id,),
+                (gasto_id, self._owner_id()),
             ).fetchone()
         return dict(row) if row else None
 
@@ -850,7 +894,10 @@ class FinanceService:
                 FROM gastos_fijos
                 WHERE activo = 1
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """
+                ,
+                (self._owner_id(),),
             ).fetchall()
 
             inserted = 0
@@ -870,9 +917,10 @@ class FinanceService:
                       AND descripcion = ?
                       AND monto = ?
                       AND (deleted_at IS NULL OR deleted_at = '')
+                      AND owner_user_id = ?
                     LIMIT 1
                     """,
-                    (movement_date, row["categoria_id"], desc, row["monto"]),
+                    (movement_date, row["categoria_id"], desc, row["monto"], self._owner_id()),
                 ).fetchone()
 
                 if exists:
@@ -882,11 +930,11 @@ class FinanceService:
                     """
                     INSERT INTO movimientos (
                         fecha, tipo, categoria_id, descripcion, monto,
-                        sync_id, created_at, updated_at, sync_status
+                        owner_user_id, sync_id, created_at, updated_at, sync_status
                     )
-                    VALUES (?, 'gasto', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    VALUES (?, 'gasto', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (movement_date, row["categoria_id"], desc, row["monto"], self._new_sync_id()),
+                    (movement_date, row["categoria_id"], desc, row["monto"], self._owner_id(), self._new_sync_id()),
                 )
                 inserted += 1
 
@@ -912,11 +960,13 @@ class FinanceService:
                   AND strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
                   AND (c.deleted_at IS NULL OR c.deleted_at = '')
+                  AND m.owner_user_id = ?
+                  AND c.owner_user_id = ?
                 GROUP BY c.id, c.nombre
                 HAVING total > 0
                 ORDER BY total DESC
                 """,
-                (selected_type, f"{month:02d}", str(year)),
+                (selected_type, f"{month:02d}", str(year), self._owner_id(), self._owner_id()),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -937,9 +987,10 @@ class FinanceService:
                   AND strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                  AND m.owner_user_id = ?
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
-                (category_id, f"{month:02d}", str(year)),
+                (category_id, f"{month:02d}", str(year), self._owner_id()),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -954,10 +1005,11 @@ class FinanceService:
                 FROM movimientos
                 WHERE strftime('%Y', fecha) = ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 GROUP BY strftime('%m', fecha)
                 ORDER BY mes
                 """,
-                (str(year),),
+                (str(year), self._owner_id()),
             ).fetchall()
 
         trend_map = {
@@ -980,8 +1032,8 @@ class FinanceService:
             FROM gastos_programados gp
             JOIN categorias c ON c.id = gp.categoria_id
         """
-        where: list[str] = ["(gp.deleted_at IS NULL OR gp.deleted_at = '')"]
-        params: list = []
+        where: list[str] = ["(gp.deleted_at IS NULL OR gp.deleted_at = '')", "gp.owner_user_id = ?", "c.owner_user_id = ?"]
+        params: list = [self._owner_id(), self._owner_id()]
 
         if filtro_estado in ("pendiente", "pagado", "cancelado"):
             where.append("gp.estado = ?")
@@ -1009,9 +1061,9 @@ class FinanceService:
                     """
                     INSERT INTO gastos_programados (
                         descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia,
-                        sync_id, created_at, updated_at, sync_status
+                        owner_user_id, sync_id, created_at, updated_at, sync_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
                     (
                         data.descripcion.strip(),
@@ -1021,6 +1073,7 @@ class FinanceService:
                         data.estado,
                         data.es_recurrente,
                         data.frecuencia,
+                        self._owner_id(),
                         self._new_sync_id(),
                     ),
                 )
@@ -1037,7 +1090,7 @@ class FinanceService:
                     SET descripcion = ?, categoria_id = ?, monto_estimado = ?, fecha_vencimiento = ?,
                         estado = ?, es_recurrente = ?, frecuencia = ?,
                         updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-                    WHERE id = ?
+                    WHERE id = ? AND owner_user_id = ?
                     """,
                     (
                         data.descripcion.strip(),
@@ -1048,6 +1101,7 @@ class FinanceService:
                         data.es_recurrente,
                         data.frecuencia,
                         gasto_id,
+                        self._owner_id(),
                     ),
                 )
         except sqlite3.Error as exc:
@@ -1066,9 +1120,9 @@ class FinanceService:
                 """
                 SELECT id, descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
                 FROM gastos_programados
-                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 """,
-                (gasto_id,),
+                (gasto_id, self._owner_id()),
             ).fetchone()
         return dict(row) if row else None
 
@@ -1078,9 +1132,9 @@ class FinanceService:
                 """
                 SELECT id, descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia
                 FROM gastos_programados
-                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '')
+                WHERE id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?
                 """,
-                (gasto_id,),
+                (gasto_id, self._owner_id()),
             ).fetchone()
             if not row:
                 raise ValueError("No se encontró el gasto programado seleccionado.")
@@ -1088,22 +1142,23 @@ class FinanceService:
                 return {"changed": False, "generated_next": False, "is_recurrent": bool(row["es_recurrente"])}
 
             conn.execute(
-                "UPDATE gastos_programados SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ?",
-                (gasto_id,),
+                "UPDATE gastos_programados SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
+                (gasto_id, self._owner_id()),
             )
             conn.execute(
                 """
                 INSERT INTO movimientos (
                     fecha, tipo, categoria_id, descripcion, monto,
-                    sync_id, created_at, updated_at, sync_status
+                    owner_user_id, sync_id, created_at, updated_at, sync_status
                 )
-                VALUES (?, 'gasto', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                VALUES (?, 'gasto', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
                 (
                     date.today().isoformat(),
                     row["categoria_id"],
                     row["descripcion"],
                     row["monto_estimado"],
+                    self._owner_id(),
                     self._new_sync_id(),
                 ),
             )
@@ -1124,9 +1179,10 @@ class FinanceService:
                       AND monto_estimado = ?
                       AND fecha_vencimiento = ?
                       AND (deleted_at IS NULL OR deleted_at = '')
+                      AND owner_user_id = ?
                     LIMIT 1
                     """,
-                    (row["descripcion"], row["categoria_id"], row["monto_estimado"], next_due_iso),
+                    (row["descripcion"], row["categoria_id"], row["monto_estimado"], next_due_iso, self._owner_id()),
                 ).fetchone()
 
                 if not exists_next:
@@ -1134,9 +1190,9 @@ class FinanceService:
                         """
                         INSERT INTO gastos_programados (
                             descripcion, categoria_id, monto_estimado, fecha_vencimiento, estado, es_recurrente, frecuencia,
-                            sync_id, created_at, updated_at, sync_status
+                            owner_user_id, sync_id, created_at, updated_at, sync_status
                         )
-                        VALUES (?, ?, ?, ?, 'pendiente', 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                        VALUES (?, ?, ?, ?, 'pendiente', 1, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                         """,
                         (
                             row["descripcion"],
@@ -1144,6 +1200,7 @@ class FinanceService:
                             row["monto_estimado"],
                             next_due_iso,
                             row["frecuencia"],
+                            self._owner_id(),
                             self._new_sync_id(),
                         ),
                     )
@@ -1185,8 +1242,9 @@ class FinanceService:
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (hoy, (date.today() + timedelta(days=30)).isoformat()),
+                (hoy, (date.today() + timedelta(days=30)).isoformat(), self._owner_id()),
             ).fetchone()
 
             vencido = conn.execute(
@@ -1195,8 +1253,9 @@ class FinanceService:
                 FROM gastos_programados
                 WHERE estado = 'pendiente' AND fecha_vencimiento < ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (hoy,),
+                (hoy, self._owner_id()),
             ).fetchone()
 
             pagado_mes = conn.execute(
@@ -1207,8 +1266,9 @@ class FinanceService:
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (inicio_actual, fin_actual),
+                (inicio_actual, fin_actual, self._owner_id()),
             ).fetchone()
 
             reales_mes = conn.execute(
@@ -1219,8 +1279,9 @@ class FinanceService:
                 FROM movimientos
                 WHERE fecha >= ? AND fecha <= ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (inicio_mes, fin_mes),
+                (inicio_mes, fin_mes, self._owner_id()),
             ).fetchone()
 
             programados_pendientes_mes = conn.execute(
@@ -1231,8 +1292,9 @@ class FinanceService:
                   AND fecha_vencimiento >= ?
                   AND fecha_vencimiento <= ?
                   AND (deleted_at IS NULL OR deleted_at = '')
+                  AND owner_user_id = ?
                 """,
-                (inicio_mes, fin_mes),
+                (inicio_mes, fin_mes, self._owner_id()),
             ).fetchone()
 
         ingresos = float(reales_mes["ingresos"] or 0.0)
@@ -1284,13 +1346,16 @@ class FinanceService:
                  AND strftime('%m', m.fecha) = printf('%02d', p.mes)
                  AND strftime('%Y', m.fecha) = CAST(p.anio AS TEXT)
                  AND (m.deleted_at IS NULL OR m.deleted_at = '')
+                 AND m.owner_user_id = ?
                 WHERE p.mes = ? AND p.anio = ?
                   AND (p.deleted_at IS NULL OR p.deleted_at = '')
                   AND (c.deleted_at IS NULL OR c.deleted_at = '')
+                  AND p.owner_user_id = ?
+                  AND c.owner_user_id = ?
                 GROUP BY p.id, p.categoria_id, c.nombre, p.mes, p.anio, p.monto
                 ORDER BY c.nombre
                 """,
-                (month, year),
+                (self._owner_id(), month, year, self._owner_id(), self._owner_id()),
             ).fetchall()
         result: list[dict] = []
         for row in rows:
@@ -1316,12 +1381,12 @@ class FinanceService:
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO presupuestos (categoria_id, mes, anio, monto, sync_id, created_at, updated_at, sync_status)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+                INSERT INTO presupuestos (categoria_id, mes, anio, monto, owner_user_id, sync_id, created_at, updated_at, sync_status)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 ON CONFLICT(categoria_id, mes, anio)
                 DO UPDATE SET monto = excluded.monto, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 """,
-                (data.categoria_id, data.mes, data.anio, data.monto, self._new_sync_id()),
+                (data.categoria_id, data.mes, data.anio, data.monto, self._owner_id(), self._new_sync_id()),
             )
 
     def delete_presupuesto(self, presupuesto_id: int) -> None:
@@ -1365,7 +1430,9 @@ class FinanceService:
                   AND lower(c.nombre) LIKE '%invers%'
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
                   AND (c.deleted_at IS NULL OR c.deleted_at = '')
+                  AND m.owner_user_id = ?
+                  AND c.owner_user_id = ?
                 """,
-                (f"{month:02d}", str(year)),
+                (f"{month:02d}", str(year), self._owner_id(), self._owner_id()),
             ).fetchone()
         return float(row["total"] or 0.0)

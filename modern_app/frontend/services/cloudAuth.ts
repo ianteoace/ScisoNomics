@@ -13,6 +13,7 @@ export type CloudAuthResponse = {
 };
 
 const TOKEN_KEY = "scisonomics_cloud_access_token";
+const USER_KEY = "scisonomics_cloud_user";
 export const ACCOUNT_SESSION_CHANGED_EVENT = "scisonomics:account-session-changed";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 
@@ -36,6 +37,20 @@ export function getStoredToken() {
   } catch {
     return null;
   }
+}
+
+export function getStoredUser(): CloudUser | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(USER_KEY) || window.sessionStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as CloudUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getCurrentOwnerId() {
+  return getStoredUser()?.id || "local";
 }
 
 export function getTokenStorageMode(): "persistent" | "session" | null {
@@ -66,11 +81,36 @@ export function setStoredToken(token: string, remember: boolean) {
   }
 }
 
+export function setStoredSession(token: string, user: CloudUser, remember: boolean) {
+  if (typeof window === "undefined") return;
+  try {
+    // TODO: migrar este token a almacenamiento seguro antes de activar sincronizacion cloud real.
+    window.localStorage.removeItem(TOKEN_KEY);
+    window.sessionStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(USER_KEY);
+    window.sessionStorage.removeItem(USER_KEY);
+    const target = remember ? window.localStorage : window.sessionStorage;
+    const other = remember ? window.sessionStorage : window.localStorage;
+    other.removeItem(USER_KEY);
+    if (remember) {
+      window.localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      window.sessionStorage.setItem(TOKEN_KEY, token);
+    }
+    target.setItem(USER_KEY, JSON.stringify(user));
+    notifyAccountSessionChanged();
+  } catch {
+    // La cuenta opcional no debe bloquear el uso local de la app.
+  }
+}
+
 export function clearStoredToken() {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(TOKEN_KEY);
     window.sessionStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(USER_KEY);
+    window.sessionStorage.removeItem(USER_KEY);
     notifyAccountSessionChanged();
   } catch {
     // La cuenta opcional no debe bloquear el uso local de la app.

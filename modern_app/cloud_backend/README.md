@@ -67,4 +67,6 @@ Desde v2.5.0 los registros cloud guardan metadata del ultimo dispositivo que los
 
 Desde v2.6.0 el cliente desktop consulta cambios remotos automaticamente aunque no tenga pendientes locales. El backend cloud no usa WebSockets; sigue exponiendo endpoints HTTP de push/pull.
 
+Desde v2.7.0 el cliente desktop aísla datos locales por cuenta con `owner_user_id`. El backend cloud sigue filtrando por el usuario autenticado desde el JWT e ignora cualquier intento del cliente de indicar otro usuario.
+
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.

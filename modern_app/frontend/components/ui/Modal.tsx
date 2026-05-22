@@ -18,6 +18,7 @@ export function Modal({
   size?: "md" | "lg" | "xl";
 }) {
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const mouseDownOnBackdrop = useRef(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -42,7 +43,16 @@ export function Modal({
   const sizeClass = size === "xl" ? "max-w-5xl" : size === "lg" ? "max-w-3xl" : "max-w-xl";
 
   return createPortal(
-    <div className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4"
+      onMouseDown={(event) => {
+        mouseDownOnBackdrop.current = event.target === event.currentTarget;
+      }}
+      onMouseUp={(event) => {
+        if (mouseDownOnBackdrop.current && event.target === event.currentTarget) onClose();
+        mouseDownOnBackdrop.current = false;
+      }}
+    >
       <motion.div
         ref={modalRef}
         tabIndex={-1}
@@ -51,6 +61,8 @@ export function Modal({
         exit={{ opacity: 0, y: 8 }}
         transition={{ duration: 0.18 }}
         className={`card max-h-[90vh] w-full ${sizeClass} overflow-y-auto p-5 outline-none`}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

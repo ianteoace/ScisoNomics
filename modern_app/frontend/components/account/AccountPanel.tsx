@@ -7,9 +7,10 @@ import {
   clearStoredToken,
   cloudAuth,
   getStoredToken,
+  getStoredUser,
   getTokenStorageMode,
   isCloudAuthConfigured,
-  setStoredToken,
+  setStoredSession,
   type CloudUser,
 } from "../../services/cloudAuth";
 import {
@@ -17,12 +18,14 @@ import {
   getLastManualSyncAt,
   getLastSyncError,
   getCloudDevices,
+  getLocalSessionContext,
   getSyncConflicts,
   getSyncHistory,
   getSyncOverview,
   isAutoSyncEnabled,
   isSyncInFlight,
   runManualSync,
+  claimLocalData,
   setAutoSyncEnabled,
   SYNC_STATE_CHANGED_EVENT,
   type CloudDevice,
@@ -55,6 +58,8 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [syncHistory, setSyncHistory] = useState<SyncHistoryItem[]>([]);
   const [syncConflicts, setSyncConflicts] = useState<SyncConflictItem[]>([]);
   const [cloudDevices, setCloudDevices] = useState<CloudDevice[]>([]);
+  const [hasLocalData, setHasLocalData] = useState(false);
+  const [claimingLocalData, setClaimingLocalData] = useState(false);
   const [syncCenterLoading, setSyncCenterLoading] = useState(false);
   const [showPending, setShowPending] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -93,9 +98,15 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         setLoadingSession(false);
         return;
       }
+      const storedUser = getStoredUser();
+      if (storedUser && !cancelled) {
+        setUser(storedUser);
+        setTokenMode(getTokenStorageMode());
+      }
       try {
         const currentUser = await cloudAuth.me(token);
         if (!cancelled) {
+          setStoredSession(token, currentUser, getTokenStorageMode() !== "session");
           setUser(currentUser);
           setTokenMode(getTokenStorageMode());
         }
@@ -136,10 +147,12 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         getSyncConflicts(10),
         token ? getCloudDevices(token).catch(() => ({ ok: false, devices: [] })) : Promise.resolve({ ok: false, devices: [] }),
       ]);
+      const context = await getLocalSessionContext().catch(() => null);
       setSyncOverview(overview);
       setSyncHistory(history.items || []);
       setSyncConflicts(conflicts.items || []);
       setCloudDevices(devices.devices || []);
+      setHasLocalData(Boolean(context?.has_unassigned_data));
     } catch (error) {
       console.warn("No se pudo cargar el centro de sincronizacion:", error);
     } finally {
@@ -158,7 +171,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setSubmitting(true);
     try {
       const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
-      setStoredToken(response.access_token, remember);
+      setStoredSession(response.access_token, response.user, remember);
       setTokenMode(remember ? "persistent" : "session");
       setUser(response.user);
       clearAuthForms();
@@ -185,7 +198,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         email: registerEmail,
         password: registerPassword,
       });
-      setStoredToken(response.access_token, true);
+      setStoredSession(response.access_token, response.user, true);
       setTokenMode("persistent");
       setUser(response.user);
       clearAuthForms();
@@ -204,8 +217,31 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     clearStoredToken();
     setTokenMode(null);
     setUser(null);
+    setAutoSyncEnabled(false);
+    setAutoSyncEnabledState(false);
+    setSyncOverview(null);
+    setSyncHistory([]);
+    setSyncConflicts([]);
+    setCloudDevices([]);
     clearAuthForms();
-    showSuccess("Sesion cerrada.");
+    showSuccess("Sesion cerrada. Tus datos de cuenta no se muestran en modo local.");
+  }
+
+  async function handleClaimLocalData() {
+    if (!user || claimingLocalData) return;
+    setClaimingLocalData(true);
+    try {
+      const result = await claimLocalData(user.id);
+      const total = Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0);
+      setHasLocalData(false);
+      await refreshSyncCenter();
+      showSuccess(`Datos locales asociados a esta cuenta: ${total}.`);
+    } catch (error) {
+      console.error("Error asociando datos locales:", error);
+      showError("No se pudieron asociar los datos locales a esta cuenta.");
+    } finally {
+      setClaimingLocalData(false);
+    }
   }
 
   async function handleManualSync() {
@@ -340,6 +376,21 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
           <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-900 dark:text-sky-100">
             La sincronizacion cloud es opcional. Tus datos siguen guardandose localmente en este dispositivo.
           </p>
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm dark:border-slate-800 dark:bg-slate-950/40">
+            <p className="font-semibold">Modo de datos</p>
+            <p className="mt-1 text-slate-500 dark:text-slate-400">
+              Estás viendo datos de esta cuenta. Los datos locales sin cuenta quedan separados y no se sincronizan automaticamente.
+            </p>
+            {hasLocalData ? (
+              <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-amber-900 dark:text-amber-100">
+                <p className="font-medium">Hay datos locales sin cuenta en este dispositivo.</p>
+                <p className="mt-1">Podés asociarlos a esta cuenta si querés que formen parte de esta sesión y queden pendientes para sincronizar.</p>
+                <button className="btn mt-3" type="button" onClick={handleClaimLocalData} disabled={claimingLocalData}>
+                  {claimingLocalData ? "Asociando..." : "Asociar datos locales a esta cuenta"}
+                </button>
+              </div>
+            ) : null}
+          </div>
           {configured ? (
             <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
               <div className="flex flex-col gap-4">
