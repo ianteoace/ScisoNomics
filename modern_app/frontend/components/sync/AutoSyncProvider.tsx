@@ -7,7 +7,7 @@ import { DATA_CHANGED_EVENT, isAutoSyncEnabled, isSyncInFlight, runAutoSync } fr
 
 const AUTO_SYNC_DEBOUNCE_MS = 7000;
 const STARTUP_AUTO_SYNC_DELAY_MS = 1500;
-const PERIODIC_AUTO_SYNC_MS = 3 * 60 * 1000;
+const PERIODIC_AUTO_SYNC_MS = 30 * 1000;
 const FOCUS_AUTO_SYNC_MIN_MS = 60 * 1000;
 const AUTO_SYNC_ERROR_RETRY_MS = 5 * 60 * 1000;
 
