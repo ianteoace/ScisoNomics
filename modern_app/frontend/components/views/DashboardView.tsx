@@ -78,6 +78,9 @@ export function DashboardView({
   const metaMasAvanzada = metas.length
     ? [...metas].sort((a, b) => Number(b.porcentaje_completado || 0) - Number(a.porcentaje_completado || 0))[0]
     : null;
+  const presupuestosEnAlerta = presupuestos.filter((p) => Number(p.porcentaje_usado || 0) >= 70);
+  const gastosProgramadosCercanos = upcoming.slice(0, 3);
+  const metasCercanas = metas.filter((m) => Number(m.porcentaje_completado || 0) >= 75 && Number(m.porcentaje_completado || 0) < 100).slice(0, 3);
 
   const barData = [
     { name: "Ingresos", value: summary.ingreso },
@@ -85,16 +88,50 @@ export function DashboardView({
   ];
 
   return (
-    <div className="space-y-4">
-      <SectionHeader title="Inicio" subtitle={`Resumen de ${monthName(month)} ${year}`} />
-      <div className="panel grid gap-2 p-3 md:grid-cols-3">
-        <select className="input" value={month} onChange={(e) => onMonthChange(Number(e.target.value))}>
-          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
-        </select>
-        <select className="input" value={year} onChange={(e) => onYearChange(Number(e.target.value))}>
-          {yearOptions(new Date().getFullYear(), [year]).map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-      </div>
+    <div className="space-y-5">
+      <section className="relative overflow-hidden rounded-3xl border border-line bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.20),transparent_32%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.92))] p-5 text-white shadow-2xl shadow-slate-950/20 dark:border-slate-800 md:p-7">
+        <div className="relative z-10 grid gap-5 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-cyan-200/80">Inicio</p>
+            <h2 className="mt-2 text-3xl font-black tracking-tight md:text-4xl">Resumen financiero</h2>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300">
+              Vista rapida de tu mes, saldos, actividad reciente y puntos que necesitan atencion.
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <select className="input border-white/20 bg-white/10 text-white" value={month} onChange={(e) => onMonthChange(Number(e.target.value))}>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
+            </select>
+            <select className="input border-white/20 bg-white/10 text-white" value={year} onChange={(e) => onYearChange(Number(e.target.value))}>
+              {yearOptions(new Date().getFullYear(), [year]).map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+        <div className="card overflow-hidden p-0">
+          <div className="bg-gradient-to-br from-cyan-500/15 via-sky-500/10 to-transparent p-5 md:p-6">
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Saldo actual</p>
+            <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-4xl font-black tracking-tight text-cyan-700 dark:text-cyan-200 md:text-5xl">{money(saldoActual)}</p>
+                <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Saldo del mes anterior: {money(summary.saldo_inicial)}</p>
+              </div>
+              <div className={`rounded-2xl px-4 py-3 text-sm font-semibold ${balanceMes >= 0 ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/15 text-amber-700 dark:text-amber-300"}`}>
+                Balance del mes: {money(balanceMes)}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="card p-5">
+          <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Sincronizacion</p>
+          <p className="mt-2 text-lg font-semibold">Estado local-first</p>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Tus datos se guardan localmente. Si activaste sync automatica, ScisoNomics tambien consulta cambios remotos en segundo plano.
+          </p>
+        </div>
+      </section>
 
       {loading ? (
         <LoadingGrid items={8} className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" />
@@ -150,12 +187,47 @@ export function DashboardView({
       <section className="card p-4">
         <SectionHeader title="Accesos rapidos" subtitle="Acciones frecuentes" />
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-          <button className="btn" onClick={onQuickNewMovement}>Nuevo movimiento</button>
+          <button className="btn" onClick={onQuickNewMovement}>Nuevo ingreso/gasto</button>
           <button className="btn-secondary" onClick={onQuickMovements}>Ver movimientos</button>
           <button className="btn-secondary" onClick={onQuickStats}>Ver estadisticas</button>
           <button className="btn-secondary" onClick={() => onQuickExport().catch(() => undefined)}>Exportar reporte</button>
           <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia de seguridad</button>
         </div>
+      </section>
+
+      <section className="card p-4">
+        <SectionHeader title="Alertas financieras" subtitle="Puntos para revisar este mes" />
+        {loading ? (
+          <LoadingSkeleton rows={4} />
+        ) : presupuestosEnAlerta.length === 0 && gastosProgramadosCercanos.length === 0 && metasCercanas.length === 0 ? (
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+            Sin alertas importantes para este periodo.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-2xl border border-line p-3">
+              <p className="font-semibold">Presupuestos</p>
+              {presupuestosEnAlerta.length === 0 ? <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Sin limites comprometidos.</p> : null}
+              {presupuestosEnAlerta.slice(0, 3).map((p) => (
+                <p key={p.id} className="mt-2 text-sm text-amber-700 dark:text-amber-300">{p.categoria}: {p.porcentaje_usado.toFixed(1)}% usado</p>
+              ))}
+            </div>
+            <div className="rounded-2xl border border-line p-3">
+              <p className="font-semibold">Gastos programados</p>
+              {gastosProgramadosCercanos.length === 0 ? <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Sin vencimientos cercanos.</p> : null}
+              {gastosProgramadosCercanos.map((g) => (
+                <p key={g.id} className="mt-2 text-sm text-slate-600 dark:text-slate-300">{g.descripcion}: {money(g.monto_estimado)}</p>
+              ))}
+            </div>
+            <div className="rounded-2xl border border-line p-3">
+              <p className="font-semibold">Metas</p>
+              {metasCercanas.length === 0 ? <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Sin metas cerca del objetivo.</p> : null}
+              {metasCercanas.map((m) => (
+                <p key={m.id} className="mt-2 text-sm text-cyan-700 dark:text-cyan-300">{m.nombre}: {Number(m.porcentaje_completado || 0).toFixed(1)}%</p>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       <div className="grid gap-4 xl:grid-cols-3">

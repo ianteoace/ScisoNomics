@@ -271,6 +271,19 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     return "Ignorado";
   }
 
+  function historyReasonLabel(item: SyncHistoryItem) {
+    const reason = typeof item.details?.reason === "string" ? item.details.reason : "";
+    const labels: Record<string, string> = {
+      manual: "Manual",
+      startup: "Inicio",
+      interval: "Consulta remota",
+      focus: "Foco",
+      auto_local_change: "Cambio local",
+      auto_remote_pull: "Consulta remota",
+    };
+    return labels[reason] || (item.mode === "auto" ? "Automatica" : "Manual");
+  }
+
   async function handleGoogleLogin() {
     if (!configured) {
       showError("El servicio de cuenta no esta configurado en este entorno.");
@@ -500,7 +513,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                               <span className="font-medium">{formatDate(item.finished_at || item.started_at)}</span>
                               <span className={item.status === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>
-                                {item.mode === "auto" ? "Automatica" : "Manual"} - {item.status === "success" ? "Exitosa" : item.status === "skipped" ? "Omitida" : "Error"}
+                                {historyReasonLabel(item)} - {item.status === "success" ? "Exitosa" : item.status === "skipped" ? "Omitida" : "Error"}
                               </span>
                             </div>
                             {item.status === "success" ? (

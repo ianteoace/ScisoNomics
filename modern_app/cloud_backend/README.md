@@ -65,4 +65,6 @@ Desde v2.4.0 el backend cloud tambien registra dispositivos por usuario (`device
 
 Desde v2.5.0 los registros cloud guardan metadata del ultimo dispositivo que los modifico (`last_modified_device_id`, `last_modified_device_name`, `last_modified_at`). La resolucion avanzada de conflictos no esta implementada; la app mantiene last-write-wins.
 
+Desde v2.6.0 el cliente desktop consulta cambios remotos automaticamente aunque no tenga pendientes locales. El backend cloud no usa WebSockets; sigue exponiendo endpoints HTTP de push/pull.
+
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.

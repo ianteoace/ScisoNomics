@@ -8,9 +8,23 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.5.0**
+Versión estable actual: **v2.6.0**
 
-[Descargar ScisoNomics v2.5.0](../../releases/tag/v2.5.0)
+[Descargar ScisoNomics v2.6.0](../../releases/tag/v2.6.0)
+
+---
+
+## Novedades de v2.6.0
+
+- La sincronización automática ahora también consulta cambios hechos desde otros dispositivos.
+- El pull remoto se ejecuta aunque no haya cambios locales pendientes.
+- La sync automática consulta remoto al iniciar, por intervalo y al recuperar foco.
+- Se mantiene sync después de cambios locales con debounce.
+- Se mejoró el historial de sincronización con razones como `startup`, `interval`, `focus` y `auto_local_change`.
+- Se mejoró el Centro de sincronización para mostrar cambios remotos y conflictos con más claridad.
+- Se renovó visualmente el dashboard principal con mejor jerarquía, saldo destacado y alertas financieras.
+- La app sigue siendo local-first, la cuenta sigue siendo opcional y no se sube la base `.db` completa.
+- No hay WebSockets ni merge manual complejo todavía.
 
 ---
 

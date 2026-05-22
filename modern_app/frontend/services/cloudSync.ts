@@ -13,6 +13,7 @@ type SyncTable = (typeof SYNC_TABLES)[number];
 type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
 type AcceptedPayload = Record<SyncTable, string[]>;
 type SyncMode = "manual" | "auto";
+type SyncReason = "manual" | "auto_local_change" | "auto_remote_pull" | "startup" | "focus" | "interval";
 
 export type SyncOverview = {
   ok: boolean;
@@ -327,6 +328,11 @@ export function isSyncInFlight() {
 }
 
 export async function runSync(token: string, userEmail?: string, mode: SyncMode = "manual") {
+  const reason: SyncReason = mode === "manual" ? "manual" : "auto_remote_pull";
+  return runSyncWithReason(token, userEmail, mode, reason);
+}
+
+async function runSyncWithReason(token: string, userEmail: string | undefined, mode: SyncMode, reason: SyncReason) {
   if (!token) throw new Error("Inicia sesion para sincronizar.");
   if (!CLOUD_API_URL) throw new Error("El servicio cloud no esta configurado en este entorno.");
   if (syncInFlight) throw new Error("Ya hay una sincronizacion en curso.");
@@ -344,6 +350,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
     hasToken: Boolean(token),
     user: userEmail || "usuario autenticado",
     mode,
+    reason,
   });
 
   try {
@@ -351,7 +358,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
     const pending = await getLocalPending();
     pendingCounts = countByTable(pending);
     deletedCounts = countDeletedByTable(pending);
-    console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, device: deviceInfo.device_id, ...pendingCounts });
+    console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, reason, device: deviceInfo.device_id, ...pendingCounts });
 
     const pushResult = await cloudPost<{
       ok: boolean;
@@ -453,6 +460,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
         applied: applyResult.result,
         conflicts: applyResult.conflicts,
         kept_local: applyResult.kept_local,
+        reason,
       },
     });
 
@@ -466,6 +474,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
       remoteChangesTotal,
       appliedRemoteTotal,
       keptLocalTotal,
+      reason,
     };
   } catch (error) {
     const friendly = friendlySyncError(error);
@@ -486,6 +495,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
       details: {
         pending: pendingCounts,
         deleted: deletedCounts,
+        reason,
       },
     });
     throw new Error(friendly);
@@ -499,6 +509,6 @@ export async function runManualSync(token: string, userEmail?: string) {
   return runSync(token, userEmail, "manual");
 }
 
-export async function runAutoSync(token: string, userEmail?: string) {
-  return runSync(token, userEmail, "auto");
+export async function runAutoSync(token: string, userEmail?: string, reason: Exclude<SyncReason, "manual"> = "auto_remote_pull") {
+  return runSyncWithReason(token, userEmail, "auto", reason);
 }
