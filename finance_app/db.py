@@ -18,8 +18,9 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
@@ -177,11 +178,13 @@ class Database:
                 self._migrate_movimientos_meta_y_nota(conn)
                 self._migrate_sync_columns(conn)
                 self._migrate_owner_columns(conn)
+                self._migrate_categorias_owner_unique(conn)
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
                 self._seed_default_tags(conn)
                 self._migrate_sync_columns(conn)
                 self._migrate_owner_columns(conn)
+                self._migrate_categorias_owner_unique(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
                     return
@@ -203,7 +206,10 @@ class Database:
             ("Salud", "gasto"),
             ("Ahorro", "ahorro"),
         ]
-        conn.executemany("INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')", defaults)
+        conn.executemany(
+            "INSERT OR IGNORE INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
+            defaults,
+        )
 
     def _ensure_required_movement_categories(self, conn: sqlite3.Connection) -> None:
         migration_key = "migration_required_categories_v0241"
@@ -223,12 +229,12 @@ class Database:
 
         if int(tipo_ahorro[0] or 0) == 0:
             conn.execute(
-                "INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
+                "INSERT OR IGNORE INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
                 ("Ahorro", "ahorro"),
             )
         if int(tipo_inversion[0] or 0) == 0:
             conn.execute(
-                "INSERT INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
+                "INSERT OR IGNORE INTO categorias (nombre, tipo, owner_user_id) VALUES (?, ?, 'local')",
                 ("Inversion", "inversion"),
             )
 
@@ -407,6 +413,18 @@ class Database:
         except OSError as exc:
             self._append_startup_log(f"No se pudo crear backup pre-migracion de categorias: {exc}")
 
+    def _backup_before_categoria_owner_unique_migration(self) -> None:
+        backup_dir = get_backup_dir()
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            target = backup_dir / f"finanzas_backup_pre_categoria_owner_unique_{stamp}.db"
+            if self.db_path.exists():
+                shutil.copy2(self.db_path, target)
+                self._append_startup_log(f"Backup pre-migracion unique owner categorias: {target}")
+        except OSError as exc:
+            self._append_startup_log(f"No se pudo crear backup pre-migracion unique owner categorias: {exc}")
+
     def _append_startup_log(self, message: str) -> None:
         log_dir = get_logs_dir()
         try:
@@ -478,73 +496,189 @@ class Database:
             )
             conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_user_id ON {table}(owner_user_id)")
         if "categorias" in existing_tables:
-            self._rebuild_categorias_owner_unique(conn)
+            self._ensure_categorias_owner_indexes(conn)
             self._recreate_categorias_validation_triggers(conn)
+        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_issues:
+            self._append_startup_log(f"foreign_key_check detecto inconsistencias luego de owner migration: {fk_issues}")
 
-    def _rebuild_categorias_owner_unique(self, conn: sqlite3.Connection) -> None:
-        create_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='categorias'"
-        ).fetchone()
-        if not create_sql or not create_sql[0]:
+    def _migrate_categorias_owner_unique(self, conn: sqlite3.Connection) -> None:
+        if not self._categorias_has_global_unique(conn):
+            self._ensure_categorias_owner_indexes(conn)
             return
-        sql_text = str(create_sql[0]).lower()
-        if "unique(owner_user_id,nombre,tipo)" in sql_text.replace(" ", ""):
-            return
+
+        self._backup_before_categoria_owner_unique_migration()
+        self._append_startup_log("Iniciando migracion de categorias a UNIQUE(owner_user_id, nombre, tipo).")
 
         table_info = conn.execute("PRAGMA table_info(categorias)").fetchall()
         if not table_info:
             return
-        rows = conn.execute("SELECT * FROM categorias").fetchall()
-        old_foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+
+        existing_columns = [str(row["name"]) for row in table_info]
+        if "owner_user_id" not in existing_columns:
+            conn.execute("ALTER TABLE categorias ADD COLUMN owner_user_id TEXT")
+            conn.execute("UPDATE categorias SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''")
+            table_info = conn.execute("PRAGMA table_info(categorias)").fetchall()
+            existing_columns = [str(row["name"]) for row in table_info]
+
+        index_rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='categorias' AND sql IS NOT NULL"
+        ).fetchall()
+        rows = conn.execute("SELECT * FROM categorias ORDER BY id").fetchall()
+        col_defs = [self._categoria_column_definition(row) for row in table_info]
+        col_defs.append("UNIQUE(owner_user_id, nombre, tipo)")
+        quoted_cols = ", ".join(self._quote_identifier(column) for column in existing_columns)
+        placeholders = ", ".join(["?"] * len(existing_columns))
+
+        if conn.in_transaction:
+            conn.commit()
+
+        old_foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0] or 0)
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
-            conn.execute(
-                """
-                CREATE TABLE categorias_owner_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nombre TEXT NOT NULL,
-                    tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion')),
-                    sync_id TEXT,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    deleted_at TEXT,
-                    sync_status TEXT,
-                    last_synced_at TEXT,
-                    last_remote_device_id TEXT,
-                    last_remote_device_name TEXT,
-                    last_remote_updated_at TEXT,
-                    owner_user_id TEXT NOT NULL DEFAULT 'local',
-                    UNIQUE(owner_user_id, nombre, tipo)
-                )
-                """
-            )
-            new_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(categorias_owner_new)").fetchall()}
-            old_columns = [str(row["name"]) for row in table_info]
-            shared = [name for name in old_columns if name in new_columns]
-            if "owner_user_id" not in shared and "owner_user_id" in new_columns:
-                shared.append("owner_user_id")
+            conn.execute("BEGIN")
+            conn.execute(f"CREATE TABLE categorias_owner_new ({', '.join(col_defs)})")
+            seen_keys: set[tuple[str, str, str]] = set()
             for row in rows:
                 values = []
-                for column in shared:
-                    if column in row.keys():
-                        values.append(row[column])
-                    elif column == "owner_user_id":
-                        values.append("local")
+                owner = str(row["owner_user_id"] or "local").strip() or "local"
+                nombre = str(row["nombre"] or "").strip()
+                tipo = str(row["tipo"] or "").strip()
+                key = (owner, nombre, tipo)
+                if key in seen_keys:
+                    nombre = f"{nombre} #{row['id']}"
+                    key = (owner, nombre, tipo)
+                seen_keys.add(key)
+
+                for column in existing_columns:
+                    if column == "owner_user_id":
+                        values.append(owner)
+                    elif column == "nombre":
+                        values.append(nombre)
                     else:
-                        values.append(None)
-                placeholders = ", ".join(["?"] * len(shared))
+                        values.append(row[column])
                 conn.execute(
-                    f"INSERT OR IGNORE INTO categorias_owner_new ({', '.join(shared)}) VALUES ({placeholders})",
+                    f"INSERT INTO categorias_owner_new ({quoted_cols}) VALUES ({placeholders})",
                     tuple(values),
                 )
             conn.execute("DROP TABLE categorias")
             conn.execute("ALTER TABLE categorias_owner_new RENAME TO categorias")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_owner_nombre_tipo ON categorias(owner_user_id, nombre, tipo)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_owner_user_id ON categorias(owner_user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_sync_status ON categorias(sync_status)")
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_sync_id ON categorias(sync_id) WHERE sync_id IS NOT NULL")
+            self._recreate_categorias_indexes_after_owner_unique(conn, index_rows)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            self._append_startup_log("Fallo migracion unique owner categorias. Se hizo rollback.")
+            raise
         finally:
-            conn.execute(f"PRAGMA foreign_keys = {int(old_foreign_keys)}")
+            conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
+
+        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_issues:
+            self._append_startup_log(f"foreign_key_check fallo luego de unique owner categorias: {fk_issues}")
+            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar unique owner categorias.")
+
+        self._append_startup_log("Migracion unique owner categorias finalizada correctamente.")
+
+    def _categorias_has_global_unique(self, conn: sqlite3.Connection) -> bool:
+        for index in conn.execute("PRAGMA index_list(categorias)").fetchall():
+            if int(index["unique"] or 0) != 1:
+                continue
+            columns = [
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA index_info({self._quote_identifier(str(index['name']))})").fetchall()
+            ]
+            if columns == ["nombre", "tipo"]:
+                return True
+        return False
+
+    def _categoria_column_definition(self, row: sqlite3.Row) -> str:
+        name = str(row["name"])
+        col_type = str(row["type"] or "TEXT")
+        notnull = int(row["notnull"] or 0) == 1
+        default = row["dflt_value"]
+        pk = int(row["pk"] or 0)
+
+        if name == "id":
+            return "id INTEGER PRIMARY KEY AUTOINCREMENT"
+        if name == "tipo":
+            return "tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion'))"
+        if name == "owner_user_id":
+            return "owner_user_id TEXT NOT NULL DEFAULT 'local'"
+
+        col_def = f"{self._quote_identifier(name)} {col_type}".strip()
+        if pk:
+            col_def += " PRIMARY KEY"
+        if notnull and not pk:
+            col_def += " NOT NULL"
+        if default is not None and not pk:
+            col_def += f" DEFAULT {default}"
+        return col_def
+
+    def _recreate_categorias_indexes_after_owner_unique(self, conn: sqlite3.Connection, index_rows: list[sqlite3.Row]) -> None:
+        for idx in index_rows:
+            sql = str(idx["sql"] or "")
+            lowered = sql.lower().replace(" ", "")
+            if not sql:
+                continue
+            if "uniqueindex" in lowered and "(nombre,tipo)" in lowered:
+                continue
+            if "idx_categorias_nombre_tipo" in lowered:
+                continue
+            if "idx_categorias_owner_nombre_tipo" in lowered:
+                continue
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as exc:
+                self._append_startup_log(f"No se pudo recrear indice de categorias {idx['name']}: {exc}")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_owner_nombre_tipo ON categorias(owner_user_id, nombre, tipo)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_owner_user_id ON categorias(owner_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_sync_status ON categorias(sync_status)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_sync_id ON categorias(sync_id) WHERE sync_id IS NOT NULL")
+
+    @staticmethod
+    def _quote_identifier(value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
+
+    def _ensure_categorias_owner_indexes(self, conn: sqlite3.Connection) -> None:
+        # No reconstruimos categorias porque movimientos y otras tablas referencian su id.
+        # El UNIQUE global historico queda para una migracion futura mas profunda.
+        duplicates = conn.execute(
+            """
+            SELECT owner_user_id, nombre, tipo, COUNT(*) AS total
+            FROM categorias
+            WHERE deleted_at IS NULL OR deleted_at = ''
+            GROUP BY owner_user_id, nombre, tipo
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for duplicate in duplicates:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM categorias
+                WHERE owner_user_id = ? AND nombre = ? AND tipo = ?
+                ORDER BY id
+                """,
+                (duplicate["owner_user_id"], duplicate["nombre"], duplicate["tipo"]),
+            ).fetchall()
+            for row in rows[1:]:
+                conn.execute(
+                    """
+                    UPDATE categorias
+                    SET nombre = nombre || ' #' || id,
+                        updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP),
+                        sync_status = 'pending'
+                    WHERE id = ?
+                    """,
+                    (row["id"],),
+                )
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_owner_nombre_tipo ON categorias(owner_user_id, nombre, tipo)"
+            )
+        except sqlite3.IntegrityError as exc:
+            self._append_startup_log(f"No se pudo crear idx_categorias_owner_nombre_tipo: {exc}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_owner_user_id ON categorias(owner_user_id)")
 
     def _ensure_sync_columns_for_table(self, conn: sqlite3.Connection, table: str) -> None:
         columns = {

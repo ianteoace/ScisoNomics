@@ -37,7 +37,7 @@ from finance_app.services import (
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
 from openpyxl import load_workbook
 
-from .deps import ensure_app_data_initialized, get_last_init_status, get_service
+from .deps import ensure_app_data_initialized, get_database_readiness, get_last_init_status, get_service
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
@@ -119,22 +119,26 @@ def log_db_path() -> None:
         _logger.info("Startup backend OK. db=%s exists=%s size=%s", WEB_DB_PATH.resolve(), exists, size_bytes)
     except Exception as exc:
         _logger.exception("Error en startup backend: %s", exc)
-        raise
+        print(f"Error inicializando base SQLite: {exc}")
 
 
 @app.get("/health")
-def health(service: FinanceService = Depends(get_service)):
+def health():
     try:
         ensure_app_data_initialized()
         status = get_last_init_status()
-        db_path = Path(str(status.get("db_path", service.db.db_path)))
+        db_path = Path(str(status.get("db_path", WEB_DB_PATH)))
         db_exists = bool(status.get("db_exists", db_path.exists()))
         db_initialized = bool(status.get("db_initialized", False))
+        database_ready = bool(status.get("database_ready", db_initialized))
         return {
             "ok": True,
             "db_path": str(db_path),
             "db_exists": db_exists,
             "db_initialized": db_initialized,
+            "database_ready": database_ready,
+            "initializing": bool(status.get("initializing", False)),
+            "database_error": status.get("database_error"),
             "data_dir": str(status.get("data_dir", get_data_dir())),
             "backups_dir": str(status.get("backups_dir", get_backup_dir())),
             "logs_dir": str(status.get("logs_dir", get_logs_dir())),
@@ -151,10 +155,37 @@ def health(service: FinanceService = Depends(get_service)):
                 "ok": False,
                 "error": "Error de inicializacion del backend local.",
                 "detail": str(exc),
+                "database_ready": False,
+                "initializing": False,
+                "database_error": str(exc),
                 "db_path": str(status.get("db_path", WEB_DB_PATH)),
                 "logs_path": str(get_logs_dir() / "backend-startup.log"),
             },
         )
+
+
+@app.get("/ready")
+def ready():
+    status = get_database_readiness()
+    if status.get("database_ready"):
+        return {
+            "ok": True,
+            "database_ready": True,
+            "initializing": False,
+            "version": app.version,
+            "database_path": str(status.get("db_path", WEB_DB_PATH)),
+        }
+    return JSONResponse(
+        status_code=503,
+        content={
+            "ok": False,
+            "database_ready": False,
+            "initializing": bool(status.get("initializing", False)),
+            "database_error": status.get("database_error"),
+            "version": app.version,
+            "database_path": str(status.get("db_path", WEB_DB_PATH)),
+        },
+    )
 
 
 @app.get("/meta")
@@ -875,10 +906,11 @@ def local_session_context(service: FinanceService = Depends(get_service)):
     owner = _current_owner()
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
-        has_local_data = any(
-            int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_user_id = ?", (LOCAL_OWNER_ID,)).fetchone()[0] or 0) > 0
+        local_counts = {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_user_id = ?", (LOCAL_OWNER_ID,)).fetchone()[0] or 0)
             for table in SYNC_TABLES
-        )
+        }
+        local_claimable_total = sum(local_counts.get(table, 0) for table in CLAIMABLE_LOCAL_DATA_TABLES)
         visible_data = {
             table: int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_user_id = ?", (owner,)).fetchone()[0] or 0)
             for table in SYNC_TABLES
@@ -887,7 +919,10 @@ def local_session_context(service: FinanceService = Depends(get_service)):
         "ok": True,
         "owner_user_id": owner,
         "mode": "local" if owner == LOCAL_OWNER_ID else "cloud",
-        "has_unassigned_data": has_local_data,
+        "has_local_data": local_claimable_total > 0,
+        "has_unassigned_data": local_claimable_total > 0,
+        "local_counts": local_counts,
+        "local_claimable_total": local_claimable_total,
         "visible_data": visible_data,
     }
 
@@ -901,7 +936,23 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
         summary: dict[str, int] = {}
-        for table in SYNC_TABLES:
+        category_ids = _local_category_ids_for_claim(conn)
+        if category_ids:
+            placeholders = ", ".join(["?"] * len(category_ids))
+            result = conn.execute(
+                f"""
+                UPDATE categorias
+                SET owner_user_id = ?,
+                    sync_status = 'pending',
+                    updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP)
+                WHERE owner_user_id = ? AND id IN ({placeholders})
+                """,
+                (owner, LOCAL_OWNER_ID, *category_ids),
+            )
+            summary["categorias"] = int(result.rowcount or 0)
+        else:
+            summary["categorias"] = 0
+        for table in CLAIMABLE_LOCAL_DATA_TABLES:
             result = conn.execute(
                 f"""
                 UPDATE {table}
@@ -913,30 +964,39 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
                 (owner, LOCAL_OWNER_ID),
             )
             summary[table] = int(result.rowcount or 0)
-    return {"ok": True, "owner_user_id": owner, "claimed": summary}
+    return {
+        "ok": True,
+        "owner_user_id": owner,
+        "claimed": summary,
+        "claimed_total": sum(summary.values()),
+        "claimable_total": sum(summary.get(table, 0) for table in CLAIMABLE_LOCAL_DATA_TABLES),
+    }
 
 
 @app.get("/sync/overview")
 def sync_overview(service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
+    owner = _current_owner()
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
         device = _get_or_create_device_info(conn)
-        tables = _sync_status_tables(conn, _current_owner())
+        tables = _sync_status_tables(conn, owner)
         pending_total = sum(item["pending"] for item in tables.values())
         deleted_pending_total = sum(item["deleted_pending"] for item in tables.values())
         return {
             "ok": True,
             "version": app.version,
+            "owner_user_id": owner,
+            "mode": "local" if owner == LOCAL_OWNER_ID else "cloud",
             **device,
             "has_pending": pending_total > 0,
             "pending_total": pending_total,
             "deleted_pending_total": deleted_pending_total,
             "tables": tables,
-            "last_success": _latest_history(conn, "success", _current_owner()),
-            "last_error": _latest_history(conn, "error", _current_owner()),
-            "last_remote_change_at": _last_remote_change_at(conn, _current_owner()),
-            **_conflict_summary(conn, _current_owner()),
+            "last_success": _latest_history(conn, "success", owner),
+            "last_error": _latest_history(conn, "error", owner),
+            "last_remote_change_at": _last_remote_change_at(conn, owner),
+            **_conflict_summary(conn, owner),
         }
 
 
@@ -1177,6 +1237,22 @@ def _remote_meta_values(item: dict[str, Any]) -> tuple[Any, Any, Any]:
 
 
 SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+CLAIMABLE_LOCAL_DATA_TABLES = ("movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+
+
+def _local_category_ids_for_claim(conn: sqlite3.Connection) -> list[int]:
+    category_ids: set[int] = set()
+    queries = [
+        "SELECT categoria_id FROM movimientos WHERE owner_user_id = ? AND categoria_id IS NOT NULL",
+        "SELECT categoria_id FROM gastos_programados WHERE owner_user_id = ? AND categoria_id IS NOT NULL",
+        "SELECT categoria_id FROM gastos_fijos WHERE owner_user_id = ? AND categoria_id IS NOT NULL",
+        "SELECT categoria_id FROM presupuestos WHERE owner_user_id = ? AND categoria_id IS NOT NULL",
+    ]
+    for query in queries:
+        for row in conn.execute(query, (LOCAL_OWNER_ID,)).fetchall():
+            if row["categoria_id"] is not None:
+                category_ids.add(int(row["categoria_id"]))
+    return sorted(category_ids)
 
 
 SYNC_SELECTS: dict[str, str] = {

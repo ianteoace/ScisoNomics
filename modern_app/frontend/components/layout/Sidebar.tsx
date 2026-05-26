@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { BarChart3, CalendarClock, ChevronLeft, ChevronRight, CircleUserRound, CreditCard, Flag, LayoutDashboard, List, Settings, Tags, Wallet } from "lucide-react";
 import { motion } from "framer-motion";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, cloudAuth, getStoredToken, getStoredUser, getTokenStorageMode, isCloudAuthConfigured, setStoredSession, type CloudUser } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, cloudAuth, getStoredSession, isCloudAuthConfigured, type CloudUser } from "../../services/cloudAuth";
 
 const items = [
   { href: "/dashboard", label: "Inicio", icon: LayoutDashboard },
@@ -36,16 +36,16 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         return;
       }
 
-      const token = getStoredToken();
-      if (!token) {
+      const session = getStoredSession();
+      if (!session) {
         setAccountUser(null);
         return;
       }
 
+      setAccountUser(session.user);
       try {
-        const user = await cloudAuth.me(token);
+        const user = await cloudAuth.me(session.token);
         if (!cancelled) {
-          if (getStoredUser()?.id !== user.id) setStoredSession(token, user, getTokenStorageMode() !== "session");
           setAccountUser(user);
         }
       } catch (error) {

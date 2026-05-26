@@ -8,6 +8,9 @@ type HealthResponse = {
   ok: boolean;
   db_exists?: boolean;
   db_initialized?: boolean;
+  database_ready?: boolean;
+  initializing?: boolean;
+  database_error?: string | null;
   error?: string;
   detail?: string;
 };
@@ -22,6 +25,7 @@ function wait(ms: number) {
 
 function isBackendReady(health: HealthResponse | null) {
   if (!health?.ok) return false;
+  if (health.database_ready === false) return false;
   if (health.db_exists === false) return false;
   if (health.db_initialized === false) return false;
   return true;
@@ -76,14 +80,14 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
             return;
           }
 
-          if (health?.ok && health.db_initialized === false) {
-            setStatusText("Estamos preparando la base de datos local...");
+          if (health?.initializing || health?.database_ready === false || health?.db_initialized === false) {
+            setStatusText("Preparando la base de datos local...");
           } else {
             setStatusText("Estamos preparando los servicios locales...");
           }
 
-          if (health?.error || health?.detail) {
-            lastError = `${health.error || ""} ${health.detail || ""}`.trim();
+          if (health?.database_error || health?.error || health?.detail) {
+            lastError = `${health.database_error || ""} ${health.error || ""} ${health.detail || ""}`.trim();
           } else if (!response.ok) {
             lastError = `HTTP ${response.status}`;
           } else if (raw) {

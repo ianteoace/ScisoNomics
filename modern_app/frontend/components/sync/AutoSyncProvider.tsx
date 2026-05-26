@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, getStoredToken, getStoredUser } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, getStoredSession } from "../../services/cloudAuth";
 import { DATA_CHANGED_EVENT, isAutoSyncEnabled, isSyncInFlight, runAutoSync } from "../../services/cloudSync";
 
 const AUTO_SYNC_DEBOUNCE_MS = 7000;
@@ -29,14 +29,13 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
 
     const executeAutoSync = async (reason: "startup" | "auto_local_change" | "interval" | "focus") => {
       if (!isAutoSyncEnabled() || isSyncInFlight()) return;
-      const token = getStoredToken();
-      if (!token) return;
-      if (!getStoredUser()) return;
+      const session = getStoredSession();
+      if (!session?.token || !session.user?.id) return;
       const now = Date.now();
       if (lastErrorAtRef.current && now - lastErrorAtRef.current < AUTO_SYNC_ERROR_RETRY_MS && reason !== "auto_local_change") return;
       lastAttemptAtRef.current = now;
       try {
-        await runAutoSync(token, undefined, reason);
+        await runAutoSync(session.token, session.user.email, reason);
         lastErrorNotifiedRef.current = false;
         lastErrorAtRef.current = 0;
       } catch (error) {
@@ -58,7 +57,16 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
     };
 
     const onDataChanged = () => scheduleAutoSync(AUTO_SYNC_DEBOUNCE_MS, "auto_local_change");
-    const onSessionChanged = () => scheduleAutoSync(STARTUP_AUTO_SYNC_DELAY_MS, "startup");
+    const onSessionChanged = () => {
+      const session = getStoredSession();
+      if (!session) {
+        clearTimer();
+        lastErrorNotifiedRef.current = false;
+        lastErrorAtRef.current = 0;
+        return;
+      }
+      scheduleAutoSync(STARTUP_AUTO_SYNC_DELAY_MS, "startup");
+    };
     const onFocus = () => {
       if (Date.now() - lastAttemptAtRef.current < FOCUS_AUTO_SYNC_MIN_MS) return;
       scheduleAutoSync(250, "focus");

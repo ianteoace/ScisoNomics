@@ -1,16 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useToast } from "../../hooks/useToast";
 import {
-  clearStoredToken,
+  clearStoredSession,
   cloudAuth,
-  getStoredToken,
-  getStoredUser,
-  getTokenStorageMode,
+  getStoredSession,
   isCloudAuthConfigured,
   setStoredSession,
+  verifyStoredSession,
   type CloudUser,
 } from "../../services/cloudAuth";
 import {
@@ -44,6 +43,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const { showError, showSuccess } = useToast();
   const [mode, setMode] = useState<Mode>("login");
   const [loadingSession, setLoadingSession] = useState(true);
+  const [sessionCheckError, setSessionCheckError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [remember, setRemember] = useState(true);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
@@ -72,6 +72,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
+  const hasCheckedSessionRef = useRef(false);
 
   function clearAuthForms() {
     setLoginEmail("");
@@ -83,36 +84,46 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   useEffect(() => {
+    if (hasCheckedSessionRef.current) return;
+    hasCheckedSessionRef.current = true;
     let cancelled = false;
     async function loadSession() {
+      setLoadingSession(true);
+      setSessionCheckError("");
       setLastSyncAt(getLastManualSyncAt());
       setLastAutoSyncAt(getLastAutoSyncAt());
       setLastSyncError(getLastSyncError());
       setAutoSyncEnabledState(isAutoSyncEnabled());
       if (!configured) {
+        setUser(null);
         setLoadingSession(false);
         return;
       }
-      const token = getStoredToken();
-      if (!token) {
+      const session = getStoredSession();
+      if (!session) {
+        setUser(null);
         setLoadingSession(false);
         return;
       }
-      const storedUser = getStoredUser();
-      if (storedUser && !cancelled) {
-        setUser(storedUser);
-        setTokenMode(getTokenStorageMode());
+      if (!cancelled) {
+        setUser(session.user);
+        setTokenMode(session.storage);
+        setLoadingSession(false);
       }
       try {
-        const currentUser = await cloudAuth.me(token);
+        const verifiedSession = await verifyStoredSession();
         if (!cancelled) {
-          setStoredSession(token, currentUser, getTokenStorageMode() !== "session");
-          setUser(currentUser);
-          setTokenMode(getTokenStorageMode());
+          setUser(verifiedSession?.user || null);
+          setTokenMode(verifiedSession?.storage || null);
         }
       } catch (error) {
         console.error("No se pudo validar la sesion cloud:", error);
-        clearStoredToken();
+        setAutoSyncEnabled(false);
+        if (!cancelled) {
+          setUser(null);
+          setTokenMode(null);
+          setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesion. Podes volver a iniciar sesion.");
+        }
       } finally {
         if (!cancelled) setLoadingSession(false);
       }
@@ -122,6 +133,46 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       cancelled = true;
     };
   }, [configured]);
+
+  function handleClearLocalSession() {
+    clearStoredSession();
+    setAutoSyncEnabled(false);
+    setAutoSyncEnabledState(false);
+    setUser(null);
+    setTokenMode(null);
+    setLoadingSession(false);
+    setSessionCheckError("");
+    setSyncOverview(null);
+    setSyncHistory([]);
+    setSyncConflicts([]);
+    setCloudDevices([]);
+    showSuccess("Sesion local limpiada.");
+  }
+
+  async function handleRetrySessionCheck() {
+    hasCheckedSessionRef.current = false;
+    setLoadingSession(true);
+    setSessionCheckError("");
+    if (!configured) {
+      setLoadingSession(false);
+      setUser(null);
+      return;
+    }
+    try {
+      const verifiedSession = await verifyStoredSession();
+      setUser(verifiedSession?.user || null);
+      setTokenMode(verifiedSession?.storage || null);
+    } catch (error) {
+      console.error("No se pudo revalidar la sesion cloud:", error);
+      setAutoSyncEnabled(false);
+      setUser(null);
+      setTokenMode(null);
+      setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesion. Podes volver a iniciar sesion.");
+    } finally {
+      setLoadingSession(false);
+      hasCheckedSessionRef.current = true;
+    }
+  }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -140,19 +191,19 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     if (!configured || !user) return;
     setSyncCenterLoading(true);
     try {
-      const token = getStoredToken();
+      const session = getStoredSession();
       const [overview, history, conflicts, devices] = await Promise.all([
         getSyncOverview(),
         getSyncHistory(10),
         getSyncConflicts(10),
-        token ? getCloudDevices(token).catch(() => ({ ok: false, devices: [] })) : Promise.resolve({ ok: false, devices: [] }),
+        session?.token ? getCloudDevices(session.token).catch(() => ({ ok: false, devices: [] })) : Promise.resolve({ ok: false, devices: [] }),
       ]);
       const context = await getLocalSessionContext().catch(() => null);
       setSyncOverview(overview);
       setSyncHistory(history.items || []);
       setSyncConflicts(conflicts.items || []);
       setCloudDevices(devices.devices || []);
-      setHasLocalData(Boolean(context?.has_unassigned_data));
+      setHasLocalData(Boolean(context?.has_local_data || (context?.local_claimable_total || 0) > 0));
     } catch (error) {
       console.warn("No se pudo cargar el centro de sincronizacion:", error);
     } finally {
@@ -174,6 +225,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       setStoredSession(response.access_token, response.user, remember);
       setTokenMode(remember ? "persistent" : "session");
       setUser(response.user);
+      setSessionCheckError("");
       clearAuthForms();
       showSuccess("Sesion iniciada.");
     } catch (error) {
@@ -201,6 +253,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       setStoredSession(response.access_token, response.user, true);
       setTokenMode("persistent");
       setUser(response.user);
+      setSessionCheckError("");
       clearAuthForms();
       showSuccess("Cuenta creada.");
     } catch (error) {
@@ -212,11 +265,11 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleLogout() {
-    const token = getStoredToken();
+    const token = getStoredSession()?.token || null;
     await cloudAuth.logout(token);
-    clearStoredToken();
     setTokenMode(null);
     setUser(null);
+    setSessionCheckError("");
     setAutoSyncEnabled(false);
     setAutoSyncEnabledState(false);
     setSyncOverview(null);
@@ -232,10 +285,10 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setClaimingLocalData(true);
     try {
       const result = await claimLocalData(user.id);
-      const total = Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0);
+      const total = Number(result.claimable_total ?? Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0));
       setHasLocalData(false);
       await refreshSyncCenter();
-      showSuccess(`Datos locales asociados a esta cuenta: ${total}.`);
+      showSuccess(total > 0 ? `Datos locales asociados a esta cuenta: ${total}.` : "No habia datos locales para asociar.");
     } catch (error) {
       console.error("Error asociando datos locales:", error);
       showError("No se pudieron asociar los datos locales a esta cuenta.");
@@ -245,13 +298,16 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleManualSync() {
-    const token = getStoredToken();
-    if (!token || syncing) return;
+    const session = getStoredSession();
+    if (!session?.token || syncing) {
+      showError("Inicia sesion para sincronizar.");
+      return;
+    }
     setSyncing(true);
     setSyncMessage("Sincronizando tus datos...");
     setSyncSummary("");
     try {
-      const result = await runManualSync(token, user?.email);
+      const result = await runManualSync(session.token, session.user.email);
       setLastSyncAt(result.syncedAt);
       setLastSyncError(null);
       setSyncMessage("Sincronizacion completada");
@@ -362,6 +418,20 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       {loadingSession ? (
         <section className="card p-5">
           <p className="text-sm text-slate-500 dark:text-slate-400">Verificando sesion...</p>
+          <button className="btn-secondary mt-4" type="button" onClick={handleClearLocalSession}>
+            Limpiar sesion local
+          </button>
+        </section>
+      ) : sessionCheckError ? (
+        <section className="card p-5">
+          <h3 className="text-lg font-semibold">No pudimos verificar la sesion</h3>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            {sessionCheckError}
+          </p>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <button className="btn-secondary" type="button" onClick={handleRetrySessionCheck}>Reintentar</button>
+            <button className="btn" type="button" onClick={handleClearLocalSession}>Limpiar sesion local</button>
+          </div>
         </section>
       ) : user ? (
         <section className="card p-6">

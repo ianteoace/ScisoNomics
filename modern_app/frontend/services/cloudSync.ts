@@ -1,4 +1,5 @@
 import { API_URL, localOwnerHeaders } from "./http";
+import { getStoredSession } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
@@ -18,6 +19,8 @@ type SyncReason = "manual" | "auto_local_change" | "auto_remote_pull" | "startup
 export type SyncOverview = {
   ok: boolean;
   version: string;
+  owner_user_id: string;
+  mode: "cloud" | "local";
   device_id: string;
   device_name: string;
   has_pending: boolean;
@@ -277,13 +280,16 @@ export async function getLocalSessionContext() {
     ok: boolean;
     owner_user_id: string;
     mode: "cloud" | "local";
+    has_local_data: boolean;
     has_unassigned_data: boolean;
+    local_counts: Record<SyncTable, number>;
+    local_claimable_total: number;
     visible_data: Record<SyncTable, number>;
   }>("/local-session/context");
 }
 
 export async function claimLocalData(ownerUserId: string) {
-  return localPost<{ ok: boolean; owner_user_id: string; claimed: Record<SyncTable, number> }>("/local-session/claim-local-data", {
+  return localPost<{ ok: boolean; owner_user_id: string; claimed: Record<SyncTable, number>; claimed_total: number; claimable_total: number }>("/local-session/claim-local-data", {
     owner_user_id: ownerUserId,
   });
 }
@@ -349,7 +355,13 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
 }
 
 async function runSyncWithReason(token: string, userEmail: string | undefined, mode: SyncMode, reason: SyncReason) {
-  if (!token) throw new Error("Inicia sesion para sincronizar.");
+  const session = getStoredSession();
+  if (!session?.token || !session.user?.id) {
+    console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
+    throw new Error("Inicia sesion para sincronizar.");
+  }
+  token = session.token;
+  userEmail = userEmail || session.user.email;
   if (!CLOUD_API_URL) throw new Error("El servicio cloud no esta configurado en este entorno.");
   if (syncInFlight) throw new Error("Ya hay una sincronizacion en curso.");
 
