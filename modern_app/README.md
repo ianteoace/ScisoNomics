@@ -10,6 +10,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 - Si falta la DB de AppData, el backend intenta copiar una vez desde `App registro/data/finanzas.db`.
 - Si no existe ninguna, la API responde error claro: `No se encontro la base de datos.`
 - Desde v2.8.0 el cliente soporta varias cuentas cloud guardadas en el mismo dispositivo. El modo sin cuenta usa el owner `local`; cada cuenta cloud usa su `user_id`, y solo una cuenta queda activa a la vez.
+- Desde v2.9.0 se puede agregar una cuenta cloud con Google Login. El OAuth lo maneja el backend cloud; el frontend solo abre el navegador externo y nunca guarda secretos de Google.
 
 ## Estructura
 

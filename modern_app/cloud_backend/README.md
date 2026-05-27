@@ -30,6 +30,9 @@ SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
 DATABASE_URL=postgresql://...
 SCISONOMICS_ALLOWED_ORIGINS=*
 SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
+SCISONOMICS_GOOGLE_CLIENT_ID=...
+SCISONOMICS_GOOGLE_CLIENT_SECRET=...
+SCISONOMICS_GOOGLE_REDIRECT_URI=https://TU_BACKEND/auth/google/callback
 ```
 
 `SCISONOMICS_CLOUD_DATABASE_URL` tiene prioridad sobre `DATABASE_URL`. En Railway puede usarse `DATABASE_URL` directamente desde PostgreSQL.
@@ -40,6 +43,9 @@ SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
 - `POST /auth/login`
 - `GET /auth/me`
 - `POST /auth/logout`
+- `POST /auth/google/start`
+- `GET /auth/google/callback`
+- `GET /auth/google/status/{login_request_id}`
 - `GET /health`
 - `GET /sync/health`
 - `POST /sync/push`
@@ -71,4 +77,4 @@ Desde v2.7.0 el cliente desktop aísla datos locales por cuenta con `owner_user_
 
 Desde v2.8.0 el cliente desktop puede guardar varias cuentas cloud en el mismo dispositivo, pero la sincronizacion cloud corre solo para la cuenta activa. El backend cloud no sincroniza cuentas en segundo plano ni acepta que el cliente indique otro `user_id`.
 
-El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.
+Desde v2.9.0 Google Login esta disponible como metodo opcional. El backend cloud genera `login_request_id`, redirige a Google con `state`, recibe el callback, vincula por `google_sub` o email existente y emite el mismo JWT propio de ScisoNomics. Si faltan variables `SCISONOMICS_GOOGLE_CLIENT_ID`, `SCISONOMICS_GOOGLE_CLIENT_SECRET` o `SCISONOMICS_GOOGLE_REDIRECT_URI`, `/auth/google/start` devuelve error controlado. No guardar secretos de Google en frontend/Tauri.

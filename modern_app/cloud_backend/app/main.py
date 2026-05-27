@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
+import logging
 import os
 import re
+import secrets
 from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from .auth import create_access_token, decode_access_token, get_jwt_secret, hash_password, verify_password
 from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.8.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.9.0")
+_logger = logging.getLogger("scisonomics.cloud")
 
 
 def allowed_origins() -> list[str]:
@@ -68,6 +74,169 @@ def row_to_user(row) -> UserOut:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _google_config() -> tuple[str, str, str]:
+    client_id = os.getenv("SCISONOMICS_GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("SCISONOMICS_GOOGLE_CLIENT_SECRET", "").strip()
+    redirect_uri = os.getenv("SCISONOMICS_GOOGLE_REDIRECT_URI", "").strip()
+    if not client_id or not client_secret or not redirect_uri:
+        raise HTTPException(status_code=503, detail="Google Login no esta configurado.")
+    return client_id, client_secret, redirect_uri
+
+
+def _cleanup_google_login_requests(conn, now: str) -> None:
+    conn.execute("DELETE FROM google_login_requests WHERE expires_at < ?", (now,))
+
+
+def _http_json(url: str, *, method: str = "GET", data: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    encoded = None
+    request_headers = dict(headers or {})
+    if data is not None:
+        encoded = urlencode(data).encode("utf-8")
+        request_headers["Content-Type"] = "application/x-www-form-urlencoded"
+    request = UrlRequest(url, data=encoded, headers=request_headers, method=method)
+    with urlopen(request, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _exchange_google_code(code: str, client_id: str, client_secret: str, redirect_uri: str) -> dict[str, Any]:
+    token_response = _http_json(
+        "https://oauth2.googleapis.com/token",
+        method="POST",
+        data={
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+    access_token = token_response.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Google no devolvio un token valido.")
+    return _http_json(
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+
+def _find_user_by_normalized_email(conn, email: str):
+    normalized = normalize_email(email)
+    return conn.execute(
+        """
+        SELECT id, email, display_name, created_at, updated_at, google_sub
+        FROM users
+        WHERE LOWER(TRIM(email)) = ?
+        ORDER BY CASE WHEN password_hash IS NOT NULL AND password_hash <> '' THEN 0 ELSE 1 END, created_at ASC
+        LIMIT 1
+        """,
+        (normalized,),
+    ).fetchone()
+
+
+def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> UserOut:
+    google_sub = str(profile.get("sub") or "").strip()
+    original_email = str(profile.get("email") or "")
+    email = normalize_email(original_email)
+    display_name = str(profile.get("name") or "").strip() or None
+    avatar_url = str(profile.get("picture") or "").strip() or None
+    if not google_sub or not EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Google no devolvio un perfil valido.")
+    _logger.info("[google-auth] callback profile google_sub=%s email_original=%s email_normalized=%s", google_sub, original_email, email)
+
+    google_row = conn.execute(
+        "SELECT id, email, display_name, created_at, updated_at, google_sub FROM users WHERE google_sub = ?",
+        (google_sub,),
+    ).fetchone()
+    email_row = _find_user_by_normalized_email(conn, email)
+    if google_row and email_row and google_row["id"] != email_row["id"]:
+        _logger.info(
+            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=relink_existing_email user_id=%s duplicate_user_id=%s",
+            google_sub,
+            email,
+            True,
+            True,
+            email_row["id"],
+            google_row["id"],
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET google_sub = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, google_row["id"]),
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            WHERE id = ?
+            """,
+            (email, google_sub, display_name, avatar_url, now, email_row["id"]),
+        )
+        updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (email_row["id"],)).fetchone()
+        return row_to_user(updated)
+
+    if google_row:
+        _logger.info(
+            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=use_google_sub user_id=%s",
+            google_sub,
+            email,
+            True,
+            bool(email_row),
+            google_row["id"],
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET email = ?, display_name = COALESCE(?, display_name), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            WHERE id = ?
+            """,
+            (email, display_name, avatar_url, now, google_row["id"]),
+        )
+        updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (google_row["id"],)).fetchone()
+        return row_to_user(updated)
+
+    if email_row:
+        _logger.info(
+            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=link_existing_email user_id=%s",
+            google_sub,
+            email,
+            False,
+            True,
+            email_row["id"],
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            WHERE id = ?
+            """,
+            (email, google_sub, display_name, avatar_url, now, email_row["id"]),
+        )
+        updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (email_row["id"],)).fetchone()
+        return row_to_user(updated)
+
+    user_id = str(uuid4())
+    _logger.info(
+        "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=create_new_user user_id=%s",
+        google_sub,
+        email,
+        False,
+        False,
+        user_id,
+    )
+    conn.execute(
+        """
+        INSERT INTO users (id, email, password_hash, display_name, google_sub, avatar_url, auth_provider, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?)
+        """,
+        (user_id, email, "", display_name, google_sub, avatar_url, now, now),
+    )
+    created = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row_to_user(created)
 
 
 def parse_sync_datetime(value: Any) -> datetime | None:
@@ -327,11 +496,11 @@ def login(payload: LoginRequest):
     email = normalize_email(payload.email)
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, display_name, created_at, updated_at FROM users WHERE email = ?",
+            "SELECT id, email, password_hash, display_name, created_at, updated_at FROM users WHERE LOWER(TRIM(email)) = ?",
             (email,),
         ).fetchone()
 
-    if row is None or not verify_password(payload.password, row["password_hash"]):
+    if row is None or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
 
     user = row_to_user(row)
@@ -422,35 +591,146 @@ def sync_devices(user: UserOut = Depends(get_current_user)):
     return {"ok": True, "devices": [dict(row) for row in rows]}
 
 
-@app.get("/auth/google/start")
+@app.post("/auth/google/start")
 def google_start():
-    client_id = os.getenv("SCISONOMICS_GOOGLE_CLIENT_ID", "").strip()
-    redirect_uri = os.getenv("SCISONOMICS_GOOGLE_REDIRECT_URI", "").strip()
-    if not client_id or not redirect_uri:
-        return {
-            "configured": False,
-            "message": "El inicio con Google todavia no esta configurado en este entorno.",
-        }
-
+    client_id, _, redirect_uri = _google_config()
+    init_db()
+    login_request_id = secrets.token_urlsafe(32)
+    now = now_iso()
+    expires_at = (datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=10)).isoformat()
+    with connect() as conn:
+        _cleanup_google_login_requests(conn, now)
+        conn.execute(
+            """
+            INSERT INTO google_login_requests (login_request_id, status, created_at, updated_at, expires_at)
+            VALUES (?, 'pending', ?, ?, ?)
+            """,
+            (login_request_id, now, now, expires_at),
+        )
     query = urlencode(
         {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": "openid email profile",
-            "access_type": "offline",
             "prompt": "select_account",
+            "state": login_request_id,
         }
     )
     return {
         "configured": True,
-        "authorization_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}",
+        "login_request_id": login_request_id,
+        "auth_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}",
     }
 
 
-@app.get("/auth/google/callback")
-def google_callback():
-    raise HTTPException(
-        status_code=501,
-        detail="El inicio con Google todavia no esta habilitado. Faltan credenciales OAuth y manejo de callback.",
+@app.get("/auth/google/status/{login_request_id}")
+def google_status(login_request_id: str):
+    init_db()
+    now = now_iso()
+    with connect() as conn:
+        _cleanup_google_login_requests(conn, now)
+        row = conn.execute(
+            """
+            SELECT login_request_id, status, access_token, user_id, error_message, expires_at
+            FROM google_login_requests
+            WHERE login_request_id = ?
+            """,
+            (login_request_id,),
+        ).fetchone()
+        if not row:
+            return {"status": "expired", "message": "La solicitud de Google expiro. Intenta nuevamente."}
+        if row["status"] == "pending":
+            return {"status": "pending"}
+        if row["status"] == "error":
+            return {"status": "error", "message": row["error_message"] or "No se pudo completar Google Login."}
+        user_row = conn.execute(
+            "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
+            (row["user_id"],),
+        ).fetchone()
+        if not user_row or not row["access_token"]:
+            return {"status": "error", "message": "No se pudo recuperar la sesion de Google."}
+        return {"status": "completed", "access_token": row["access_token"], "user": row_to_user(user_row)}
+
+
+@app.get("/auth/google/callback", response_class=HTMLResponse)
+def google_callback(code: str = Query(default=""), state: str = Query(default=""), error: str = Query(default="")):
+    init_db()
+    now = now_iso()
+    if not state:
+        raise HTTPException(status_code=400, detail="Solicitud de Google invalida.")
+    try:
+        client_id, client_secret, redirect_uri = _google_config()
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT login_request_id, status, expires_at FROM google_login_requests WHERE login_request_id = ?",
+                (state,),
+            ).fetchone()
+            if not row or row["expires_at"] < now:
+                raise HTTPException(status_code=400, detail="La solicitud de Google expiro.")
+            if error:
+                conn.execute(
+                    "UPDATE google_login_requests SET status = 'error', error_message = ?, updated_at = ? WHERE login_request_id = ?",
+                    ("Google Login fue cancelado o rechazado.", now, state),
+                )
+                return _google_result_page(False, "Google Login fue cancelado. Ya podes cerrar esta ventana.")
+            if not code:
+                raise HTTPException(status_code=400, detail="Google no devolvio codigo de autorizacion.")
+
+        profile = _exchange_google_code(code, client_id, client_secret, redirect_uri)
+        with connect() as conn:
+            user = _find_or_create_google_user(conn, profile, now)
+            access_token = create_access_token(user.id)
+            conn.execute(
+                """
+                UPDATE google_login_requests
+                SET status = 'completed', access_token = ?, user_id = ?, updated_at = ?
+                WHERE login_request_id = ?
+                """,
+                (access_token, user.id, now, state),
+            )
+        return _google_result_page(True, "Login completado. Ya podes volver a ScisoNomics.")
+    except HTTPException as exc:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE google_login_requests SET status = 'error', error_message = ?, updated_at = ? WHERE login_request_id = ?",
+                (str(exc.detail), now, state),
+            )
+        raise
+    except Exception:
+        with connect() as conn:
+            conn.execute(
+                "UPDATE google_login_requests SET status = 'error', error_message = ?, updated_at = ? WHERE login_request_id = ?",
+                ("No se pudo completar Google Login.", now, state),
+            )
+        return _google_result_page(False, "No se pudo completar Google Login. Volve a ScisoNomics e intenta nuevamente.")
+
+
+def _google_result_page(ok: bool, message: str) -> HTMLResponse:
+    color = "#0f766e" if ok else "#b45309"
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang="es">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>ScisoNomics Google Login</title>
+            <style>
+              body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }}
+              main {{ max-width: 520px; margin: 24px; padding: 28px; border: 1px solid rgba(148,163,184,.24); border-radius: 24px; background: rgba(15,23,42,.86); box-shadow: 0 24px 80px rgba(0,0,0,.32); }}
+              .badge {{ display: inline-block; color: white; background: {color}; border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 700; }}
+              h1 {{ margin: 18px 0 8px; font-size: 28px; }}
+              p {{ color: #cbd5e1; line-height: 1.6; }}
+            </style>
+          </head>
+          <body>
+            <main>
+              <span class="badge">ScisoNomics</span>
+              <h1>{'Cuenta conectada' if ok else 'No se pudo conectar'}</h1>
+              <p>{message}</p>
+            </main>
+          </body>
+        </html>
+        """
     )

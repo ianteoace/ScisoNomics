@@ -8,9 +8,21 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.8.0**
+Versión estable actual: **v2.9.0**
 
-[Descargar ScisoNomics v2.8.0](../../releases/tag/v2.8.0)
+[Descargar ScisoNomics v2.9.0](../../releases/tag/v2.9.0)
+
+---
+
+## Novedades de v2.9.0
+
+- Se agrego Login con Google como metodo alternativo para agregar cuentas cloud.
+- El flujo Google se maneja en el backend cloud con `start`, `callback` y `status` por polling.
+- El frontend solo abre el navegador externo y guarda el token propio de ScisoNomics cuando el backend confirma el login.
+- Email/password sigue funcionando y las cuentas Google conviven con multicuentas locales.
+- Si un email ya existe con password, Google se vincula a ese mismo usuario y mantiene el mismo `user_id`.
+- Google Login es opcional, requiere variables de entorno en el backend cloud y no guarda secretos en frontend/Tauri.
+- La sync sigue corriendo solo para la cuenta activa; modo local sigue separado.
 
 ---
 
@@ -22,7 +34,7 @@ Versión estable actual: **v2.8.0**
 - La sincronización manual y automática corren solo para la cuenta cloud activa.
 - Quitar una cuenta del dispositivo elimina el acceso guardado, pero no borra datos financieros locales ni datos cloud.
 - Se migra automáticamente la sesión única de v2.7.0 a la nueva lista de cuentas guardadas.
-- No se sincronizan todas las cuentas en segundo plano, no se implementó Google Login y la app sigue siendo local-first.
+- No se sincronizan todas las cuentas en segundo plano y la app sigue siendo local-first.
 
 ---
 

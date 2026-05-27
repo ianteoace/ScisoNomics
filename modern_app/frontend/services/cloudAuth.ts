@@ -45,6 +45,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeEmail(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function notifyAccountSessionChanged() {
   if (typeof window === "undefined") return;
   try {
@@ -131,22 +135,72 @@ function saveSplitState(state: StoredAuthState) {
   }
 }
 
+function accountTimeValue(value?: string) {
+  const parsed = value ? Date.parse(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function chooseAccountToKeep(current: StoredCloudAccount, incoming: StoredCloudAccount) {
+  const currentAdded = accountTimeValue(current.addedAt);
+  const incomingAdded = accountTimeValue(incoming.addedAt);
+  if (currentAdded && incomingAdded && incomingAdded < currentAdded) return incoming;
+  return current;
+}
+
+function normalizeAccount(account: StoredCloudAccount): StoredCloudAccount {
+  return {
+    ...account,
+    user: { ...account.user, email: normalizeEmail(account.user.email) },
+    storage: account.storage || "persistent",
+    addedAt: account.addedAt || nowIso(),
+    lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
+  };
+}
+
 function normalizeState(state: StoredAuthState): StoredAuthState {
-  const seen = new Set<string>();
-  const accounts: StoredCloudAccount[] = [];
+  const byId = new Map<string, StoredCloudAccount>();
+  const discardedOwnerMap = new Map<string, string>();
   for (const account of state.accounts) {
-    if (!account?.user?.id || !account.token || seen.has(account.user.id)) continue;
-    seen.add(account.user.id);
-    accounts.push({
-      ...account,
-      storage: account.storage || "persistent",
-      addedAt: account.addedAt || nowIso(),
-      lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
+    if (!account?.user?.id || !account.token) continue;
+    const normalized = normalizeAccount(account);
+    const existing = byId.get(normalized.user.id);
+    if (!existing) {
+      byId.set(normalized.user.id, normalized);
+      continue;
+    }
+    const keep = accountTimeValue(normalized.lastUsedAt) > accountTimeValue(existing.lastUsedAt) ? normalized : existing;
+    const discard = keep === normalized ? existing : normalized;
+    byId.set(keep.user.id, keep);
+    discardedOwnerMap.set(discard.user.id, keep.user.id);
+  }
+
+  const byEmail = new Map<string, StoredCloudAccount>();
+  for (const account of byId.values()) {
+    const emailKey = normalizeEmail(account.user.email);
+    if (!emailKey) {
+      byEmail.set(account.user.id, account);
+      continue;
+    }
+    const existing = byEmail.get(emailKey);
+    if (!existing) {
+      byEmail.set(emailKey, account);
+      continue;
+    }
+    const keep = chooseAccountToKeep(existing, account);
+    const discard = keep === account ? existing : account;
+    byEmail.set(emailKey, keep);
+    discardedOwnerMap.set(discard.user.id, keep.user.id);
+    console.info("[auth] deduped stored account by normalized email", {
+      email: emailKey,
+      keptUserId: keep.user.id,
+      removedUserId: discard.user.id,
     });
   }
+  const accounts = Array.from(byEmail.values()).sort((a, b) => accountTimeValue(b.lastUsedAt) - accountTimeValue(a.lastUsedAt));
+  const remappedActive = discardedOwnerMap.get(state.activeOwnerId) || state.activeOwnerId;
   const activeOwnerId =
-    state.activeOwnerId === LOCAL_OWNER_ID || accounts.some((account) => account.user.id === state.activeOwnerId)
-      ? state.activeOwnerId
+    remappedActive === LOCAL_OWNER_ID || accounts.some((account) => account.user.id === remappedActive)
+      ? remappedActive
       : LOCAL_OWNER_ID;
   return { activeOwnerId, accounts };
 }
@@ -177,7 +231,8 @@ export function getStoredAuthState(): StoredAuthState {
   const sessionState = readJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY) || emptyAuthState();
   const preferredActive = sessionState.activeOwnerId !== LOCAL_OWNER_ID ? sessionState.activeOwnerId : localState.activeOwnerId;
   const merged = normalizeState({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] });
-  if (merged.activeOwnerId !== preferredActive) saveSplitState(merged);
+  const originalCount = (sessionState.accounts.length || 0) + (localState.accounts.length || 0);
+  if (merged.activeOwnerId !== preferredActive || merged.accounts.length !== originalCount) saveSplitState(merged);
   return merged;
 }
 
@@ -339,7 +394,14 @@ export const cloudAuth = {
       });
     }
   },
-  googleStart: () => cloudRequest<{ configured: boolean; authorization_url?: string; message?: string }>("/auth/google/start"),
+  googleStart: () =>
+    cloudRequest<{ configured: boolean; login_request_id: string; auth_url: string }>("/auth/google/start", { method: "POST" }),
+  googleStatus: (loginRequestId: string) =>
+    cloudRequest<
+      | { status: "pending" }
+      | { status: "expired" | "error"; message?: string }
+      | { status: "completed"; access_token: string; user: CloudUser }
+    >(`/auth/google/status/${encodeURIComponent(loginRequestId)}`, { method: "GET" }),
 };
 
 export async function verifyStoredSession(ownerId?: string): Promise<StoredCloudSession | null> {

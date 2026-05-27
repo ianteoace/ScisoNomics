@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
 import {
@@ -469,20 +470,44 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleGoogleLogin() {
-    if (!configured) {
+    if (!configured || submitting) {
       showError("El servicio de cuenta no esta configurado en este entorno.");
       return;
     }
+    setSubmitting(true);
     try {
       const result = await cloudAuth.googleStart();
-      if (!result.configured || !result.authorization_url) {
-        showError(result.message || "El inicio con Google todavia no esta configurado en este entorno.");
+      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+        await openUrl(result.auth_url);
+      } else {
+        window.open(result.auth_url, "_blank", "noopener,noreferrer");
+      }
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 3 * 60 * 1000) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await cloudAuth.googleStatus(result.login_request_id);
+        if (status.status === "pending") continue;
+        if (status.status === "completed") {
+          addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember: true, makeActive: true });
+          setTokenMode("persistent");
+          setUser(status.user);
+          setAccounts(getStoredAccounts());
+          setActiveOwnerId(status.user.id);
+          setSessionCheckError("");
+          setShowAddAccount(false);
+          clearAuthForms();
+          showSuccess("Cuenta agregada con Google.");
+          return;
+        }
+        showError(status.message || "No se pudo completar Google Login.");
         return;
       }
-      window.location.href = result.authorization_url;
+      showError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
     } catch (error) {
       console.error("Error iniciando Google OAuth:", error);
-      showError("El inicio con Google todavia no esta configurado en este entorno.");
+      showError(error instanceof Error ? error.message : "El inicio con Google todavia no esta configurado en este entorno.");
+    } finally {
+      setSubmitting(false);
     }
   }
 

@@ -134,6 +134,18 @@ def _ensure_origin_columns(conn: CloudConnection) -> None:
         _ensure_column(conn, table, "last_modified_at", "TEXT")
 
 
+def _ensure_google_auth_columns(conn: CloudConnection) -> None:
+    _ensure_column(conn, "users", "google_sub", "TEXT")
+    _ensure_column(conn, "users", "avatar_url", "TEXT")
+    _ensure_column(conn, "users", "auth_provider", "TEXT")
+    if conn.engine == "sqlite":
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
+    else:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
+
+
 def _init_sqlite() -> None:
     with connect() as conn:
         conn.execute(
@@ -299,6 +311,22 @@ def _init_sqlite() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS google_login_requests (
+                login_request_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                access_token TEXT,
+                user_id TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
+        _ensure_google_auth_columns(conn)
         _ensure_origin_columns(conn)
 
 
@@ -460,4 +488,20 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_devices_user ON cloud_devices(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS google_login_requests (
+                login_request_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                access_token TEXT,
+                user_id TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
+        _ensure_google_auth_columns(conn)
         _ensure_origin_columns(conn)

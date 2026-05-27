@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
 import { addOrUpdateAccount, cloudAuth, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
@@ -28,7 +29,10 @@ export function AddAccountModal({
   const [repeatPassword, setRepeatPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [googleWaiting, setGoogleWaiting] = useState(false);
   const [error, setError] = useState("");
+  const googleCancelledRef = useRef(false);
+  const googlePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function resetForm() {
     setMode("login");
@@ -37,18 +41,92 @@ export function AddAccountModal({
     setDisplayName("");
     setRepeatPassword("");
     setRemember(true);
+    setGoogleWaiting(false);
     setError("");
   }
 
   function closeModal() {
     if (submitting) return;
+    cancelGooglePolling();
     resetForm();
     onClose();
   }
 
+  function cancelGooglePolling() {
+    googleCancelledRef.current = true;
+    if (googlePollTimerRef.current) {
+      clearTimeout(googlePollTimerRef.current);
+      googlePollTimerRef.current = null;
+    }
+    setGoogleWaiting(false);
+  }
+
+  useEffect(() => {
+    return () => cancelGooglePolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function openExternalUrl(url: string) {
+    if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      await openUrl(url);
+      return;
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function pollGoogleStatus(loginRequestId: string, startedAt: number) {
+    if (googleCancelledRef.current) return;
+    if (Date.now() - startedAt > 3 * 60 * 1000) {
+      setError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
+      setGoogleWaiting(false);
+      return;
+    }
+    try {
+      const status = await cloudAuth.googleStatus(loginRequestId);
+      if (googleCancelledRef.current) return;
+      if (status.status === "pending") {
+        googlePollTimerRef.current = setTimeout(() => void pollGoogleStatus(loginRequestId, startedAt), 2000);
+        return;
+      }
+      if (status.status === "completed") {
+        addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember: true, makeActive: true });
+        cancelGooglePolling();
+        resetForm();
+        onClose();
+        onAccountAdded?.();
+        showSuccess("Cuenta agregada con Google.");
+        return;
+      }
+      setError(status.message || "No se pudo completar Google Login.");
+      setGoogleWaiting(false);
+    } catch (err) {
+      console.error("No se pudo consultar el estado de Google Login:", err);
+      setError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
+      setGoogleWaiting(false);
+    }
+  }
+
+  async function handleGoogleLogin() {
+    if (!configured || submitting || googleWaiting) return;
+    setError("");
+    googleCancelledRef.current = false;
+    setGoogleWaiting(true);
+    try {
+      const result = await cloudAuth.googleStart();
+      await openExternalUrl(result.auth_url);
+      void pollGoogleStatus(result.login_request_id, Date.now());
+    } catch (err) {
+      console.error("No se pudo iniciar Google Login:", err);
+      const message = err instanceof Error ? err.message : "Google Login no esta configurado.";
+      setError(message);
+      showError(message);
+      setGoogleWaiting(false);
+    }
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!configured || submitting) return;
+    if (!configured || submitting || googleWaiting) return;
     if (mode === "register" && password !== repeatPassword) {
       setError("Las contrasenas no coinciden.");
       return;
@@ -99,6 +177,22 @@ export function AddAccountModal({
             {error}
           </div>
         ) : null}
+        <button className="btn-secondary w-full justify-center" type="button" onClick={handleGoogleLogin} disabled={!configured || submitting || googleWaiting}>
+          {googleWaiting ? "Esperando confirmacion de Google..." : "Continuar con Google"}
+        </button>
+        {googleWaiting ? (
+          <div className="rounded-xl border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-800 dark:text-sky-200">
+            Esperando confirmacion de Google. Completa el login en el navegador externo.
+            <button className="ml-2 font-semibold underline" type="button" onClick={cancelGooglePolling}>
+              Cancelar
+            </button>
+          </div>
+        ) : null}
+        <div className="my-2 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-slate-400">
+          <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          o
+          <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+        </div>
         {mode === "register" ? (
           <label className="block text-sm">
             Nombre opcional
@@ -107,7 +201,7 @@ export function AddAccountModal({
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
               autoComplete="name"
-              disabled={!configured || submitting}
+              disabled={!configured || submitting || googleWaiting}
             />
           </label>
         ) : null}
@@ -120,7 +214,7 @@ export function AddAccountModal({
             onChange={(event) => setEmail(event.target.value)}
             autoComplete="email"
             required
-            disabled={!configured || submitting}
+            disabled={!configured || submitting || googleWaiting}
           />
         </label>
         <label className="block text-sm">
@@ -131,7 +225,7 @@ export function AddAccountModal({
             onChange={(event) => setPassword(event.target.value)}
             autoComplete="current-password"
             required
-            disabled={!configured || submitting}
+            disabled={!configured || submitting || googleWaiting}
           />
         </label>
         {mode === "register" ? (
@@ -144,7 +238,7 @@ export function AddAccountModal({
               autoComplete="new-password"
               minLength={8}
               required
-              disabled={!configured || submitting}
+              disabled={!configured || submitting || googleWaiting}
             />
           </label>
         ) : null}
@@ -154,7 +248,7 @@ export function AddAccountModal({
             className="h-4 w-4 rounded border-slate-300"
             checked={remember}
             onChange={(event) => setRemember(event.target.checked)}
-            disabled={submitting}
+            disabled={submitting || googleWaiting}
           />
           Recordar esta cuenta en este dispositivo
         </label>
@@ -167,7 +261,7 @@ export function AddAccountModal({
               setMode(mode === "login" ? "register" : "login");
               setError("");
             }}
-            disabled={submitting}
+            disabled={submitting || googleWaiting}
           >
             {mode === "login" ? "Registrate ahora." : "Inicia sesion."}
           </button>
@@ -176,7 +270,7 @@ export function AddAccountModal({
           <button className="btn-secondary" type="button" onClick={closeModal} disabled={submitting}>
             Cancelar
           </button>
-          <button className="btn" type="submit" disabled={!configured || submitting}>
+          <button className="btn" type="submit" disabled={!configured || submitting || googleWaiting}>
             {submitting ? "Procesando..." : mode === "register" ? "Crear cuenta y agregar" : "Iniciar sesion y agregar cuenta"}
           </button>
         </div>
