@@ -15,7 +15,7 @@ from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.7.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="2.8.0")
 
 
 def allowed_origins() -> list[str]:

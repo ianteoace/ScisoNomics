@@ -1,10 +1,11 @@
 import { API_URL, localOwnerHeaders } from "./http";
-import { getStoredSession } from "./cloudAuth";
+import { getActiveCloudSession, getActiveOwnerId } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
 const LAST_SYNC_ERROR_KEY = "scisonomics_last_sync_error";
 const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
+const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
 export const DATA_CHANGED_EVENT = "scisonomics:data-changed";
@@ -182,6 +183,13 @@ export function getLastSyncError() {
 export function isAutoSyncEnabled() {
   if (typeof window === "undefined") return false;
   try {
+    const owner = getActiveOwnerId();
+    if (owner === "local") return false;
+    const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, boolean>;
+      return Boolean(parsed[owner]);
+    }
     return window.localStorage.getItem(AUTO_SYNC_ENABLED_KEY) === "1";
   } catch {
     return false;
@@ -191,13 +199,33 @@ export function isAutoSyncEnabled() {
 export function setAutoSyncEnabled(enabled: boolean) {
   if (typeof window === "undefined") return;
   try {
-    if (enabled) window.localStorage.setItem(AUTO_SYNC_ENABLED_KEY, "1");
-    else window.localStorage.removeItem(AUTO_SYNC_ENABLED_KEY);
+    const owner = getActiveOwnerId();
+    if (owner !== "local") {
+      const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
+      const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      if (enabled) parsed[owner] = true;
+      else delete parsed[owner];
+      window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+    }
+    if (!enabled) window.localStorage.removeItem(AUTO_SYNC_ENABLED_KEY);
   } catch {
     // La preferencia no debe bloquear el modo local.
   }
   emitSyncStateChanged();
   if (enabled) notifyDataChanged();
+}
+
+export function clearAutoSyncPreference(ownerId: string) {
+  if (typeof window === "undefined" || !ownerId || ownerId === "local") return;
+  try {
+    const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+    delete parsed[ownerId];
+    window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+  } catch {
+    // La preferencia no debe bloquear el modo local.
+  }
+  emitSyncStateChanged();
 }
 
 function setLastManualSyncAt(value: string) {
@@ -290,7 +318,7 @@ export async function getLocalSessionContext() {
 
 export async function claimLocalData(ownerUserId: string) {
   return localPost<{ ok: boolean; owner_user_id: string; claimed: Record<SyncTable, number>; claimed_total: number; claimable_total: number }>("/local-session/claim-local-data", {
-    owner_user_id: ownerUserId,
+    target_owner_user_id: ownerUserId,
   });
 }
 
@@ -355,7 +383,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
 }
 
 async function runSyncWithReason(token: string, userEmail: string | undefined, mode: SyncMode, reason: SyncReason) {
-  const session = getStoredSession();
+  const session = getActiveCloudSession();
   if (!session?.token || !session.user?.id) {
     console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
     throw new Error("Inicia sesion para sincronizar.");

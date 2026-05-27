@@ -4,12 +4,18 @@ import { useEffect, useRef, useState } from "react";
 
 import { useToast } from "../../hooks/useToast";
 import {
-  clearStoredSession,
+  clearAllAccounts,
+  clearActiveAccountSession,
   cloudAuth,
-  getStoredSession,
+  getActiveCloudSession,
+  getActiveOwnerId,
+  getStoredAccounts,
   isCloudAuthConfigured,
-  setStoredSession,
+  removeAccount,
+  switchActiveOwner,
+  addOrUpdateAccount,
   verifyStoredSession,
+  type StoredCloudAccount,
   type CloudUser,
 } from "../../services/cloudAuth";
 import {
@@ -21,6 +27,7 @@ import {
   getSyncConflicts,
   getSyncHistory,
   getSyncOverview,
+  clearAutoSyncPreference,
   isAutoSyncEnabled,
   isSyncInFlight,
   runManualSync,
@@ -32,6 +39,7 @@ import {
   type SyncHistoryItem,
   type SyncOverview,
 } from "../../services/cloudSync";
+import { PasswordInput } from "../ui/PasswordInput";
 
 type Mode = "login" | "register";
 
@@ -65,7 +73,10 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   const [showHistory, setShowHistory] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
   const [showConflicts, setShowConflicts] = useState(false);
+  const [showAddAccount, setShowAddAccount] = useState(false);
   const [user, setUser] = useState<CloudUser | null>(null);
+  const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
+  const [activeOwnerId, setActiveOwnerId] = useState("local");
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -83,23 +94,45 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setRepeatPassword("");
   }
 
+  function refreshAuthState() {
+    const currentAccounts = getStoredAccounts();
+    const owner = getActiveOwnerId();
+    const session = getActiveCloudSession();
+    setAccounts(currentAccounts);
+    setActiveOwnerId(owner);
+    setUser(session?.user || null);
+    setTokenMode(session?.storage || null);
+    setAutoSyncEnabledState(isAutoSyncEnabled());
+    if (owner === "local") {
+      setSyncOverview(null);
+      setSyncHistory([]);
+      setSyncConflicts([]);
+      setCloudDevices([]);
+    }
+  }
+
   useEffect(() => {
     if (hasCheckedSessionRef.current) return;
     hasCheckedSessionRef.current = true;
     let cancelled = false;
     async function loadSession() {
+      try {
+        if (window.sessionStorage.getItem("scisonomics_account_panel_add") === "1") {
+          window.sessionStorage.removeItem("scisonomics_account_panel_add");
+          setShowAddAccount(true);
+          setMode("login");
+        }
+      } catch {
+        // El panel debe seguir funcionando aunque sessionStorage no este disponible.
+      }
       setLoadingSession(true);
       setSessionCheckError("");
       setLastSyncAt(getLastManualSyncAt());
       setLastAutoSyncAt(getLastAutoSyncAt());
       setLastSyncError(getLastSyncError());
       setAutoSyncEnabledState(isAutoSyncEnabled());
-      if (!configured) {
-        setUser(null);
-        setLoadingSession(false);
-        return;
-      }
-      const session = getStoredSession();
+      refreshAuthState();
+      const session = getActiveCloudSession();
       if (!session) {
         setUser(null);
         setLoadingSession(false);
@@ -110,11 +143,14 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         setTokenMode(session.storage);
         setLoadingSession(false);
       }
+      if (!configured) return;
       try {
         const verifiedSession = await verifyStoredSession();
         if (!cancelled) {
           setUser(verifiedSession?.user || null);
           setTokenMode(verifiedSession?.storage || null);
+          setAccounts(getStoredAccounts());
+          setActiveOwnerId(getActiveOwnerId());
         }
       } catch (error) {
         console.error("No se pudo validar la sesion cloud:", error);
@@ -135,18 +171,18 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }, [configured]);
 
   function handleClearLocalSession() {
-    clearStoredSession();
+    const activeSession = getActiveCloudSession();
+    if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
+    clearActiveAccountSession();
     setAutoSyncEnabled(false);
-    setAutoSyncEnabledState(false);
-    setUser(null);
-    setTokenMode(null);
+    refreshAuthState();
     setLoadingSession(false);
     setSessionCheckError("");
     setSyncOverview(null);
     setSyncHistory([]);
     setSyncConflicts([]);
     setCloudDevices([]);
-    showSuccess("Sesion local limpiada.");
+    showSuccess("Sesion activa quitada de este dispositivo.");
   }
 
   async function handleRetrySessionCheck() {
@@ -162,6 +198,8 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
       const verifiedSession = await verifyStoredSession();
       setUser(verifiedSession?.user || null);
       setTokenMode(verifiedSession?.storage || null);
+      setAccounts(getStoredAccounts());
+      setActiveOwnerId(getActiveOwnerId());
     } catch (error) {
       console.error("No se pudo revalidar la sesion cloud:", error);
       setAutoSyncEnabled(false);
@@ -191,7 +229,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     if (!configured || !user) return;
     setSyncCenterLoading(true);
     try {
-      const session = getStoredSession();
+      const session = getActiveCloudSession();
       const [overview, history, conflicts, devices] = await Promise.all([
         getSyncOverview(),
         getSyncHistory(10),
@@ -222,10 +260,13 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setSubmitting(true);
     try {
       const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
-      setStoredSession(response.access_token, response.user, remember);
+      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
       setTokenMode(remember ? "persistent" : "session");
       setUser(response.user);
+      setAccounts(getStoredAccounts());
+      setActiveOwnerId(response.user.id);
       setSessionCheckError("");
+      setShowAddAccount(false);
       clearAuthForms();
       showSuccess("Sesion iniciada.");
     } catch (error) {
@@ -250,10 +291,13 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         email: registerEmail,
         password: registerPassword,
       });
-      setStoredSession(response.access_token, response.user, true);
+      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember: true, makeActive: true });
       setTokenMode("persistent");
       setUser(response.user);
+      setAccounts(getStoredAccounts());
+      setActiveOwnerId(response.user.id);
       setSessionCheckError("");
+      setShowAddAccount(false);
       clearAuthForms();
       showSuccess("Cuenta creada.");
     } catch (error) {
@@ -265,13 +309,18 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleLogout() {
-    const token = getStoredSession()?.token || null;
+    const activeSession = getActiveCloudSession();
+    const token = activeSession?.token || null;
     await cloudAuth.logout(token);
+    if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
+    clearActiveAccountSession();
     setTokenMode(null);
     setUser(null);
     setSessionCheckError("");
     setAutoSyncEnabled(false);
     setAutoSyncEnabledState(false);
+    setAccounts(getStoredAccounts());
+    setActiveOwnerId(getActiveOwnerId());
     setSyncOverview(null);
     setSyncHistory([]);
     setSyncConflicts([]);
@@ -281,11 +330,12 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleClaimLocalData() {
-    if (!user || claimingLocalData) return;
+    const session = getActiveCloudSession();
+    if (!session?.user.id || claimingLocalData) return;
     setClaimingLocalData(true);
     try {
-      const result = await claimLocalData(user.id);
-      const total = Number(result.claimable_total ?? Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0));
+      const result = await claimLocalData(session.user.id);
+      const total = Number(result.claimed_total ?? result.claimable_total ?? Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0));
       setHasLocalData(false);
       await refreshSyncCenter();
       showSuccess(total > 0 ? `Datos locales asociados a esta cuenta: ${total}.` : "No habia datos locales para asociar.");
@@ -298,7 +348,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
   }
 
   async function handleManualSync() {
-    const session = getStoredSession();
+    const session = getActiveCloudSession();
     if (!session?.token || syncing) {
       showError("Inicia sesion para sincronizar.");
       return;
@@ -333,6 +383,48 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
     setAutoSyncEnabled(enabled);
     setAutoSyncEnabledState(enabled);
     setSyncMessage(enabled ? "Sincronizacion automatica activada" : "Sincronizacion desactivada");
+  }
+
+  async function handleSwitchOwner(ownerId: string) {
+    if (ownerId === activeOwnerId) return;
+    switchActiveOwner(ownerId);
+    setAutoSyncEnabledState(isAutoSyncEnabled());
+    setSyncOverview(null);
+    setSyncHistory([]);
+    setSyncConflicts([]);
+    setCloudDevices([]);
+    setSyncSummary("");
+    refreshAuthState();
+    if (ownerId === "local") {
+      showSuccess("Modo local activado.");
+      return;
+    }
+    showSuccess("Cuenta activa cambiada.");
+    try {
+      const verifiedSession = await verifyStoredSession(ownerId);
+      setUser(verifiedSession?.user || null);
+      setTokenMode(verifiedSession?.storage || null);
+      setAccounts(getStoredAccounts());
+    } catch (error) {
+      console.error("La cuenta guardada ya no es valida:", error);
+      setSessionCheckError("La sesion de esa cuenta vencio o no pudo verificarse. Volve a iniciar sesion.");
+      refreshAuthState();
+    }
+  }
+
+  function handleRemoveAccount(ownerId: string) {
+    clearAutoSyncPreference(ownerId);
+    removeAccount(ownerId);
+    refreshAuthState();
+    showSuccess("Cuenta quitada de este dispositivo. Tus datos financieros no se borraron.");
+  }
+
+  function handleClearAllAccounts() {
+    for (const account of accounts) clearAutoSyncPreference(account.user.id);
+    clearAllAccounts();
+    setAutoSyncEnabled(false);
+    refreshAuthState();
+    showSuccess("Se quitaron todas las cuentas guardadas. Tus datos financieros no se borraron.");
   }
 
   function formatDate(value?: string | null) {
@@ -415,6 +507,67 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
         </section>
       ) : null}
 
+      <section className="card p-5">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Cuenta activa</p>
+            <h3 className="mt-1 text-lg font-semibold">{activeOwnerId === "local" ? "Modo local" : user?.display_name || user?.email || "Cuenta cloud"}</h3>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {activeOwnerId === "local"
+                ? "Tus datos quedan en este dispositivo y no se sincronizan."
+                : "La UI muestra solo los datos de esta cuenta. La sync corre solo para la cuenta activa."}
+            </p>
+          </div>
+          {accounts.length > 0 ? (
+            <button className="btn-secondary" type="button" onClick={handleClearAllAccounts}>
+              Quitar todas
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-4 grid gap-2">
+          <div className={`rounded-xl border p-3 text-sm ${activeOwnerId === "local" ? "border-sky-400/50 bg-sky-500/10" : "border-slate-200 dark:border-slate-800"}`}>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">Modo local</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Datos sin cuenta. No se sincronizan con cloud.</p>
+              </div>
+              <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner("local")} disabled={activeOwnerId === "local"}>
+                {activeOwnerId === "local" ? "Activo" : "Cambiar"}
+              </button>
+            </div>
+          </div>
+          {accounts.map((account) => (
+            <div key={account.user.id} className={`rounded-xl border p-3 text-sm ${activeOwnerId === account.user.id ? "border-sky-400/50 bg-sky-500/10" : "border-slate-200 dark:border-slate-800"}`}>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold">{account.user.display_name || account.user.email}</p>
+                  {account.user.display_name ? <p className="text-xs text-slate-500 dark:text-slate-400">{account.user.email}</p> : null}
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Ultimo uso: {formatDate(account.lastUsedAt)}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner(account.user.id)} disabled={activeOwnerId === account.user.id}>
+                    {activeOwnerId === account.user.id ? "Activa" : "Cambiar"}
+                  </button>
+                  <button className="btn-secondary" type="button" onClick={() => handleRemoveAccount(account.user.id)}>
+                    Quitar
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {configured ? (
+          <div className="mt-4">
+            <button className="btn-secondary" type="button" onClick={() => setShowAddAccount((value) => !value)}>
+              {showAddAccount ? "Cancelar agregado" : "Agregar cuenta"}
+            </button>
+          </div>
+        ) : null}
+        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+          Quitar una cuenta de este dispositivo no borra tus datos financieros locales ni los datos sincronizados en la nube. Solo elimina el acceso guardado en esta instalacion.
+        </p>
+      </section>
+
       {loadingSession ? (
         <section className="card p-5">
           <p className="text-sm text-slate-500 dark:text-slate-400">Verificando sesion...</p>
@@ -433,7 +586,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
             <button className="btn" type="button" onClick={handleClearLocalSession}>Limpiar sesion local</button>
           </div>
         </section>
-      ) : user ? (
+      ) : user && !showAddAccount ? (
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
           <h3 className="mt-2 text-2xl font-semibold">Sesion iniciada</h3>
@@ -689,7 +842,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                   </label>
                   <label className="block text-sm">
                     Contrasena
-                    <input className={`${inputClass} mt-1`} type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required disabled={!configured} />
+                    <PasswordInput className={inputClass} value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required disabled={!configured} />
                   </label>
                   <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
                     <label className="inline-flex items-center gap-2">
@@ -736,11 +889,11 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
                   </label>
                   <label className="block text-sm">
                     Contrasena
-                    <input className={`${inputClass} mt-1`} type="password" value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} minLength={8} required disabled={!configured} />
+                    <PasswordInput className={inputClass} value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
                   </label>
                   <label className="block text-sm">
                     Repetir contrasena
-                    <input className={`${inputClass} mt-1`} type="password" value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} minLength={8} required disabled={!configured} />
+                    <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
                   </label>
                   <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
                     {submitting ? "Creando..." : "Crear cuenta"}

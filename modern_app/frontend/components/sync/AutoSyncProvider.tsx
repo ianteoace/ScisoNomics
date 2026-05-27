@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, getStoredSession } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudSession } from "../../services/cloudAuth";
 import { DATA_CHANGED_EVENT, isAutoSyncEnabled, isSyncInFlight, runAutoSync } from "../../services/cloudSync";
 
 const AUTO_SYNC_DEBOUNCE_MS = 7000;
@@ -29,7 +29,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
 
     const executeAutoSync = async (reason: "startup" | "auto_local_change" | "interval" | "focus") => {
       if (!isAutoSyncEnabled() || isSyncInFlight()) return;
-      const session = getStoredSession();
+      const session = getActiveCloudSession();
       if (!session?.token || !session.user?.id) return;
       const now = Date.now();
       if (lastErrorAtRef.current && now - lastErrorAtRef.current < AUTO_SYNC_ERROR_RETRY_MS && reason !== "auto_local_change") return;
@@ -58,7 +58,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
 
     const onDataChanged = () => scheduleAutoSync(AUTO_SYNC_DEBOUNCE_MS, "auto_local_change");
     const onSessionChanged = () => {
-      const session = getStoredSession();
+      const session = getActiveCloudSession();
       if (!session) {
         clearTimer();
         lastErrorNotifiedRef.current = false;

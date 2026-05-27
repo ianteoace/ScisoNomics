@@ -41,7 +41,7 @@ from .deps import ensure_app_data_initialized, get_database_readiness, get_last_
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.7.0")
+app = FastAPI(title="Registro Finanzas API", version="2.8.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -930,40 +930,132 @@ def local_session_context(service: FinanceService = Depends(get_service)):
 @app.post("/local-session/claim-local-data")
 async def claim_local_data(request: Request, service: FinanceService = Depends(get_service)):
     payload = await request.json()
-    owner = normalize_owner_id(str(payload.get("owner_user_id") or _current_owner()))
-    if owner == LOCAL_OWNER_ID:
+    owner = normalize_owner_id(str(payload.get("target_owner_user_id") or payload.get("owner_user_id") or _current_owner()))
+    if not owner or owner == LOCAL_OWNER_ID:
         raise HTTPException(status_code=400, detail="Inicia sesion para asociar datos locales a una cuenta.")
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
-        summary: dict[str, int] = {}
+        summary: dict[str, int] = {table: 0 for table in SYNC_TABLES}
+        category_map: dict[int, int] = {}
+
         category_ids = _local_category_ids_for_claim(conn)
         if category_ids:
             placeholders = ", ".join(["?"] * len(category_ids))
-            result = conn.execute(
+            category_rows = conn.execute(
                 f"""
-                UPDATE categorias
-                SET owner_user_id = ?,
-                    sync_status = 'pending',
-                    updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP)
+                SELECT id, nombre, tipo
+                FROM categorias
                 WHERE owner_user_id = ? AND id IN ({placeholders})
                 """,
-                (owner, LOCAL_OWNER_ID, *category_ids),
-            )
-            summary["categorias"] = int(result.rowcount or 0)
-        else:
-            summary["categorias"] = 0
-        for table in CLAIMABLE_LOCAL_DATA_TABLES:
-            result = conn.execute(
-                f"""
-                UPDATE {table}
-                SET owner_user_id = ?,
-                    sync_status = 'pending',
-                    updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP)
-                WHERE owner_user_id = ?
-                """,
-                (owner, LOCAL_OWNER_ID),
-            )
-            summary[table] = int(result.rowcount or 0)
+                (LOCAL_OWNER_ID, *category_ids),
+            ).fetchall()
+            for category in category_rows:
+                local_category_id = int(category["id"])
+                existing = conn.execute(
+                    """
+                    SELECT id
+                    FROM categorias
+                    WHERE owner_user_id = ? AND nombre = ? AND tipo = ?
+                    LIMIT 1
+                    """,
+                    (owner, category["nombre"], category["tipo"]),
+                ).fetchone()
+                if existing:
+                    category_map[local_category_id] = int(existing["id"])
+                    continue
+                conn.execute(
+                    """
+                    UPDATE categorias
+                    SET owner_user_id = ?,
+                        sync_status = 'pending',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND owner_user_id = ?
+                    """,
+                    (owner, local_category_id, LOCAL_OWNER_ID),
+                )
+                category_map[local_category_id] = local_category_id
+                summary["categorias"] += 1
+
+        def mapped_category_id(value: Any) -> Any:
+            if value is None:
+                return None
+            try:
+                return category_map.get(int(value), value)
+            except (TypeError, ValueError):
+                return value
+
+        def claim_category_table(table: str) -> int:
+            rows = conn.execute(
+                f"SELECT id, categoria_id FROM {table} WHERE owner_user_id = ?",
+                (LOCAL_OWNER_ID,),
+            ).fetchall()
+            claimed = 0
+            for row in rows:
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET owner_user_id = ?,
+                        categoria_id = ?,
+                        sync_status = 'pending',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND owner_user_id = ?
+                    """,
+                    (owner, mapped_category_id(row["categoria_id"]), row["id"], LOCAL_OWNER_ID),
+                )
+                claimed += 1
+            return claimed
+
+        def claim_presupuestos() -> int:
+            rows = conn.execute(
+                "SELECT id, categoria_id, mes, anio FROM presupuestos WHERE owner_user_id = ?",
+                (LOCAL_OWNER_ID,),
+            ).fetchall()
+            claimed = 0
+            for row in rows:
+                target_category_id = mapped_category_id(row["categoria_id"])
+                existing = conn.execute(
+                    """
+                    SELECT id
+                    FROM presupuestos
+                    WHERE categoria_id = ? AND mes = ? AND anio = ? AND id != ?
+                    LIMIT 1
+                    """,
+                    (target_category_id, row["mes"], row["anio"], row["id"]),
+                ).fetchone()
+                if existing:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE presupuestos
+                    SET owner_user_id = ?,
+                        categoria_id = ?,
+                        sync_status = 'pending',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND owner_user_id = ?
+                    """,
+                    (owner, target_category_id, row["id"], LOCAL_OWNER_ID),
+                )
+                claimed += 1
+            return claimed
+
+        summary["movimientos"] = claim_category_table("movimientos")
+        summary["gastos_programados"] = claim_category_table("gastos_programados")
+        summary["gastos_fijos"] = claim_category_table("gastos_fijos")
+        summary["presupuestos"] = claim_presupuestos()
+        result = conn.execute(
+            """
+            UPDATE metas_ahorro
+            SET owner_user_id = ?,
+                sync_status = 'pending',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE owner_user_id = ?
+            """,
+            (owner, LOCAL_OWNER_ID),
+        )
+        summary["metas_ahorro"] = int(result.rowcount or 0)
+        fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_errors:
+            raise HTTPException(status_code=500, detail="La asociacion dejo relaciones invalidas. No se aplicaron cambios.")
     return {
         "ok": True,
         "owner_user_id": owner,

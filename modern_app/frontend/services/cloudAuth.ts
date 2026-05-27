@@ -12,33 +12,79 @@ export type CloudAuthResponse = {
   user: CloudUser;
 };
 
-export type StoredCloudSession = {
-  token: string;
+export type StoredCloudAccount = {
   user: CloudUser;
+  token: string;
+  addedAt: string;
+  lastUsedAt: string;
   storage: "persistent" | "session";
 };
 
+export type StoredAuthState = {
+  activeOwnerId: string;
+  accounts: StoredCloudAccount[];
+};
+
+export type StoredCloudSession = StoredCloudAccount;
+
+const LOCAL_OWNER_ID = "local";
+const AUTH_STATE_KEY = "scisonomics_cloud_accounts_v1";
+const AUTH_STATE_SESSION_KEY = "scisonomics_cloud_accounts_session_v1";
 const TOKEN_KEY = "scisonomics_cloud_access_token";
 const USER_KEY = "scisonomics_cloud_user";
 export const ACCOUNT_SESSION_CHANGED_EVENT = "scisonomics:account-session-changed";
+export const OWNER_CHANGED_EVENT = "scisonomics:owner-changed";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const CLOUD_AUTH_TIMEOUT_MS = 10000;
+
+function emptyAuthState(): StoredAuthState {
+  return { activeOwnerId: LOCAL_OWNER_ID, accounts: [] };
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
 
 function notifyAccountSessionChanged() {
   if (typeof window === "undefined") return;
   try {
     window.dispatchEvent(new Event(ACCOUNT_SESSION_CHANGED_EVENT));
+    window.dispatchEvent(new Event(OWNER_CHANGED_EVENT));
   } catch {
     // La cuenta opcional no debe bloquear el uso local de la app.
   }
 }
 
-export function isCloudAuthConfigured() {
-  return CLOUD_API_URL.length > 0;
+function readJsonState(storage: Storage, key: string): StoredAuthState | null {
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredAuthState;
+    return {
+      activeOwnerId: typeof parsed.activeOwnerId === "string" ? parsed.activeOwnerId : LOCAL_OWNER_ID,
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts.filter((account) => account?.token && account?.user?.id) : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
-export function getStoredToken() {
-  if (typeof window === "undefined") return null;
+function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
+  storage.setItem(key, JSON.stringify(state));
+}
+
+function removeLegacySessionKeys() {
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+    window.sessionStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(USER_KEY);
+    window.sessionStorage.removeItem(USER_KEY);
+  } catch {
+    // La migracion de sesion no debe bloquear el uso local.
+  }
+}
+
+function getLegacyToken() {
   try {
     return window.localStorage.getItem(TOKEN_KEY) || window.sessionStorage.getItem(TOKEN_KEY);
   } catch {
@@ -46,8 +92,7 @@ export function getStoredToken() {
   }
 }
 
-export function getStoredUser(): CloudUser | null {
-  if (typeof window === "undefined") return null;
+function getLegacyUser(): CloudUser | null {
   try {
     const raw = window.localStorage.getItem(USER_KEY) || window.sessionStorage.getItem(USER_KEY);
     return raw ? (JSON.parse(raw) as CloudUser) : null;
@@ -56,8 +101,7 @@ export function getStoredUser(): CloudUser | null {
   }
 }
 
-export function getTokenStorageMode(): "persistent" | "session" | null {
-  if (typeof window === "undefined") return null;
+function getLegacyStorageMode(): "persistent" | "session" | null {
   try {
     if (window.localStorage.getItem(TOKEN_KEY)) return "persistent";
     if (window.sessionStorage.getItem(TOKEN_KEY)) return "session";
@@ -67,83 +111,182 @@ export function getTokenStorageMode(): "persistent" | "session" | null {
   return null;
 }
 
-export function clearStoredSession(options: { notify?: boolean } = {}) {
+function saveSplitState(state: StoredAuthState) {
   if (typeof window === "undefined") return;
-  const notify = options.notify ?? true;
+  const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
+  const sessionAccounts = state.accounts.filter((account) => account.storage === "session");
   try {
-    window.localStorage.removeItem(TOKEN_KEY);
-    window.sessionStorage.removeItem(TOKEN_KEY);
-    window.localStorage.removeItem(USER_KEY);
-    window.sessionStorage.removeItem(USER_KEY);
-    console.info("[auth] clear session");
-    if (notify) notifyAccountSessionChanged();
+    if (persistentAccounts.length || state.activeOwnerId !== LOCAL_OWNER_ID) {
+      writeJsonState(window.localStorage, AUTH_STATE_KEY, { activeOwnerId: state.activeOwnerId, accounts: persistentAccounts });
+    } else {
+      window.localStorage.removeItem(AUTH_STATE_KEY);
+    }
+    if (sessionAccounts.length) {
+      writeJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY, { activeOwnerId: state.activeOwnerId, accounts: sessionAccounts });
+    } else {
+      window.sessionStorage.removeItem(AUTH_STATE_SESSION_KEY);
+    }
   } catch {
     // La cuenta opcional no debe bloquear el uso local de la app.
   }
 }
 
-export function getStoredSession(): StoredCloudSession | null {
-  const token = getStoredToken();
-  const user = getStoredUser();
-  const storage = getTokenStorageMode();
-  if (!token && !user) return null;
-  if (!token || !user || !storage) {
-    console.warn("[auth] stored session is incomplete; clearing local cloud session");
-    clearStoredSession({ notify: false });
-    return null;
+function normalizeState(state: StoredAuthState): StoredAuthState {
+  const seen = new Set<string>();
+  const accounts: StoredCloudAccount[] = [];
+  for (const account of state.accounts) {
+    if (!account?.user?.id || !account.token || seen.has(account.user.id)) continue;
+    seen.add(account.user.id);
+    accounts.push({
+      ...account,
+      storage: account.storage || "persistent",
+      addedAt: account.addedAt || nowIso(),
+      lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
+    });
   }
-  return { token, user, storage };
+  const activeOwnerId =
+    state.activeOwnerId === LOCAL_OWNER_ID || accounts.some((account) => account.user.id === state.activeOwnerId)
+      ? state.activeOwnerId
+      : LOCAL_OWNER_ID;
+  return { activeOwnerId, accounts };
+}
+
+function migrateLegacySessionIfNeeded() {
+  if (typeof window === "undefined") return;
+  const existingLocal = readJsonState(window.localStorage, AUTH_STATE_KEY);
+  const existingSession = readJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY);
+  if ((existingLocal?.accounts.length || 0) + (existingSession?.accounts.length || 0) > 0) return;
+  const token = getLegacyToken();
+  const user = getLegacyUser();
+  if (!token || !user?.id) return;
+  const storage = getLegacyStorageMode() || "persistent";
+  const account: StoredCloudAccount = { token, user, storage, addedAt: nowIso(), lastUsedAt: nowIso() };
+  saveSplitState({ activeOwnerId: user.id, accounts: [account] });
+  removeLegacySessionKeys();
+  console.info("[auth] migrated legacy single session", { userId: user.id, email: user.email, storage });
+}
+
+export function isCloudAuthConfigured() {
+  return CLOUD_API_URL.length > 0;
+}
+
+export function getStoredAuthState(): StoredAuthState {
+  if (typeof window === "undefined") return emptyAuthState();
+  migrateLegacySessionIfNeeded();
+  const localState = readJsonState(window.localStorage, AUTH_STATE_KEY) || emptyAuthState();
+  const sessionState = readJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY) || emptyAuthState();
+  const preferredActive = sessionState.activeOwnerId !== LOCAL_OWNER_ID ? sessionState.activeOwnerId : localState.activeOwnerId;
+  const merged = normalizeState({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] });
+  if (merged.activeOwnerId !== preferredActive) saveSplitState(merged);
+  return merged;
+}
+
+export function saveStoredAuthState(state: StoredAuthState, options: { notify?: boolean } = {}) {
+  saveSplitState(normalizeState(state));
+  removeLegacySessionKeys();
+  if (options.notify ?? true) notifyAccountSessionChanged();
+}
+
+export function getStoredAccounts() {
+  return getStoredAuthState().accounts;
 }
 
 export function getActiveOwnerId() {
-  return getStoredSession()?.user.id || "local";
+  return getStoredAuthState().activeOwnerId || LOCAL_OWNER_ID;
 }
 
 export const getCurrentOwnerId = getActiveOwnerId;
 
-export function setStoredToken(token: string, remember: boolean) {
-  if (typeof window === "undefined") return;
-  try {
-    // TODO: migrar este token a almacenamiento seguro antes de activar sincronizacion cloud real.
-    window.localStorage.removeItem(TOKEN_KEY);
-    window.sessionStorage.removeItem(TOKEN_KEY);
-    if (remember) {
-      window.localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      window.sessionStorage.setItem(TOKEN_KEY, token);
-    }
-    notifyAccountSessionChanged();
-  } catch {
-    // La cuenta opcional no debe bloquear el uso local de la app.
-  }
+export function isCloudOwner(ownerId: string | null | undefined) {
+  const value = String(ownerId || "");
+  return value.length > 0 && value !== LOCAL_OWNER_ID;
+}
+
+export function getActiveAccount() {
+  const state = getStoredAuthState();
+  return state.accounts.find((account) => account.user.id === state.activeOwnerId) || null;
+}
+
+export function getActiveCloudSession(): StoredCloudSession | null {
+  return getActiveAccount();
+}
+
+export function getStoredSession(): StoredCloudSession | null {
+  return getActiveCloudSession();
+}
+
+export function getStoredToken() {
+  return getActiveCloudSession()?.token || null;
+}
+
+export function getStoredUser(): CloudUser | null {
+  return getActiveCloudSession()?.user || null;
+}
+
+export function getTokenStorageMode(): "persistent" | "session" | null {
+  return getActiveCloudSession()?.storage || null;
+}
+
+export function addOrUpdateAccount(session: { token: string; user: CloudUser }, options: { remember?: boolean; makeActive?: boolean; notify?: boolean } = {}) {
+  const state = getStoredAuthState();
+  const storage: "persistent" | "session" = options.remember === false ? "session" : "persistent";
+  const existing = state.accounts.find((account) => account.user.id === session.user.id);
+  const account: StoredCloudAccount = {
+    token: session.token,
+    user: session.user,
+    storage,
+    addedAt: existing?.addedAt || nowIso(),
+    lastUsedAt: nowIso(),
+  };
+  const accounts = [account, ...state.accounts.filter((item) => item.user.id !== session.user.id)];
+  saveStoredAuthState({ activeOwnerId: options.makeActive === false ? state.activeOwnerId : session.user.id, accounts }, { notify: options.notify });
+  console.info("[auth] account stored", { userId: session.user.id, email: session.user.email, storage });
+}
+
+export function switchActiveOwner(ownerId: string) {
+  const state = getStoredAuthState();
+  const nextOwner = ownerId === LOCAL_OWNER_ID || state.accounts.some((account) => account.user.id === ownerId) ? ownerId : LOCAL_OWNER_ID;
+  const accounts = state.accounts.map((account) => (account.user.id === nextOwner ? { ...account, lastUsedAt: nowIso() } : account));
+  saveStoredAuthState({ activeOwnerId: nextOwner, accounts });
+  console.info("[owner] active owner changed", { ownerId: nextOwner });
+}
+
+export function switchToLocalMode() {
+  switchActiveOwner(LOCAL_OWNER_ID);
+}
+
+export function removeAccount(ownerId: string) {
+  const state = getStoredAuthState();
+  const accounts = state.accounts.filter((account) => account.user.id !== ownerId);
+  const activeOwnerId = state.activeOwnerId === ownerId ? LOCAL_OWNER_ID : state.activeOwnerId;
+  saveStoredAuthState({ activeOwnerId, accounts });
+}
+
+export function clearAllAccounts() {
+  saveStoredAuthState(emptyAuthState());
+}
+
+export function clearActiveAccountSession() {
+  const active = getActiveOwnerId();
+  if (active === LOCAL_OWNER_ID) switchToLocalMode();
+  else removeAccount(active);
+}
+
+export function clearStoredSession() {
+  clearActiveAccountSession();
 }
 
 export function setStoredSession(token: string, user: CloudUser, remember: boolean, notify = true) {
-  if (typeof window === "undefined") return;
-  try {
-    // TODO: migrar este token a almacenamiento seguro antes de activar sincronizacion cloud real.
-    window.localStorage.removeItem(TOKEN_KEY);
-    window.sessionStorage.removeItem(TOKEN_KEY);
-    window.localStorage.removeItem(USER_KEY);
-    window.sessionStorage.removeItem(USER_KEY);
-    const target = remember ? window.localStorage : window.sessionStorage;
-    const other = remember ? window.sessionStorage : window.localStorage;
-    other.removeItem(USER_KEY);
-    if (remember) {
-      window.localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      window.sessionStorage.setItem(TOKEN_KEY, token);
-    }
-    target.setItem(USER_KEY, JSON.stringify(user));
-    console.info("[auth] stored session", { userId: user.id, email: user.email, storage: remember ? "persistent" : "session" });
-    if (notify) notifyAccountSessionChanged();
-  } catch {
-    // La cuenta opcional no debe bloquear el uso local de la app.
-  }
+  addOrUpdateAccount({ token, user }, { remember, makeActive: true, notify });
+}
+
+export function setStoredToken(token: string, remember: boolean) {
+  const active = getActiveAccount();
+  if (active) addOrUpdateAccount({ token, user: active.user }, { remember, makeActive: true });
 }
 
 export function clearStoredToken() {
-  clearStoredSession();
+  clearActiveAccountSession();
 }
 
 export const getCloudToken = getStoredToken;
@@ -157,10 +300,7 @@ export function subscribeAuthChanges(listener: () => void) {
 }
 
 async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (!isCloudAuthConfigured()) {
-    throw new Error("El servicio de cuenta no esta configurado en este entorno.");
-  }
-
+  if (!isCloudAuthConfigured()) throw new Error("El servicio de cuenta no esta configurado en este entorno.");
   let response: Response;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CLOUD_AUTH_TIMEOUT_MS);
@@ -169,10 +309,7 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
       ...options,
       cache: "no-store",
       signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     });
   } catch (error) {
     console.error("Cloud auth request failed", { path, error });
@@ -180,67 +317,44 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
   } finally {
     clearTimeout(timeout);
   }
-
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    if (response.status === 401 || response.status === 403) {
-      console.error("Cloud auth session invalid", { path, status: response.status, body });
-      throw new Error("Sesion invalida o vencida.");
-    }
-    const detail = typeof body?.detail === "string" ? body.detail : "No se pudo completar la accion.";
-    console.error("Cloud auth HTTP error", { path, status: response.status, body });
-    throw new Error(detail);
+    if (response.status === 401 || response.status === 403) throw new Error("Sesion invalida o vencida.");
+    throw new Error(typeof body?.detail === "string" ? body.detail : "No se pudo completar la accion.");
   }
-
   return response.json() as Promise<T>;
 }
 
 export const cloudAuth = {
   register: (input: { email: string; password: string; display_name?: string | null }) =>
-    cloudRequest<CloudAuthResponse>("/auth/register", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-
+    cloudRequest<CloudAuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) }),
   login: (input: { email: string; password: string }) =>
-    cloudRequest<CloudAuthResponse>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-
+    cloudRequest<CloudAuthResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) }),
   me: (token: string) =>
-    cloudRequest<CloudUser>("/auth/me", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-
+    cloudRequest<CloudUser>("/auth/me", { method: "GET", headers: { Authorization: `Bearer ${token}` } }),
   logout: async (token: string | null) => {
     if (token && isCloudAuthConfigured()) {
-      await cloudRequest<{ ok: boolean }>("/auth/logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      }).catch((error) => {
+      await cloudRequest<{ ok: boolean }>("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch((error) => {
         console.error("Cloud auth logout failed", error);
       });
     }
-    clearStoredSession();
   },
-
   googleStart: () => cloudRequest<{ configured: boolean; authorization_url?: string; message?: string }>("/auth/google/start"),
 };
 
-export async function verifyStoredSession(): Promise<StoredCloudSession | null> {
-  const session = getStoredSession();
+export async function verifyStoredSession(ownerId?: string): Promise<StoredCloudSession | null> {
+  const state = getStoredAuthState();
+  const session = ownerId ? state.accounts.find((account) => account.user.id === ownerId) || null : getActiveCloudSession();
   if (!session) return null;
-  console.info("[auth] verify start");
+  console.info("[auth] verify start", { userId: session.user.id, email: session.user.email });
   try {
     const user = await cloudAuth.me(session.token);
-    setStoredSession(session.token, user, session.storage === "persistent", false);
+    addOrUpdateAccount({ token: session.token, user }, { remember: session.storage === "persistent", makeActive: state.activeOwnerId === session.user.id, notify: false });
     console.info("[auth] verify success", { userId: user.id, email: user.email });
-    return { token: session.token, user, storage: session.storage };
+    return { ...session, user };
   } catch (error) {
     console.warn("[auth] verify failed", error);
-    clearStoredSession({ notify: true });
+    removeAccount(session.user.id);
     throw error;
   }
 }

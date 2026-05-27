@@ -8,9 +8,21 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.7.0**
+Versión estable actual: **v2.8.0**
 
-[Descargar ScisoNomics v2.7.0](../../releases/tag/v2.7.0)
+[Descargar ScisoNomics v2.8.0](../../releases/tag/v2.8.0)
+
+---
+
+## Novedades de v2.8.0
+
+- Se agregó soporte de multicuentas locales en el mismo dispositivo.
+- El modo local funciona como un owner separado y no se sincroniza con cloud.
+- Se puede cambiar la cuenta activa desde Configuración > Cuenta sin mezclar datos.
+- La sincronización manual y automática corren solo para la cuenta cloud activa.
+- Quitar una cuenta del dispositivo elimina el acceso guardado, pero no borra datos financieros locales ni datos cloud.
+- Se migra automáticamente la sesión única de v2.7.0 a la nueva lista de cuentas guardadas.
+- No se sincronizan todas las cuentas en segundo plano, no se implementó Google Login y la app sigue siendo local-first.
 
 ---
 

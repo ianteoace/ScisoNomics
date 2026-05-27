@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Toaster } from "sonner";
 
@@ -10,6 +10,7 @@ import { AutoSyncProvider } from "../../components/sync/AutoSyncProvider";
 import { Topbar } from "../../components/layout/Topbar";
 import { Modal } from "../../components/ui/Modal";
 import { DashboardUiProvider } from "../../hooks/useDashboardUi";
+import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveOwnerId } from "../../services/cloudAuth";
 
 const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
 
@@ -110,8 +111,48 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const currentPathname = pathname || "";
   const [collapsed, setCollapsed] = useState(false);
+  const [activeOwnerId, setActiveOwnerId] = useState("local");
+  const [ownerSwitching, setOwnerSwitching] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [activeGuide, setActiveGuide] = useState<(typeof SECTION_GUIDE_LIST)[number] | null>(null);
+  const activeOwnerRef = useRef("local");
+  const ownerSwitchTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const clearOwnerSwitchTimers = () => {
+      for (const timer of ownerSwitchTimersRef.current) clearTimeout(timer);
+      ownerSwitchTimersRef.current = [];
+    };
+    const applyOwner = (nextOwner: string) => {
+      activeOwnerRef.current = nextOwner;
+      setActiveOwnerId(nextOwner);
+    };
+    const refreshOwner = (animated = true) => {
+      const nextOwner = getActiveOwnerId();
+      if (nextOwner === activeOwnerRef.current) return;
+      clearOwnerSwitchTimers();
+      if (!animated) {
+        setOwnerSwitching(false);
+        applyOwner(nextOwner);
+        return;
+      }
+      setOwnerSwitching(true);
+      ownerSwitchTimersRef.current.push(
+        setTimeout(() => applyOwner(nextOwner), 90),
+        setTimeout(() => setOwnerSwitching(false), 260),
+      );
+    };
+    const handleOwnerEvent = () => refreshOwner(true);
+    refreshOwner(false);
+    window.addEventListener(OWNER_CHANGED_EVENT, handleOwnerEvent);
+    window.addEventListener(ACCOUNT_SESSION_CHANGED_EVENT, handleOwnerEvent);
+    return () => {
+      clearOwnerSwitchTimers();
+      window.removeEventListener(OWNER_CHANGED_EVENT, handleOwnerEvent);
+      window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, handleOwnerEvent);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -151,14 +192,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <DashboardUiProvider>
+    <DashboardUiProvider key={activeOwnerId}>
       <BackendStartupGate>
         <AutoSyncProvider>
           <div className={`min-h-screen lg:grid ${collapsed ? "lg:grid-cols-[84px_1fr]" : "lg:grid-cols-[250px_1fr]"}`}>
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
             <div className="p-4 lg:p-6">
               <Topbar />
-              <div>{children}</div>
+              <div className="relative">
+                <div
+                  key={`${activeOwnerId}:${currentPathname}`}
+                  className={`transition-all duration-200 ease-out ${ownerSwitching ? "translate-y-1 opacity-0 blur-[1px]" : "translate-y-0 opacity-100 blur-0"}`}
+                >
+                  {children}
+                </div>
+                {ownerSwitching ? (
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 rounded-2xl border border-sky-400/20 bg-white/70 px-4 py-3 text-sm text-slate-600 shadow-sm backdrop-blur-md dark:bg-slate-950/65 dark:text-slate-300">
+                    Cambiando cuenta...
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </AutoSyncProvider>

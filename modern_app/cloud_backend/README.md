@@ -69,4 +69,6 @@ Desde v2.6.0 el cliente desktop consulta cambios remotos automaticamente aunque 
 
 Desde v2.7.0 el cliente desktop aísla datos locales por cuenta con `owner_user_id`. El backend cloud sigue filtrando por el usuario autenticado desde el JWT e ignora cualquier intento del cliente de indicar otro usuario.
 
+Desde v2.8.0 el cliente desktop puede guardar varias cuentas cloud en el mismo dispositivo, pero la sincronizacion cloud corre solo para la cuenta activa. El backend cloud no sincroniza cuentas en segundo plano ni acepta que el cliente indique otro `user_id`.
+
 El endpoint `GET /auth/google/start` queda preparado para OAuth. Sin credenciales de Google devuelve un estado no configurado y no inicia redirecciones invalidas.
