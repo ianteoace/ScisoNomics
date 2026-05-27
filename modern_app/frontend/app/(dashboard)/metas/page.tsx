@@ -8,7 +8,7 @@ import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
 import { useToast } from "../../../hooks/useToast";
-import { money } from "../../../lib/format";
+import { money, parseCurrencyInput } from "../../../lib/format";
 import { api } from "../../../services/api";
 import type { MetaAhorro } from "../../../types/domain";
 
@@ -105,14 +105,14 @@ export default function MetasPage() {
       return;
     }
 
-    const objetivo = Number(form.monto_objetivo.trim());
+    const objetivo = parseCurrencyInput(form.monto_objetivo);
     if (!Number.isFinite(objetivo) || objetivo <= 0) {
       showError("Ingresá un monto objetivo mayor a 0.");
       return;
     }
 
     const inicialRaw = form.monto_inicial.trim();
-    const inicial = inicialRaw ? Number(inicialRaw) : 0;
+    const inicial = inicialRaw ? parseCurrencyInput(inicialRaw) : 0;
     if (!Number.isFinite(inicial) || inicial < 0) {
       showError("El monto inicial no puede ser negativo.");
       return;
@@ -270,10 +270,10 @@ export default function MetasPage() {
           <input className="input" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} required />
 
           <label className="text-xs text-muted">Monto objetivo</label>
-          <input className="input" type="number" min="0.01" step="0.01" value={form.monto_objetivo} onChange={(e) => setForm({ ...form, monto_objetivo: e.target.value })} required />
+          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 1.250.000" value={form.monto_objetivo} onChange={(e) => setForm({ ...form, monto_objetivo: e.target.value })} required />
 
           <label className="text-xs text-muted">Monto inicial (opcional)</label>
-          <input className="input" type="number" min="0" step="0.01" value={form.monto_inicial} onChange={(e) => setForm({ ...form, monto_inicial: e.target.value })} />
+          <input className="input" type="text" inputMode="decimal" placeholder="Opcional" value={form.monto_inicial} onChange={(e) => setForm({ ...form, monto_inicial: e.target.value })} />
 
           <label className="text-xs text-muted">Fecha objetivo (opcional)</label>
           <input className="input" type="date" value={form.fecha_objetivo} onChange={(e) => setForm({ ...form, fecha_objetivo: e.target.value })} />

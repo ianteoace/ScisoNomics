@@ -41,7 +41,7 @@ from .deps import ensure_app_data_initialized, get_database_readiness, get_last_
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="2.9.0")
+app = FastAPI(title="Registro Finanzas API", version="3.0.0")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -186,6 +186,50 @@ def ready():
             "database_path": str(status.get("db_path", WEB_DB_PATH)),
         },
     )
+
+
+def _safe_app_paths() -> dict[str, str]:
+    data_dir = get_data_dir()
+    backups_dir = get_backup_dir()
+    logs_dir = get_logs_dir()
+    for folder in (data_dir, backups_dir, logs_dir):
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            _logger.warning("No se pudo asegurar carpeta de app: %s", folder)
+    return {
+        "database_path": str(WEB_DB_PATH),
+        "data_dir": str(data_dir),
+        "backups_path": str(backups_dir),
+        "logs_path": str(logs_dir),
+    }
+
+
+@app.get("/app/paths")
+def app_paths():
+    ensure_app_data_initialized()
+    return {"ok": True, "version": app.version, **_safe_app_paths()}
+
+
+@app.get("/app/diagnostics")
+def app_diagnostics():
+    try:
+        ensure_app_data_initialized()
+    except Exception:
+        _logger.exception("Error preparando diagnostico local.")
+    status = get_last_init_status()
+    paths = _safe_app_paths()
+    return {
+        "ok": bool(status.get("database_ready", False)),
+        "version": app.version,
+        "appearance": "modo oscuro fijo",
+        "database_ready": bool(status.get("database_ready", False)),
+        "initializing": bool(status.get("initializing", False)),
+        "database_error": status.get("database_error"),
+        "db_exists": bool(Path(paths["database_path"]).exists()),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        **paths,
+    }
 
 
 @app.get("/meta")

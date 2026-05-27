@@ -10,7 +10,7 @@ import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
-import { money, monthName, yearOptions } from "../../../lib/format";
+import { money, monthName, parseCurrencyInput, yearOptions } from "../../../lib/format";
 import { api } from "../../../services/api";
 import type { Categoria, Presupuesto } from "../../../types/domain";
 
@@ -92,7 +92,7 @@ export default function PresupuestosPage() {
     const trimmed = monto.trim();
     if (!trimmed) return showError("Ingresa un monto mayor a 0.");
 
-    const montoNumber = Number(trimmed);
+    const montoNumber = parseCurrencyInput(trimmed);
     if (!Number.isFinite(montoNumber) || montoNumber <= 0) return showError("Ingresa un monto mayor a 0.");
 
     try {
@@ -199,7 +199,7 @@ export default function PresupuestosPage() {
             {yearOptions(new Date().getFullYear(), [anio, ...rows.map((r) => r.anio)]).map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="number" min="0.01" step="0.01" placeholder="Monto mensual" value={monto} onChange={(e) => setMonto(e.target.value)} required />
+          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 500.000,50" value={monto} onChange={(e) => setMonto(e.target.value)} required />
           {!editing && usedPairs.has(`${categoriaId}-${mes}-${anio}`) ? <p className="text-xs text-amber-300">Ya existe para este periodo. Se actualizara al guardar.</p> : null}
           <div className="mt-2 flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Cancelar</button><button className="btn" type="submit">{editing ? "Guardar cambios" : "Crear presupuesto"}</button></div>
         </form>

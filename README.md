@@ -8,9 +8,36 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v2.9.0**
+Versión estable actual: **v3.0.0**
 
-[Descargar ScisoNomics v2.9.0](../../releases/tag/v2.9.0)
+[Descargar ScisoNomics v3.0.0](../../releases/tag/v3.0.0)
+
+### Actualizar manualmente
+
+- Cerra ScisoNomics antes de instalar una version nueva.
+- El instalador de v3.0.0 intenta cerrar automaticamente procesos anteriores de ScisoNomics antes de copiar archivos.
+- Si Windows informa que hay archivos en uso, cancela la instalacion y cerra los procesos desde el Administrador de tareas.
+- No uses "Omitir" en archivos de ScisoNomics durante el instalador; podria quedar una app nueva con backend viejo.
+- Actualizar la app no borra la base local, backups ni logs.
+- Instalador esperado en Windows: `ScisoNomics_3.0.0_x64-setup.exe`.
+- Procesos esperados a cerrar si hace falta:
+  - `ScisoNomics.exe`
+  - `scisonomics-backend.exe`
+  - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
+
+---
+
+## Novedades de v3.0.0
+
+- Enfoque en experiencia final de usuario, diagnostico e instalacion.
+- ScisoNomics queda siempre en modo oscuro; se elimino el selector claro/oscuro.
+- Nueva seccion **Acerca de ScisoNomics** con version, estado local, rutas importantes y estado de sync.
+- Acceso rapido a carpeta de datos, backups y logs.
+- Boton **Copiar diagnostico** con informacion segura para soporte, sin tokens, secretos ni datos financieros.
+- Boton **Buscar actualizaciones** que abre GitHub Releases para descarga manual.
+- Mejor onboarding para instalaciones sin datos.
+- Mensajes de arranque, base de datos y errores locales mas claros.
+- La app sigue siendo local-first, la cuenta sigue siendo opcional y no se sube la base `.db` completa.
 
 ---
 

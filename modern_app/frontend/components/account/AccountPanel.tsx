@@ -47,7 +47,7 @@ type Mode = "login" | "register";
 const inputClass =
   "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900";
 
-export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
+export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { showHeader?: boolean; hideSyncCenter?: boolean }) {
   const configured = isCloudAuthConfigured();
   const { showError, showSuccess } = useToast();
   const [mode, setMode] = useState<Mode>("login");
@@ -639,7 +639,7 @@ export function AccountPanel({ showHeader = true }: { showHeader?: boolean }) {
               </div>
             ) : null}
           </div>
-          {configured ? (
+          {configured && !hideSyncCenter ? (
             <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
               <div className="flex flex-col gap-4">
                 <div>

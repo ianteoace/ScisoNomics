@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { getLocalDateInputValue } from "../../lib/date";
-import { money } from "../../lib/format";
+import { money, parseCurrencyInput } from "../../lib/format";
 import type { Categoria, MetaAhorro, Movimiento } from "../../types/domain";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
@@ -62,7 +62,9 @@ export function MovimientosView({ rows, categories, metas, loading, openCreateSi
     }
     const parsedMetaId = Number(form.meta_id);
     const normalizedMetaId = form.tipo === "ahorro" && parsedMetaId > 0 && !Number.isNaN(parsedMetaId) ? parsedMetaId : null;
-    const payload = { ...form, categoria_id: categoriaId, monto: Number(form.monto), meta_id: normalizedMetaId };
+    const monto = parseCurrencyInput(form.monto);
+    if (!Number.isFinite(monto) || monto <= 0) throw new Error("Ingresá un monto mayor a 0.");
+    const payload = { ...form, categoria_id: categoriaId, monto, meta_id: normalizedMetaId };
     if (editing) await onUpdate(editing.id, payload);
     else await onCreate(payload);
     setOpen(false);
@@ -174,7 +176,7 @@ export function MovimientosView({ rows, categories, metas, loading, openCreateSi
           <label className="text-xs text-slate-400">Descripcion</label>
           <input className="input" value={form.descripcion} placeholder="Descripcion" onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="number" step="0.01" min="0.01" value={form.monto} placeholder="Monto" onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
+          <input className="input" type="text" inputMode="decimal" value={form.monto} placeholder="Ej: 500.000,50" onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
           {form.tipo === "ahorro" ? (
             <>
               <label className="text-xs text-slate-400">Meta de ahorro (opcional)</label>

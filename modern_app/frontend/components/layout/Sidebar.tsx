@@ -76,14 +76,17 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     }
 
     loadAccount();
+    const openAddAccountModal = () => setAddAccountOpen(true);
     window.addEventListener(ACCOUNT_SESSION_CHANGED_EVENT, loadAccount);
     window.addEventListener(OWNER_CHANGED_EVENT, loadAccount);
     window.addEventListener("focus", loadAccount);
+    window.addEventListener("scisonomics:open-add-account-modal", openAddAccountModal);
     return () => {
       cancelled = true;
       window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, loadAccount);
       window.removeEventListener(OWNER_CHANGED_EVENT, loadAccount);
       window.removeEventListener("focus", loadAccount);
+      window.removeEventListener("scisonomics:open-add-account-modal", openAddAccountModal);
     };
   }, []);
 

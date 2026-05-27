@@ -86,6 +86,15 @@ export function DashboardView({
     { name: "Ingresos", value: summary.ingreso },
     { name: "Gastos", value: summary.gasto },
   ];
+  const showWelcome =
+    !loading &&
+    recentMovements.length === 0 &&
+    upcoming.length === 0 &&
+    presupuestos.length === 0 &&
+    gastosFijos.length === 0 &&
+    metas.length === 0 &&
+    Number(summary.ingreso || 0) === 0 &&
+    Number(summary.gasto || 0) === 0;
 
   return (
     <div className="space-y-5">
@@ -108,6 +117,24 @@ export function DashboardView({
           </div>
         </div>
       </section>
+
+      {showWelcome ? (
+        <section className="relative overflow-hidden rounded-3xl border border-cyan-400/20 bg-slate-950/70 p-5 shadow-xl shadow-cyan-950/10 md:p-6">
+          <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-cyan-400/10 blur-3xl" />
+          <div className="relative z-10">
+            <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Primeros pasos</p>
+            <h3 className="mt-2 text-2xl font-black">Bienvenido a ScisoNomics</h3>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300">
+              Podes empezar en modo local o agregar una cuenta para sincronizar. Tus datos principales se guardan en este dispositivo.
+            </p>
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+              <button className="btn" onClick={onQuickNewMovement}>Registrar primer movimiento</button>
+              <button className="btn-secondary" onClick={() => window.dispatchEvent(new Event("scisonomics:open-add-account-modal"))}>Agregar cuenta</button>
+              <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear backup</button>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
         <div className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-cyan-50 via-white to-sky-100 p-5 shadow-sm shadow-cyan-900/5 dark:border-cyan-300/10 dark:from-slate-950 dark:via-slate-900 dark:to-cyan-950/80 md:p-6">

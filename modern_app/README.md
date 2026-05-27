@@ -11,6 +11,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 - Si no existe ninguna, la API responde error claro: `No se encontro la base de datos.`
 - Desde v2.8.0 el cliente soporta varias cuentas cloud guardadas en el mismo dispositivo. El modo sin cuenta usa el owner `local`; cada cuenta cloud usa su `user_id`, y solo una cuenta queda activa a la vez.
 - Desde v2.9.0 se puede agregar una cuenta cloud con Google Login. El OAuth lo maneja el backend cloud; el frontend solo abre el navegador externo y nunca guarda secretos de Google.
+- Desde v3.0.0 la app usa modo oscuro fijo y suma Acerca de ScisoNomics con diagnostico seguro, rutas de datos/backups/logs y actualizaciones manuales desde GitHub Releases.
 
 ## Estructura
 
@@ -31,6 +32,9 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 Endpoints utilitarios:
 - `GET /health`
+- `GET /ready`
+- `GET /app/paths`
+- `GET /app/diagnostics`
 - `GET /debug/db-path`
 - `GET /meta`
 
@@ -82,6 +86,13 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health` o `/debug/db-path`, y al cerrar la app termina el proceso backend.
 
+En v3.0.0 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
+- `ScisoNomics.exe`
+- `scisonomics-backend.exe`
+- `scisonomics-backend-x86_64-pc-windows-msvc.exe`
+
+No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.0.0_x64-setup.exe`.
+
 ### Desarrollo
 
 ```powershell
@@ -126,3 +137,12 @@ npm run tauri:build
 - En v2.4 se agrega Centro de sincronizacion, historial local de sync, cambios pendientes por tabla e identificador local de dispositivo. No hay resolucion avanzada de conflictos y no se sube la base `.db` completa.
 - En v2.5 se agrega metadata de origen por dispositivo, deteccion basica de conflictos, registro local `sync_conflicts` y vista de dispositivos vinculados. La resolucion sigue siendo last-write-wins.
 - En v2.6 la sincronizacion automatica tambien consulta cambios remotos aunque no haya pendientes locales. Se ejecuta al iniciar, por intervalo, al recuperar foco y despues de cambios locales. Tambien se mejora visualmente el dashboard.
+- En v3.0.0 se fija el modo oscuro, se elimina el selector claro/oscuro, se expone diagnostico seguro desde Configuracion > Acerca de ScisoNomics y las actualizaciones se realizan manualmente desde GitHub Releases.
+
+## Rutas locales principales
+
+- DB local: `%LOCALAPPDATA%\RegistroFinanzas\data\finanzas.db`
+- Backups: `%LOCALAPPDATA%\RegistroFinanzas\backups`
+- Logs: `%LOCALAPPDATA%\ScisoNomics\logs`
+
+El diagnostico de la app no incluye tokens, secretos, contrasenas, connection strings completas ni datos financieros.

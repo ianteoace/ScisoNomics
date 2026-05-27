@@ -9,6 +9,7 @@ import { ErrorState } from "../../../components/ui/ErrorState";
 import { MovimientosView } from "../../../components/views/MovimientosView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
+import { parseCurrencyInput } from "../../../lib/format";
 import { api } from "../../../services/api";
 import type { Categoria, MetaAhorro, Movimiento, MovimientosResponse } from "../../../types/domain";
 
@@ -72,9 +73,11 @@ export default function MovimientosPage() {
     }
     setLoading(true);
     const periods = listPeriodsBetween(desde, hasta);
+    const minParsed = minMonto ? parseCurrencyInput(minMonto) : undefined;
+    const maxParsed = maxMonto ? parseCurrencyInput(maxMonto) : undefined;
     const batches = await Promise.all(
       periods.map(({ month, year }) =>
-        api.movimientos(month, year, tipo, "", categoria, minMonto ? Number(minMonto) : undefined, maxMonto ? Number(maxMonto) : undefined),
+        api.movimientos(month, year, tipo, "", categoria, Number.isFinite(minParsed) ? minParsed : undefined, Number.isFinite(maxParsed) ? maxParsed : undefined),
       ),
     );
     const mergedRows = batches.flatMap((b) => b.rows);

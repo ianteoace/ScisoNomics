@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ScisoNomics",
-  "version": "2.9.0",
+  "version": "3.0.0",
   "identifier": "com.scisonomics.desktop",
   "build": {
     "frontendDist": "../out",
@@ -28,6 +28,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "ScisoNomics",
+    "homepage": "https://github.com/iante/scisonomics",
+    "copyright": "Copyright © 2026 ScisoNomics",
+    "category": "Finance",
+    "shortDescription": "Gestion financiera personal local-first.",
+    "longDescription": "ScisoNomics es una aplicacion desktop local-first para gestionar finanzas personales, con datos locales, cuentas opcionales y sincronizacion cloud.",
     "externalBin": [
       "binaries/scisonomics-backend"
     ],
@@ -38,6 +44,20 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "startMenuFolder": "ScisoNomics",
+        "languages": [
+          "Spanish",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
+    },
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

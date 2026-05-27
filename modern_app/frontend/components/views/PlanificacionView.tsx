@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { getLocalDateInputValue } from "../../lib/date";
-import { money } from "../../lib/format";
+import { money, parseCurrencyInput } from "../../lib/format";
 import type { Categoria, GastoProgramado } from "../../types/domain";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
@@ -39,7 +39,7 @@ export function PlanificacionView({
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.descripcion.trim() || !form.categoria_id) return;
-    const montoNumber = Number(form.monto_estimado);
+    const montoNumber = parseCurrencyInput(form.monto_estimado);
     if (!Number.isFinite(montoNumber) || montoNumber <= 0) return;
 
     const payload = {
@@ -92,7 +92,7 @@ export function PlanificacionView({
       } />
 
       {loading ? <LoadingSkeleton rows={7} /> : null}
-      {filtered.length === 0 && !loading ? <EmptyState title="Sin planificacion" hint="Crea tu primer gasto programado." ctaLabel="Crear planificacion" /> : null}
+      {filtered.length === 0 && !loading ? <EmptyState title="Sin planificacion" hint="Crea tu primer gasto programado." ctaLabel="Crear planificacion" onAction={openCreate} /> : null}
 
       <div className={`table-wrap ${loading ? "hidden" : ""}`}>
         <table className="table-modern w-full text-sm">
@@ -118,7 +118,7 @@ export function PlanificacionView({
           <label className="text-xs text-slate-400">Categoria</label>
           <select className="input" value={form.categoria_id} onChange={(e) => setForm({ ...form, categoria_id: Number(e.target.value) })} required><option value={0}>Categoria</option>{gastoCategories.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select>
           <label className="text-xs text-slate-400">Monto estimado</label>
-          <input className="input" type="number" step="0.01" min="0.01" value={form.monto_estimado} onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} required />
+          <input className="input" type="text" inputMode="decimal" value={form.monto_estimado} placeholder="Ej: 500.000,50" onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} required />
           <label className="text-xs text-slate-400">Fecha de vencimiento</label>
           <input className="input" type="date" value={form.fecha_vencimiento} onChange={(e) => setForm({ ...form, fecha_vencimiento: e.target.value })} required />
           <label className="text-xs text-slate-400">Estado</label>

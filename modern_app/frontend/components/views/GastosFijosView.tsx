@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 
-import { money } from "../../lib/format";
+import { money, parseCurrencyInput } from "../../lib/format";
 import type { Categoria, GastoFijo } from "../../types/domain";
 import { useToast } from "../../hooks/useToast";
 import { Badge } from "../ui/Badge";
@@ -57,7 +57,7 @@ export function GastosFijosView({
     e.preventDefault();
     if (!form.descripcion.trim()) return showError("Ingresa una descripcion.");
     if (!form.categoria_id) return showError("Selecciona una categoria.");
-    const montoNumber = Number(form.monto);
+    const montoNumber = parseCurrencyInput(form.monto);
     if (!Number.isFinite(montoNumber) || montoNumber <= 0) return showError("Ingresa un monto mayor a 0.");
     const diaNumber = Number(form.dia_vencimiento);
     if (!Number.isFinite(diaNumber) || diaNumber < 1 || diaNumber > 31) {
@@ -145,7 +145,7 @@ export function GastosFijosView({
           <label className="text-xs text-slate-400">Descripcion</label>
           <input className="input" placeholder="Descripcion" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} required />
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="number" step="0.01" min="0.01" placeholder="Monto" value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
+          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 500.000,50" value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
           <label className="text-xs text-slate-400">Dia de vencimiento</label>
           <input className="input" type="text" inputMode="numeric" pattern="[0-9]*" placeholder="Dia (1-31)" value={form.dia_vencimiento} onChange={(e) => setForm({ ...form, dia_vencimiento: e.target.value.replace(/\D/g, "") })} required />
           <p className="text-xs text-slate-400">Si el dia no existe en un mes (por ejemplo 31), se usa el ultimo dia de ese mes.</p>
