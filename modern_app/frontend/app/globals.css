@@ -16,28 +16,16 @@
   --warn: 245 158 11;
 }
 
-.light {
-  color-scheme: light;
-  --bg: 245 247 252;
-  --panel: 255 255 255;
-  --card: 255 255 255;
-  --line: 226 232 240;
-  --text: 15 23 42;
-  --muted: 100 116 139;
-  --aqua: 14 116 144;
-  --income: 5 150 105;
-  --expense: 220 38 38;
-  --warn: 180 83 9;
+html,
+body {
+  color-scheme: dark;
+  background: rgb(var(--bg));
 }
 
 body {
   font-family: var(--font-sans), ui-sans-serif, system-ui;
   @apply text-[rgb(var(--text))] antialiased;
   background: radial-gradient(circle at top left, rgb(22 38 67), rgb(var(--bg)) 45%);
-}
-
-.light body {
-  background: radial-gradient(circle at top left, rgb(224 242 254), rgb(var(--bg)) 45%);
 }
 
 .card {
@@ -56,26 +44,12 @@ body {
 .btn-secondary { @apply rounded-xl border px-3 py-2 text-sm font-semibold transition; border-color: rgb(var(--line)); }
 .btn-secondary:hover { border-color: rgb(var(--aqua)); }
 
-.light .card {
-  background: rgb(var(--card));
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
-}
-.light .panel,
-.light .input {
-  background: rgb(var(--panel));
+input,
+select,
+textarea {
+  color-scheme: dark;
   color: rgb(var(--text));
-}
-.light .btn-secondary {
-  background: #ffffff;
-  color: rgb(var(--text));
-}
-.light .btn-secondary:hover {
-  background: #f8fafc;
-}
-.light input,
-.light select,
-.light textarea {
-  color: rgb(var(--text));
+  background-color: rgb(var(--card));
 }
 
 .section-title { @apply text-lg font-semibold tracking-tight; }
@@ -86,7 +60,6 @@ body {
 .table-modern th { @apply sticky top-0 z-10 bg-[rgb(var(--panel))] text-xs uppercase tracking-wide py-3 px-3; color: rgb(var(--muted)); }
 .table-modern td { @apply py-3 px-3; }
 .table-modern tr:nth-child(even) { background: color-mix(in oklab, rgb(var(--panel)) 93%, black 7%); }
-.light .table-modern tr:nth-child(even) { background: #f8fafc; }
 .table-modern tr:hover { background: color-mix(in oklab, rgb(var(--panel)) 86%, rgb(var(--aqua)) 14%); }
 
 .fade-in { animation: fadeIn .22s ease-out; }

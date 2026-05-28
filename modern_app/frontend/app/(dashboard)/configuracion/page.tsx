@@ -11,7 +11,21 @@ import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveCloudSession, getActiveOwnerId, isCloudAuthConfigured } from "../../../services/cloudAuth";
-import { SYNC_STATE_CHANGED_EVENT, getLastAutoSyncAt, getLastManualSyncAt, getLastSyncError, isAutoSyncEnabled, runManualSync, setAutoSyncEnabled, type SyncOverview } from "../../../services/cloudSync";
+import {
+  SYNC_STATE_CHANGED_EVENT,
+  getCloudApiUrl,
+  getLastAutoSyncAt,
+  getLastCloudHealthResult,
+  getLastManualSyncAt,
+  getLastSyncError,
+  getLastSyncErrorDetails,
+  isAutoSyncEnabled,
+  runManualSync,
+  setAutoSyncEnabled,
+  testCloudHealth,
+  type CloudHealthResult,
+  type SyncOverview,
+} from "../../../services/cloudSync";
 import { API_URL, localOwnerHeaders } from "../../../services/http";
 import type { SettingsInfo } from "../../../types/domain";
 
@@ -82,6 +96,8 @@ export default function ConfiguracionPage() {
   const [selectedRestorePath, setSelectedRestorePath] = useState<string | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [diagnosticText, setDiagnosticText] = useState<string | null>(null);
+  const [cloudHealth, setCloudHealth] = useState<CloudHealthResult | null>(null);
+  const [testingCloud, setTestingCloud] = useState(false);
   const { showError, showSuccess } = useToast();
 
   function selectSection(section: SettingsSectionId) {
@@ -108,6 +124,7 @@ export default function ConfiguracionPage() {
       ]);
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
+      setCloudHealth(getLastCloudHealthResult());
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setLoadError("");
     } catch (e: any) {
@@ -236,6 +253,18 @@ export default function ConfiguracionPage() {
     }
   }
 
+  async function handleTestCloudConnection() {
+    setTestingCloud(true);
+    try {
+      const result = await testCloudHealth();
+      setCloudHealth(result);
+      if (result.ok) showSuccess(result.version ? `Conexion cloud OK. Version ${result.version}.` : "Conexion cloud OK.");
+      else showError(result.user_message);
+    } finally {
+      setTestingCloud(false);
+    }
+  }
+
   function handleAutoSyncToggle(enabled: boolean) {
     if (activeOwner === "local" || !getActiveCloudSession()) {
       showError("La sincronizacion automatica requiere una cuenta cloud activa.");
@@ -304,6 +333,8 @@ export default function ConfiguracionPage() {
     const owner = getActiveOwnerId();
     const mode = owner === "local" ? "local" : "cloud";
     const lastSync = getLastAutoSyncAt() || getLastManualSyncAt() || "sin sincronizaciones registradas";
+    const syncError = getLastSyncErrorDetails();
+    const health = cloudHealth || getLastCloudHealthResult();
     return [
       "ScisoNomics diagnostico",
       "Version: 3.0.0",
@@ -322,9 +353,19 @@ export default function ConfiguracionPage() {
       `Backups path: ${diagnostics?.backups_path || info?.backups_dir || "no disponible"}`,
       `Logs path: ${diagnostics?.logs_path || info?.logs_dir || "no disponible"}`,
       `Cloud configurado: ${isCloudAuthConfigured() ? "si" : "no"}`,
+      `Cloud API URL: ${getCloudApiUrl() || "no configurada"}`,
+      `Cloud health: ${health ? (health.ok ? "OK" : "Error") : "no probado"}`,
+      `Cloud health status code: ${health?.status_code ?? "no disponible"}`,
+      `Cloud health version: ${health?.version || "no disponible"}`,
+      `Cloud health mensaje tecnico: ${health?.technical_message || "no disponible"}`,
       `Sync automatica: ${isAutoSyncEnabled() ? "activada" : "desactivada"}`,
       `Ultima sincronizacion: ${lastSync}`,
       `Ultimo error sync: ${getLastSyncError() || "sin errores recientes"}`,
+      `Ultimo error sync timestamp: ${syncError?.timestamp || "no disponible"}`,
+      `Ultimo error sync tipo: ${syncError?.type || "no disponible"}`,
+      `Ultimo error sync endpoint: ${syncError?.endpoint || "no disponible"}`,
+      `Ultimo error sync status code: ${syncError?.status_code ?? "no disponible"}`,
+      `Ultimo error sync mensaje tecnico: ${syncError?.technical_message || "no disponible"}`,
       `Fecha: ${new Date().toISOString()}`,
     ].join("\n");
   }
@@ -520,14 +561,43 @@ export default function ConfiguracionPage() {
             <p className="mt-2 text-sm text-slate-300">{logsPath || "No disponible"}</p>
           </div>
         </div>
+        <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cloud</p>
+              <p className="mt-2 text-sm text-slate-300">API URL: {getCloudApiUrl() || "No configurada"}</p>
+              <p className="mt-1 text-sm text-slate-300">
+                Health: {cloudHealth ? (cloudHealth.ok ? "OK" : "Error") : "No probado"}
+                {cloudHealth?.status_code ? ` - HTTP ${cloudHealth.status_code}` : ""}
+              </p>
+              {cloudHealth?.version ? <p className="mt-1 text-sm text-slate-300">Version cloud: {cloudHealth.version}</p> : null}
+              {cloudHealth && !cloudHealth.ok ? <p className="mt-2 text-sm text-amber-300">{cloudHealth.user_message}</p> : null}
+            </div>
+            <button className="btn-secondary" type="button" onClick={handleTestCloudConnection} disabled={testingCloud}>
+              {testingCloud ? "Probando..." : "Probar conexion cloud"}
+            </button>
+          </div>
+        </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4 text-xs text-slate-300">
           <p>DB path: {databasePath || "No disponible"}</p>
           <p className="mt-2">Backups path: {backupsPath || "No disponible"}</p>
           <p className="mt-2">Logs path: {logsPath || "No disponible"}</p>
           {diagnostics?.database_error ? <p className="mt-3 text-amber-300">Ultimo error local: {diagnostics.database_error}</p> : null}
+          {getLastSyncErrorDetails() ? (
+            <div className="mt-3 space-y-1 text-amber-200">
+              <p>Ultimo error sync tipo: {getLastSyncErrorDetails()?.type}</p>
+              <p>Endpoint: {getLastSyncErrorDetails()?.endpoint}</p>
+              <p>HTTP: {getLastSyncErrorDetails()?.status_code ?? "no disponible"}</p>
+              <p>Timestamp: {getLastSyncErrorDetails()?.timestamp}</p>
+              <p>Mensaje tecnico seguro: {getLastSyncErrorDetails()?.technical_message}</p>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" type="button" onClick={handleCopyDiagnostics}>Copiar diagnostico</button>
+          <button className="btn-secondary" type="button" onClick={handleTestCloudConnection} disabled={testingCloud}>
+            {testingCloud ? "Probando..." : "Probar conexion cloud"}
+          </button>
           <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
           <button className="btn-secondary" type="button" onClick={load}>Actualizar estado</button>
         </div>

@@ -4,10 +4,13 @@ import { getActiveCloudSession, getActiveOwnerId } from "./cloudAuth";
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
 const LAST_SYNC_ERROR_KEY = "scisonomics_last_sync_error";
+const LAST_SYNC_ERROR_DETAILS_KEY = "scisonomics_last_sync_error_details";
+const LAST_CLOUD_HEALTH_KEY = "scisonomics_last_cloud_health";
 const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
 const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
+const CLOUD_SYNC_TIMEOUT_MS = 15000;
 export const DATA_CHANGED_EVENT = "scisonomics:data-changed";
 export const SYNC_STATE_CHANGED_EVENT = "scisonomics:sync-state-changed";
 const SYNC_TABLES = ["categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos"] as const;
@@ -16,6 +19,30 @@ type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
 type AcceptedPayload = Record<SyncTable, string[]>;
 type SyncMode = "manual" | "auto";
 type SyncReason = "manual" | "auto_local_change" | "auto_remote_pull" | "startup" | "focus" | "interval";
+export type SyncErrorType = "network" | "timeout" | "unauthorized" | "forbidden" | "server_error" | "invalid_response" | "unknown";
+
+export type SyncErrorDetails = {
+  user_message: string;
+  technical_message: string;
+  status_code: number | null;
+  endpoint: string;
+  timestamp: string;
+  cloud_api_url: string;
+  type: SyncErrorType;
+};
+
+export type CloudHealthResult = {
+  ok: boolean;
+  endpoint: string;
+  cloud_api_url: string;
+  status_code: number | null;
+  type: SyncErrorType | "ok";
+  user_message: string;
+  technical_message: string;
+  timestamp: string;
+  version?: string | null;
+  service?: string | null;
+};
 
 export type SyncOverview = {
   ok: boolean;
@@ -88,6 +115,78 @@ type DeviceInfo = {
 
 let syncInFlight = false;
 
+class CloudSyncError extends Error {
+  details: SyncErrorDetails;
+
+  constructor(details: SyncErrorDetails) {
+    super(details.user_message);
+    this.name = "CloudSyncError";
+    this.details = details;
+  }
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+export function getCloudApiUrl() {
+  return CLOUD_API_URL;
+}
+
+function cloudEndpoint(path: string) {
+  return CLOUD_API_URL ? `${CLOUD_API_URL}${path}` : path;
+}
+
+function safeTechnicalMessage(value: unknown) {
+  const raw = value instanceof Error ? value.message : String(value || "");
+  return raw.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]").slice(0, 500);
+}
+
+function classifyHttpStatus(status: number): SyncErrorType {
+  if (status === 401) return "unauthorized";
+  if (status === 403) return "forbidden";
+  if (status >= 500) return "server_error";
+  return "unknown";
+}
+
+function syncUserMessage(type: SyncErrorType) {
+  if (type === "network") return "No pudimos conectar con el servicio cloud. Revisa internet, firewall o antivirus.";
+  if (type === "timeout") return "La conexion con el servicio cloud tardo demasiado.";
+  if (type === "unauthorized") return "La sesion vencio o no es valida. Volve a iniciar sesion.";
+  if (type === "forbidden") return "No tenes permisos para sincronizar esta cuenta.";
+  if (type === "server_error") return "El servicio cloud respondio con un error interno.";
+  if (type === "invalid_response") return "El servicio cloud respondio con un formato inesperado.";
+  return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
+}
+
+function makeSyncErrorDetails(input: {
+  type: SyncErrorType;
+  endpoint: string;
+  technicalMessage: unknown;
+  statusCode?: number | null;
+  userMessage?: string;
+}): SyncErrorDetails {
+  return {
+    user_message: input.userMessage || syncUserMessage(input.type),
+    technical_message: safeTechnicalMessage(input.technicalMessage),
+    status_code: input.statusCode ?? null,
+    endpoint: input.endpoint,
+    timestamp: nowIso(),
+    cloud_api_url: CLOUD_API_URL || "no configurada",
+    type: input.type,
+  };
+}
+
+function cloudSyncError(input: {
+  type: SyncErrorType;
+  endpoint: string;
+  technicalMessage: unknown;
+  statusCode?: number | null;
+  userMessage?: string;
+}) {
+  return new CloudSyncError(makeSyncErrorDetails(input));
+}
+
 function emitSyncStateChanged() {
   if (typeof window === "undefined") return;
   try {
@@ -106,13 +205,29 @@ export function notifyDataChanged() {
   }
 }
 
-async function parseResponse<T>(response: Response, fallback: string): Promise<T> {
+async function parseResponse<T>(response: Response, fallback: string, options: { cloud?: boolean } = {}): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     console.error(`${LOG_PREFIX} HTTP error`, { url: response.url, status: response.status, body });
-    throw new Error(typeof body?.detail === "string" ? body.detail : fallback);
+    if (!options.cloud) throw new Error(typeof body?.detail === "string" ? body.detail : fallback);
+    throw cloudSyncError({
+      type: classifyHttpStatus(response.status),
+      endpoint: response.url,
+      statusCode: response.status,
+      technicalMessage: typeof body?.detail === "string" ? body.detail : fallback,
+    });
   }
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (!options.cloud) throw new Error(fallback);
+    throw cloudSyncError({
+      type: "invalid_response",
+      endpoint: response.url,
+      statusCode: response.status,
+      technicalMessage: error,
+    });
+  }
 }
 
 async function localGet<T>(path: string): Promise<T> {
@@ -131,17 +246,17 @@ async function localPost<T>(path: string, payload: unknown): Promise<T> {
 }
 
 async function cloudGet<T>(path: string, token: string): Promise<T> {
-  if (!CLOUD_API_URL) throw new Error("El servicio cloud no esta configurado en este entorno.");
-  const response = await fetch(`${CLOUD_API_URL}${path}`, {
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
+  const response = await cloudFetch(path, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${token}` },
   });
-  return parseResponse<T>(response, "No se pudo obtener informacion desde el servicio cloud.");
+  return parseResponse<T>(response, "No se pudo obtener informacion desde el servicio cloud.", { cloud: true });
 }
 
 async function cloudPost<T>(path: string, token: string, payload: unknown): Promise<T> {
-  if (!CLOUD_API_URL) throw new Error("El servicio cloud no esta configurado en este entorno.");
-  const response = await fetch(`${CLOUD_API_URL}${path}`, {
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
+  const response = await cloudFetch(path, {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -150,7 +265,25 @@ async function cloudPost<T>(path: string, token: string, payload: unknown): Prom
     },
     body: JSON.stringify(payload),
   });
-  return parseResponse<T>(response, "No se pudo enviar informacion al servicio cloud.");
+  return parseResponse<T>(response, "No se pudo enviar informacion al servicio cloud.", { cloud: true });
+}
+
+async function cloudFetch(path: string, options: RequestInit = {}) {
+  const endpoint = cloudEndpoint(path);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CLOUD_SYNC_TIMEOUT_MS);
+  try {
+    return await fetch(endpoint, { ...options, signal: controller.signal });
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    throw cloudSyncError({
+      type: isTimeout ? "timeout" : "network",
+      endpoint,
+      technicalMessage: error,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function getLastManualSyncAt() {
@@ -175,6 +308,26 @@ export function getLastSyncError() {
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage.getItem(LAST_SYNC_ERROR_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function getLastSyncErrorDetails(): SyncErrorDetails | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_SYNC_ERROR_DETAILS_KEY);
+    return raw ? (JSON.parse(raw) as SyncErrorDetails) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function getLastCloudHealthResult(): CloudHealthResult | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_CLOUD_HEALTH_KEY);
+    return raw ? (JSON.parse(raw) as CloudHealthResult) : null;
   } catch {
     return null;
   }
@@ -255,6 +408,101 @@ function setLastSyncError(value: string | null) {
     // El error de sync no debe bloquear el modo local.
   }
   emitSyncStateChanged();
+}
+
+function setLastSyncErrorDetails(value: SyncErrorDetails | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (value) window.localStorage.setItem(LAST_SYNC_ERROR_DETAILS_KEY, JSON.stringify(value));
+    else window.localStorage.removeItem(LAST_SYNC_ERROR_DETAILS_KEY);
+  } catch {
+    // El detalle del error de sync no debe bloquear el modo local.
+  }
+  emitSyncStateChanged();
+}
+
+function setLastCloudHealthResult(value: CloudHealthResult) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_CLOUD_HEALTH_KEY, JSON.stringify(value));
+  } catch {
+    // El diagnostico cloud no debe bloquear la app.
+  }
+  emitSyncStateChanged();
+}
+
+export async function testCloudHealth(): Promise<CloudHealthResult> {
+  const timestamp = nowIso();
+  if (!CLOUD_API_URL) {
+    const result: CloudHealthResult = {
+      ok: false,
+      endpoint: "/health",
+      cloud_api_url: "no configurada",
+      status_code: null,
+      type: "unknown",
+      user_message: "No hay URL cloud configurada en esta instalacion.",
+      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL esta vacia.",
+      timestamp,
+    };
+    setLastCloudHealthResult(result);
+    return result;
+  }
+
+  const endpoint = cloudEndpoint("/health");
+  try {
+    const response = await cloudFetch("/health", { cache: "no-store" });
+    const text = await response.text();
+    let body: any = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch (error) {
+      const result: CloudHealthResult = {
+        ok: false,
+        endpoint,
+        cloud_api_url: CLOUD_API_URL,
+        status_code: response.status,
+        type: "invalid_response",
+        user_message: syncUserMessage("invalid_response"),
+        technical_message: safeTechnicalMessage(error),
+        timestamp,
+      };
+      setLastCloudHealthResult(result);
+      return result;
+    }
+
+    const ok = response.ok && Boolean(body?.ok);
+    const errorType = classifyHttpStatus(response.status);
+    const result: CloudHealthResult = {
+      ok,
+      endpoint,
+      cloud_api_url: CLOUD_API_URL,
+      status_code: response.status,
+      type: ok ? "ok" : errorType,
+      user_message: ok ? "Conexion cloud OK." : syncUserMessage(errorType),
+      technical_message: ok ? "Cloud /health respondio correctamente." : safeTechnicalMessage(body?.detail || body?.message || text || `HTTP ${response.status}`),
+      timestamp,
+      version: typeof body?.version === "string" ? body.version : null,
+      service: typeof body?.service === "string" ? body.service : null,
+    };
+    setLastCloudHealthResult(result);
+    return result;
+  } catch (error) {
+    const details = error instanceof CloudSyncError
+      ? error.details
+      : makeSyncErrorDetails({ type: "unknown", endpoint, technicalMessage: error });
+    const result: CloudHealthResult = {
+      ok: false,
+      endpoint: details.endpoint,
+      cloud_api_url: details.cloud_api_url,
+      status_code: details.status_code,
+      type: details.type,
+      user_message: details.user_message,
+      technical_message: details.technical_message,
+      timestamp: details.timestamp,
+    };
+    setLastCloudHealthResult(result);
+    return result;
+  }
 }
 
 export async function getLocalPending() {
@@ -355,13 +603,14 @@ function makeSyncId() {
 }
 
 function friendlySyncError(error: unknown) {
+  if (error instanceof CloudSyncError) return error.details.user_message;
   const message = error instanceof Error ? error.message : String(error || "");
   const normalized = message.toLowerCase();
-  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) return "No se pudo conectar con el servicio cloud.";
+  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) return syncUserMessage("network");
   if (normalized.includes("curso")) return "Hay otra sincronizacion en curso.";
   if (normalized.includes("sesion")) return "No hay sesion iniciada.";
   if (normalized.includes("confirmar") || normalized.includes("nube")) return "No se pudo confirmar la sincronizacion con la nube.";
-  if (normalized.includes("configurado")) return "El servicio cloud no esta configurado en este entorno.";
+  if (normalized.includes("configurado")) return "No hay URL cloud configurada en esta instalacion.";
   return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
 }
 
@@ -390,7 +639,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   }
   token = session.token;
   userEmail = userEmail || session.user.email;
-  if (!CLOUD_API_URL) throw new Error("El servicio cloud no esta configurado en este entorno.");
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: "/sync", technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
   if (syncInFlight) throw new Error("Ya hay una sincronizacion en curso.");
 
   syncInFlight = true;
@@ -491,6 +740,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     if (mode === "auto") setLastAutoSyncAt(syncedAt);
     else setLastManualSyncAt(syncedAt);
     setLastSyncError(null);
+    setLastSyncErrorDetails(null);
     await recordSyncHistory({
       sync_id: historySyncId,
       device_id: deviceInfo.device_id,
@@ -534,7 +784,11 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     };
   } catch (error) {
     const friendly = friendlySyncError(error);
+    const cloudError = error instanceof CloudSyncError
+      ? error.details
+      : makeSyncErrorDetails({ type: "unknown", endpoint: "/sync", technicalMessage: error, userMessage: friendly });
     setLastSyncError(friendly);
+    setLastSyncErrorDetails(cloudError);
     await recordSyncHistory({
       sync_id: historySyncId,
       device_id: deviceInfo?.device_id,
@@ -552,6 +806,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
         pending: pendingCounts,
         deleted: deletedCounts,
         reason,
+        cloud_error: cloudError,
       },
     });
     throw new Error(friendly);

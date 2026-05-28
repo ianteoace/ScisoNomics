@@ -9,7 +9,7 @@ import { Modal } from "../ui/Modal";
 import { PasswordInput } from "../ui/PasswordInput";
 
 const inputClass =
-  "mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900";
+  "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
 
 export function AddAccountModal({
   open,

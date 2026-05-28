@@ -137,17 +137,17 @@ export function DashboardView({
       ) : null}
 
       <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-        <div className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-cyan-50 via-white to-sky-100 p-5 shadow-sm shadow-cyan-900/5 dark:border-cyan-300/10 dark:from-slate-950 dark:via-slate-900 dark:to-cyan-950/80 md:p-6">
+        <div className="relative overflow-hidden rounded-3xl border border-cyan-300/10 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/80 p-5 shadow-sm shadow-cyan-900/5 md:p-6">
           <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-cyan-400/20 blur-3xl dark:bg-cyan-300/10" />
           <div className="pointer-events-none absolute -bottom-24 left-1/3 h-48 w-72 rounded-full bg-sky-500/10 blur-3xl dark:bg-sky-400/10" />
           <div className="relative z-10">
-            <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-300">Saldo actual</p>
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-300">Saldo actual</p>
             <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
               <div>
-                <p className="text-4xl font-black tracking-tight text-slate-950 dark:text-cyan-100 md:text-5xl">{money(saldoActual)}</p>
-                <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">Saldo del mes anterior: {money(summary.saldo_inicial)}</p>
+                <p className="text-4xl font-black tracking-tight text-cyan-100 md:text-5xl">{money(saldoActual)}</p>
+                <p className="mt-2 text-sm text-slate-300">Saldo del mes anterior: {money(summary.saldo_inicial)}</p>
               </div>
-              <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold shadow-sm backdrop-blur ${balanceMes >= 0 ? "border-emerald-500/20 bg-emerald-500/15 text-emerald-800 dark:text-emerald-200" : "border-amber-500/20 bg-amber-500/15 text-amber-800 dark:text-amber-200"}`}>
+              <div className={`rounded-2xl border px-4 py-3 text-sm font-semibold shadow-sm backdrop-blur ${balanceMes >= 0 ? "border-emerald-500/20 bg-emerald-500/15 text-emerald-200" : "border-amber-500/20 bg-amber-500/15 text-amber-200"}`}>
                 Balance del mes: {money(balanceMes)}
               </div>
             </div>
@@ -264,7 +264,7 @@ export function DashboardView({
           <SectionHeader title="Ingresos vs gastos" subtitle="Comparativa rapida del mes" />
           <div className="h-64">
             {loading ? (
-              <div className="h-full w-full animate-pulse rounded-lg border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900" />
+              <div className="h-full w-full animate-pulse rounded-lg border border-slate-800 bg-slate-900" />
             ) : (
               <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
                 <ResponsiveContainer width="100%" height="100%">

@@ -45,7 +45,7 @@ import { PasswordInput } from "../ui/PasswordInput";
 type Mode = "login" | "register";
 
 const inputClass =
-  "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-sky-400 dark:border-slate-700 dark:bg-slate-900";
+  "w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
 
 export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { showHeader?: boolean; hideSyncCenter?: boolean }) {
   const configured = isCloudAuthConfigured();
@@ -374,7 +374,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     } catch (error) {
       console.error("Error sincronizando:", error);
       setSyncMessage("Error al sincronizar");
-      showError("No se pudo sincronizar. Revisa tu conexion e intenta nuevamente.");
+      showError(error instanceof Error ? error.message : "No se pudo sincronizar.");
     } finally {
       setSyncing(false);
     }
@@ -550,7 +550,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           ) : null}
         </div>
         <div className="mt-4 grid gap-2">
-          <div className={`rounded-xl border p-3 text-sm ${activeOwnerId === "local" ? "border-sky-400/50 bg-sky-500/10" : "border-slate-200 dark:border-slate-800"}`}>
+          <div className={`rounded-xl border p-3 text-sm ${activeOwnerId === "local" ? "border-sky-400/50 bg-sky-500/10" : "border-slate-800"}`}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="font-semibold">Modo local</p>
@@ -562,7 +562,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
             </div>
           </div>
           {accounts.map((account) => (
-            <div key={account.user.id} className={`rounded-xl border p-3 text-sm ${activeOwnerId === account.user.id ? "border-sky-400/50 bg-sky-500/10" : "border-slate-200 dark:border-slate-800"}`}>
+            <div key={account.user.id} className={`rounded-xl border p-3 text-sm ${activeOwnerId === account.user.id ? "border-sky-400/50 bg-sky-500/10" : "border-slate-800"}`}>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-semibold">{account.user.display_name || account.user.email}</p>
@@ -615,7 +615,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
           <h3 className="mt-2 text-2xl font-semibold">Sesion iniciada</h3>
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">Usuario</p>
             <p className="mt-1 font-semibold">{user.display_name || user.email}</p>
             {user.display_name ? <p className="text-sm text-slate-500 dark:text-slate-400">{user.email}</p> : null}
@@ -624,7 +624,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-900 dark:text-sky-100">
             La sincronizacion cloud es opcional. Tus datos siguen guardandose localmente en este dispositivo.
           </p>
-          <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 text-sm dark:border-slate-800 dark:bg-slate-950/40">
+          <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-sm">
             <p className="font-semibold">Modo de datos</p>
             <p className="mt-1 text-slate-500 dark:text-slate-400">
               Estás viendo datos de esta cuenta. Los datos locales sin cuenta quedan separados y no se sincronizan automaticamente.
@@ -640,7 +640,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
             ) : null}
           </div>
           {configured && !hideSyncCenter ? (
-            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/40">
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
               <div className="flex flex-col gap-4">
                 <div>
                   <p className="font-semibold">Sincronizacion</p>
@@ -656,19 +656,19 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="text-xs text-slate-500 dark:text-slate-400">Dispositivo actual</p>
                     <p className="mt-1 text-sm font-semibold">{syncOverview?.device_name || "Este dispositivo"}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">{shortDeviceId(syncOverview?.device_id)}</p>
                   </div>
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="text-xs text-slate-500 dark:text-slate-400">Cambios pendientes</p>
                     <p className="mt-1 text-sm font-semibold">{syncOverview ? `${syncOverview.pending_total} pendientes` : "Sin datos"}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
                       {syncOverview?.deleted_pending_total ? `${syncOverview.deleted_pending_total} borrados pendientes` : "Sin borrados pendientes"}
                     </p>
                   </div>
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="text-xs text-slate-500 dark:text-slate-400">Ultima sync exitosa</p>
                     <p className="mt-1 text-sm font-semibold">{formatDate(syncOverview?.last_success?.finished_at || lastSyncAt || lastAutoSyncAt)}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -676,7 +676,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     </p>
                   </div>
                 </div>
-                <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-3 py-2 text-sm dark:border-slate-800">
+                <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-800 px-3 py-2 text-sm">
                   <span>
                     <span className="block font-medium">Sincronizar automaticamente</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">Opcional. Nunca reemplaza el modo local.</span>
@@ -709,7 +709,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     {showConflicts ? "Ocultar conflictos" : "Ver conflictos"}
                   </button>
                 </div>
-                <div className="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-800">
+                <div className="rounded-xl border border-slate-800 p-3 text-sm">
                   <p className="font-semibold">Multi-dispositivo</p>
                   <p className="mt-1 text-slate-500 dark:text-slate-400">
                     ScisoNomics conserva automaticamente la version mas reciente cuando un dato cambia en mas de un dispositivo.
@@ -723,7 +723,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   )}
                 </div>
                 {showPending ? (
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="font-semibold">Cambios pendientes</p>
                     {syncOverview && syncOverview.pending_total === 0 ? (
                       <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todo esta sincronizado en este dispositivo.</p>
@@ -731,7 +731,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                       {syncOverview
                         ? Object.entries(syncOverview.tables).map(([table, data]) => (
-                            <div key={table} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                            <div key={table} className="rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium">{tableLabel(table)}</span>
                                 <span>{data.pending} pendientes</span>
@@ -746,7 +746,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   </div>
                 ) : null}
                 {showDevices ? (
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="font-semibold">Dispositivos vinculados</p>
                     {cloudDevices.length === 0 ? (
                       <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No se pudieron cargar dispositivos vinculados o todavia no hay otros dispositivos.</p>
@@ -755,7 +755,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                         {cloudDevices.map((device) => {
                           const isCurrent = device.device_id === syncOverview?.device_id;
                           return (
-                            <div key={device.device_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                            <div key={device.device_id} className="rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium">{device.device_name || "Este dispositivo"}</span>
                                 {isCurrent ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300">Este dispositivo</span> : null}
@@ -771,7 +771,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   </div>
                 ) : null}
                 {showConflicts ? (
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <p className="font-semibold">Conflictos y cambios remotos</p>
                     <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
                       Total: {syncOverview?.conflicts_total ?? 0} - Recientes: {syncOverview?.conflicts_recent ?? 0}
@@ -781,7 +781,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     ) : (
                       <div className="mt-3 space-y-2">
                         {syncConflicts.map((conflict) => (
-                          <div key={conflict.conflict_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                          <div key={conflict.conflict_id} className="rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                               <span className="font-medium">{tableLabel(conflict.table_name)}</span>
                               <span className="text-amber-700 dark:text-amber-300">{resolutionLabel(conflict.resolution)}</span>
@@ -796,7 +796,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   </div>
                 ) : null}
                 {showHistory ? (
-                  <div className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
+                  <div className="rounded-xl border border-slate-800 p-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-semibold">Historial reciente</p>
                       <button className="text-sm font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={refreshSyncCenter}>
@@ -808,7 +808,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     ) : (
                       <div className="mt-3 space-y-2">
                         {syncHistory.slice(0, 10).map((item) => (
-                          <div key={item.sync_id} className="rounded-lg bg-slate-50 px-3 py-2 text-sm dark:bg-slate-900/60">
+                          <div key={item.sync_id} className="rounded-lg bg-slate-900/60 px-3 py-2 text-sm">
                             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                               <span className="font-medium">{formatDate(item.finished_at || item.started_at)}</span>
                               <span className={item.status === "success" ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>

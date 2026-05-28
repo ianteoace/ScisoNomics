@@ -144,7 +144,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <div className={`flex gap-2 ${collapsed ? "flex-col items-center" : "items-center"}`}>
           <div className="relative min-w-0 flex-1" ref={accountMenuRef}>
             <button
-              className={`flex w-full min-w-0 items-center gap-2 rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-100 dark:hover:bg-slate-800 ${collapsed ? "justify-center px-2" : ""}`}
+              className={`flex w-full min-w-0 items-center gap-2 rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-800 ${collapsed ? "justify-center px-2" : ""}`}
               style={{ borderColor: "rgb(var(--line))", color: "rgb(var(--muted))" }}
               title={accountLabel}
               onClick={() => setAccountMenuOpen((value) => !value)}
@@ -155,7 +155,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               {!collapsed ? (
                 <>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-semibold text-slate-900 dark:text-slate-100">{accountLabel}</span>
+                    <span className="block truncate font-semibold text-slate-100">{accountLabel}</span>
                     <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">{accountSubtitle}</span>
                   </span>
                   <ChevronDown size={14} className={`shrink-0 transition ${accountMenuOpen ? "rotate-180" : ""}`} />
@@ -164,7 +164,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             </button>
             {accountMenuOpen ? (
               <div
-                className={`z-[90] max-h-80 overflow-y-auto rounded-2xl border bg-white p-2 text-sm shadow-xl shadow-slate-950/10 dark:bg-slate-950 dark:shadow-black/30 ${
+                className={`z-[90] max-h-80 overflow-y-auto rounded-2xl border bg-slate-950 p-2 text-sm shadow-xl shadow-black/30 ${
                   collapsed
                     ? "fixed left-[92px] top-3 w-64"
                     : "absolute left-0 mt-2 w-full min-w-64"
@@ -174,13 +174,13 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               >
                 <button
                   type="button"
-                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-100 dark:hover:bg-slate-900"
+                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-900"
                   onClick={() => switchSidebarOwner("local")}
                   role="menuitem"
                 >
                   <CircleUserRound size={16} className="text-slate-500 dark:text-slate-400" />
                   <span className="min-w-0 flex-1">
-                    <span className="block font-medium text-slate-900 dark:text-slate-100">Modo local</span>
+                    <span className="block font-medium text-slate-100">Modo local</span>
                     <span className="block text-xs text-slate-500 dark:text-slate-400">Sin sincronización</span>
                   </span>
                   {activeOwnerId === "local" ? <Check size={15} className="text-sky-500" /> : null}
@@ -192,13 +192,13 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                     <button
                       key={account.user.id}
                       type="button"
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-100 dark:hover:bg-slate-900"
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-900"
                       onClick={() => switchSidebarOwner(account.user.id)}
                       role="menuitem"
                     >
                       <CircleUserRound size={16} className="text-sky-500" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium text-slate-900 dark:text-slate-100">{accountDisplay(account)}</span>
+                        <span className="block truncate font-medium text-slate-100">{accountDisplay(account)}</span>
                         <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{active ? "Cuenta activa" : account.user.email}</span>
                       </span>
                       {active ? <Check size={15} className="text-sky-500" /> : null}

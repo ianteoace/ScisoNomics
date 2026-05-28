@@ -4,7 +4,7 @@ export function LoadingSkeleton({ rows = 6 }: { rows?: number }) {
       {Array.from({ length: rows }).map((_, i) => (
         <div
           key={i}
-          className="h-11 animate-pulse rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900"
+          className="h-11 animate-pulse rounded-xl border border-slate-800 bg-slate-900"
         />
       ))}
     </div>
@@ -14,7 +14,7 @@ export function LoadingSkeleton({ rows = 6 }: { rows?: number }) {
 export function LoadingCard({ className = "" }: { className?: string }) {
   return (
     <div
-      className={`h-28 animate-pulse rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-900 ${className}`}
+      className={`h-28 animate-pulse rounded-xl border border-slate-800 bg-slate-900 ${className}`}
     />
   );
 }

@@ -207,7 +207,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   {children}
                 </div>
                 {ownerSwitching ? (
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 rounded-2xl border border-sky-400/20 bg-white/70 px-4 py-3 text-sm text-slate-600 shadow-sm backdrop-blur-md dark:bg-slate-950/65 dark:text-slate-300">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-10 rounded-2xl border border-sky-400/20 bg-slate-950/65 px-4 py-3 text-sm text-slate-300 shadow-sm backdrop-blur-md">
                     Cambiando cuenta...
                   </div>
                 ) : null}
@@ -216,7 +216,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </AutoSyncProvider>
         <Modal open={onboardingOpen && !!activeGuide} title={activeGuide?.title || "Guia"} onClose={completeOnboarding}>
-          <p className="text-sm text-slate-600 dark:text-slate-300">{activeGuide?.text}</p>
+          <p className="text-sm text-slate-300">{activeGuide?.text}</p>
           <div className="mt-6 flex justify-end">
             <button className="btn" onClick={completeOnboarding}>Entendido</button>
           </div>
