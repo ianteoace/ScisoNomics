@@ -20,7 +20,7 @@ from .db import connect, get_database_engine, get_database_path, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.0.0")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.0.2")
 _logger = logging.getLogger("scisonomics.cloud")
 
 
@@ -35,8 +35,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
     allow_credentials=_allowed_origins != ["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Scisonomics-Owner-Id"],
 )
 
 
@@ -55,6 +55,23 @@ def now_iso() -> str:
 
 def normalize_email(email: str) -> str:
     return email.strip().lower()
+
+
+def mask_email(email: str) -> str:
+    normalized = normalize_email(email)
+    if "@" not in normalized:
+        return "***"
+    local, domain = normalized.split("@", 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
+
+
+def short_identifier(value: str) -> str:
+    clean = str(value or "").strip()
+    if len(clean) <= 8:
+        return "***"
+    return f"{clean[:4]}...{clean[-4:]}"
 
 
 def validate_credentials(email: str, password: str) -> str:
@@ -143,7 +160,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
     avatar_url = str(profile.get("picture") or "").strip() or None
     if not google_sub or not EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Google no devolvio un perfil valido.")
-    _logger.info("[google-auth] callback profile google_sub=%s email_original=%s email_normalized=%s", google_sub, original_email, email)
+    _logger.info("[google-auth] callback profile google_sub=%s email=%s", short_identifier(google_sub), mask_email(email))
 
     google_row = conn.execute(
         "SELECT id, email, display_name, created_at, updated_at, google_sub FROM users WHERE google_sub = ?",
@@ -152,9 +169,9 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
     email_row = _find_user_by_normalized_email(conn, email)
     if google_row and email_row and google_row["id"] != email_row["id"]:
         _logger.info(
-            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=relink_existing_email user_id=%s duplicate_user_id=%s",
-            google_sub,
-            email,
+            "[google-auth] google_sub=%s email=%s found_by_google_sub=%s found_by_email=%s action=relink_existing_email user_id=%s duplicate_user_id=%s",
+            short_identifier(google_sub),
+            mask_email(email),
             True,
             True,
             email_row["id"],
@@ -181,9 +198,9 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
 
     if google_row:
         _logger.info(
-            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=use_google_sub user_id=%s",
-            google_sub,
-            email,
+            "[google-auth] google_sub=%s email=%s found_by_google_sub=%s found_by_email=%s action=use_google_sub user_id=%s",
+            short_identifier(google_sub),
+            mask_email(email),
             True,
             bool(email_row),
             google_row["id"],
@@ -201,9 +218,9 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
 
     if email_row:
         _logger.info(
-            "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=link_existing_email user_id=%s",
-            google_sub,
-            email,
+            "[google-auth] google_sub=%s email=%s found_by_google_sub=%s found_by_email=%s action=link_existing_email user_id=%s",
+            short_identifier(google_sub),
+            mask_email(email),
             False,
             True,
             email_row["id"],
@@ -221,9 +238,9 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
 
     user_id = str(uuid4())
     _logger.info(
-        "[google-auth] google_sub=%s normalized_email=%s found_by_google_sub=%s found_by_email=%s action=create_new_user user_id=%s",
-        google_sub,
-        email,
+        "[google-auth] google_sub=%s email=%s found_by_google_sub=%s found_by_email=%s action=create_new_user user_id=%s",
+        short_identifier(google_sub),
+        mask_email(email),
         False,
         False,
         user_id,
@@ -507,9 +524,9 @@ def login(payload: LoginRequest):
     return AuthResponse(access_token=create_access_token(user.id), user=user)
 
 
-@app.get("/auth/me", response_model=UserOut)
+@app.get("/auth/me")
 def me(user: UserOut = Depends(get_current_user)):
-    return user
+    return {"ok": True, "user_id": user.id, **user.dict()}
 
 
 @app.post("/auth/logout")
@@ -644,13 +661,25 @@ def google_status(login_request_id: str):
             return {"status": "pending"}
         if row["status"] == "error":
             return {"status": "error", "message": row["error_message"] or "No se pudo completar Google Login."}
+        if row["status"] == "consumed":
+            return {"status": "consumed", "message": "Esta solicitud de Google Login ya fue utilizada. Intenta nuevamente."}
         user_row = conn.execute(
             "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
             (row["user_id"],),
         ).fetchone()
         if not user_row or not row["access_token"]:
             return {"status": "error", "message": "No se pudo recuperar la sesion de Google."}
-        return {"status": "completed", "access_token": row["access_token"], "user": row_to_user(user_row)}
+        access_token = row["access_token"]
+        user = row_to_user(user_row)
+        conn.execute(
+            """
+            UPDATE google_login_requests
+            SET status = 'consumed', access_token = NULL, updated_at = ?
+            WHERE login_request_id = ?
+            """,
+            (now, login_request_id),
+        )
+        return {"status": "completed", "access_token": access_token, "user": user}
 
 
 @app.get("/auth/google/callback", response_class=HTMLResponse)

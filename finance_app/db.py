@@ -35,7 +35,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     nombre TEXT NOT NULL,
                     tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion')),
-                    UNIQUE(nombre, tipo)
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
+                    UNIQUE(owner_user_id, nombre, tipo)
                 );
 
                 CREATE TABLE IF NOT EXISTS movimientos (
@@ -45,6 +46,7 @@ class Database:
                     categoria_id INTEGER NOT NULL,
                     descripcion TEXT,
                     monto REAL NOT NULL CHECK(monto >= 0),
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
                     FOREIGN KEY (categoria_id) REFERENCES categorias(id)
                 );
 
@@ -55,6 +57,7 @@ class Database:
                     monto REAL NOT NULL CHECK(monto >= 0),
                     dia_vencimiento INTEGER NOT NULL CHECK(dia_vencimiento BETWEEN 1 AND 31),
                     activo INTEGER NOT NULL DEFAULT 1 CHECK(activo IN (0,1)),
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
                     FOREIGN KEY (categoria_id) REFERENCES categorias(id)
                 );
 
@@ -68,6 +71,7 @@ class Database:
                     es_recurrente INTEGER NOT NULL DEFAULT 0 CHECK(es_recurrente IN (0,1)),
                     frecuencia TEXT CHECK(frecuencia IN ('mensual', 'semanal', 'anual') OR frecuencia IS NULL),
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
                     FOREIGN KEY (categoria_id) REFERENCES categorias(id)
                 );
 
@@ -79,8 +83,9 @@ class Database:
                     monto REAL NOT NULL CHECK(monto > 0),
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
                     FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-                    UNIQUE(categoria_id, mes, anio)
+                    UNIQUE(owner_user_id, categoria_id, mes, anio)
                 );
 
                 CREATE TABLE IF NOT EXISTS metas_ahorro (
@@ -92,14 +97,17 @@ class Database:
                     descripcion TEXT,
                     estado TEXT NOT NULL DEFAULT 'activa' CHECK(estado IN ('activa', 'completada', 'pausada')),
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local'
                 );
 
                 CREATE TABLE IF NOT EXISTS tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nombre TEXT NOT NULL UNIQUE,
+                    nombre TEXT NOT NULL,
                     color TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local',
+                    UNIQUE(owner_user_id, nombre)
                 );
 
                 CREATE TABLE IF NOT EXISTS movimiento_tags (
@@ -362,25 +370,74 @@ class Database:
         sql_text = str(create_sql[0]).lower()
         if "'ahorro'" in sql_text and "'inversion'" in sql_text:
             return
-        conn.executescript(
-            """
-            PRAGMA foreign_keys = OFF;
-            CREATE TABLE IF NOT EXISTS movimientos_new (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha TEXT NOT NULL,
-                tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion')),
-                categoria_id INTEGER NOT NULL,
-                descripcion TEXT,
-                monto REAL NOT NULL CHECK(monto >= 0),
-                FOREIGN KEY (categoria_id) REFERENCES categorias(id)
-            );
-            INSERT INTO movimientos_new (id, fecha, tipo, categoria_id, descripcion, monto)
-            SELECT id, fecha, tipo, categoria_id, descripcion, monto FROM movimientos;
-            DROP TABLE movimientos;
-            ALTER TABLE movimientos_new RENAME TO movimientos;
-            PRAGMA foreign_keys = ON;
-            """
-        )
+        self._append_startup_log("Iniciando migracion segura de movimientos para tipos ahorro/inversion.")
+        table_info = conn.execute("PRAGMA table_info(movimientos)").fetchall()
+        if not table_info:
+            return
+        index_rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='movimientos' AND sql IS NOT NULL"
+        ).fetchall()
+        columns = [str(row["name"]) for row in table_info]
+        col_defs: list[str] = []
+        for row in table_info:
+            name = str(row["name"])
+            col_type = str(row["type"] or "TEXT")
+            notnull = int(row["notnull"] or 0) == 1
+            default = row["dflt_value"]
+            pk = int(row["pk"] or 0)
+            if name == "id":
+                col_defs.append("id INTEGER PRIMARY KEY AUTOINCREMENT")
+            elif name == "tipo":
+                col_defs.append("tipo TEXT NOT NULL CHECK(tipo IN ('ingreso', 'gasto', 'ahorro', 'inversion'))")
+            elif name == "categoria_id":
+                col_defs.append("categoria_id INTEGER NOT NULL")
+            elif name == "monto":
+                col_defs.append("monto REAL NOT NULL CHECK(monto >= 0)")
+            else:
+                col_def = f"{self._quote_identifier(name)} {col_type}".strip()
+                if pk:
+                    col_def += " PRIMARY KEY"
+                if notnull and not pk:
+                    col_def += " NOT NULL"
+                if default is not None and not pk:
+                    col_def += f" DEFAULT {default}"
+                col_defs.append(col_def)
+        col_defs.append("FOREIGN KEY (categoria_id) REFERENCES categorias(id)")
+        quoted_cols = ", ".join(self._quote_identifier(column) for column in columns)
+
+        if conn.in_transaction:
+            conn.commit()
+        old_foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0] or 0)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute("BEGIN")
+            conn.execute(f"CREATE TABLE movimientos_new ({', '.join(col_defs)})")
+            conn.execute(
+                f"INSERT INTO movimientos_new ({quoted_cols}) SELECT {quoted_cols} FROM movimientos"
+            )
+            conn.execute("DROP TABLE movimientos")
+            conn.execute("ALTER TABLE movimientos_new RENAME TO movimientos")
+            for idx in index_rows:
+                sql = str(idx["sql"] or "")
+                if not sql:
+                    continue
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError as exc:
+                    self._append_startup_log(f"No se pudo recrear indice de movimientos {idx['name']}: {exc}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            self._append_startup_log("Fallo migracion de movimientos para tipos ahorro/inversion. Se hizo rollback.")
+            raise
+        finally:
+            conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
+
+        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_issues:
+            self._append_startup_log(f"foreign_key_check fallo luego de migrar movimientos: {fk_issues}")
+            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar movimientos.")
+        self._append_startup_log("Migracion segura de movimientos finalizada correctamente.")
 
     def _backup_before_risky_migrations(self, conn: sqlite3.Connection) -> None:
         create_sql = conn.execute(

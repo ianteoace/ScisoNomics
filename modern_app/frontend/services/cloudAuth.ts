@@ -37,6 +37,20 @@ export const OWNER_CHANGED_EVENT = "scisonomics:owner-changed";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const CLOUD_AUTH_TIMEOUT_MS = 10000;
 
+type CloudAuthErrorKind = "auth" | "network" | "timeout" | "server" | "unknown";
+
+class CloudAuthRequestError extends Error {
+  statusCode: number | null;
+  kind: CloudAuthErrorKind;
+
+  constructor(message: string, options: { statusCode?: number | null; kind?: CloudAuthErrorKind } = {}) {
+    super(message);
+    this.name = "CloudAuthRequestError";
+    this.statusCode = options.statusCode ?? null;
+    this.kind = options.kind || "unknown";
+  }
+}
+
 function emptyAuthState(): StoredAuthState {
   return { activeOwnerId: LOCAL_OWNER_ID, accounts: [] };
 }
@@ -141,9 +155,13 @@ function accountTimeValue(value?: string) {
 }
 
 function chooseAccountToKeep(current: StoredCloudAccount, incoming: StoredCloudAccount) {
+  const currentUsed = accountTimeValue(current.lastUsedAt);
+  const incomingUsed = accountTimeValue(incoming.lastUsedAt);
+  if (incomingUsed > currentUsed) return incoming;
+  if (currentUsed > incomingUsed) return current;
   const currentAdded = accountTimeValue(current.addedAt);
   const incomingAdded = accountTimeValue(incoming.addedAt);
-  if (currentAdded && incomingAdded && incomingAdded < currentAdded) return incoming;
+  if (incomingAdded > currentAdded) return incoming;
   return current;
 }
 
@@ -355,7 +373,7 @@ export function subscribeAuthChanges(listener: () => void) {
 }
 
 async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
-  if (!isCloudAuthConfigured()) throw new Error("El servicio de cuenta no esta configurado en este entorno.");
+  if (!isCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no esta configurado en este entorno.", { kind: "unknown" });
   let response: Response;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CLOUD_AUTH_TIMEOUT_MS);
@@ -368,14 +386,25 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
     });
   } catch (error) {
     console.error("Cloud auth request failed", { path, error });
-    throw new Error(error instanceof DOMException && error.name === "AbortError" ? "No pudimos verificar la sesion. Podes volver a iniciar sesion." : "No se pudo conectar con el servicio de cuenta.");
+    const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    throw new CloudAuthRequestError(
+      isTimeout
+        ? "No pudimos verificar la cuenta por un problema de conexión. La cuenta no fue eliminada."
+        : "No se pudo conectar con el servicio de cuenta.",
+      { kind: isTimeout ? "timeout" : "network" },
+    );
   } finally {
     clearTimeout(timeout);
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    if (response.status === 401 || response.status === 403) throw new Error("Sesion invalida o vencida.");
-    throw new Error(typeof body?.detail === "string" ? body.detail : "No se pudo completar la accion.");
+    if (response.status === 401 || response.status === 403) {
+      throw new CloudAuthRequestError("Sesion invalida o vencida.", { statusCode: response.status, kind: "auth" });
+    }
+    throw new CloudAuthRequestError(typeof body?.detail === "string" ? body.detail : "No se pudo completar la accion.", {
+      statusCode: response.status,
+      kind: response.status >= 500 ? "server" : "unknown",
+    });
   }
   return response.json() as Promise<T>;
 }
@@ -399,7 +428,7 @@ export const cloudAuth = {
   googleStatus: (loginRequestId: string) =>
     cloudRequest<
       | { status: "pending" }
-      | { status: "expired" | "error"; message?: string }
+      | { status: "expired" | "error" | "consumed"; message?: string }
       | { status: "completed"; access_token: string; user: CloudUser }
     >(`/auth/google/status/${encodeURIComponent(loginRequestId)}`, { method: "GET" }),
 };
@@ -416,7 +445,9 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
     return { ...session, user };
   } catch (error) {
     console.warn("[auth] verify failed", error);
-    removeAccount(session.user.id);
+    if (error instanceof CloudAuthRequestError && error.kind === "auth") {
+      removeAccount(session.user.id);
+    }
     throw error;
   }
 }

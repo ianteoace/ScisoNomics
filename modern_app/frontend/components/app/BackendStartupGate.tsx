@@ -20,7 +20,7 @@ type HealthResponse = {
 const MAX_WAIT_MS = 20_000;
 const RETRY_MS = 800;
 const ATTEMPT_TIMEOUT_MS = 2_500;
-const FRONTEND_VERSION = "3.0.0";
+const FRONTEND_VERSION = "3.0.2";
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

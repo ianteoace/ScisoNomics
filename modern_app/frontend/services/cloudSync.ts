@@ -1,4 +1,4 @@
-import { API_URL, localOwnerHeaders } from "./http";
+import { API_URL, getLocalRequestHeaders } from "./http";
 import { getActiveCloudSession, getActiveOwnerId } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
@@ -113,6 +113,15 @@ type DeviceInfo = {
   app_version: string;
 };
 
+type SyncRunSnapshot = {
+  ownerId: string;
+  token: string;
+  cloudApiUrl: string;
+  userEmail?: string;
+  startedAt: string;
+  reason: SyncReason;
+};
+
 let syncInFlight = false;
 
 class CloudSyncError extends Error {
@@ -157,6 +166,25 @@ function syncUserMessage(type: SyncErrorType) {
   if (type === "server_error") return "El servicio cloud respondio con un error interno.";
   if (type === "invalid_response") return "El servicio cloud respondio con un formato inesperado.";
   return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
+}
+
+function classifyFetchError(error: unknown): SyncErrorType {
+  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
+  const message = safeTechnicalMessage(error).toLowerCase();
+  if (
+    message.includes("failed to fetch") ||
+    message.includes("networkerror") ||
+    message.includes("load failed") ||
+    message.includes("err_connection") ||
+    message.includes("err_name_not_resolved") ||
+    message.includes("err_cert") ||
+    message.includes("err_timed_out") ||
+    message.includes("cors") ||
+    message.includes("preflight")
+  ) {
+    return "network";
+  }
+  return "unknown";
 }
 
 function makeSyncErrorDetails(input: {
@@ -230,16 +258,16 @@ async function parseResponse<T>(response: Response, fallback: string, options: {
   }
 }
 
-async function localGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: localOwnerHeaders() });
+async function localGet<T>(path: string, ownerId?: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: await getLocalRequestHeaders(undefined, ownerId) });
   return parseResponse<T>(response, "No se pudo leer la informacion local para sincronizar.");
 }
 
-async function localPost<T>(path: string, payload: unknown): Promise<T> {
+async function localPost<T>(path: string, payload: unknown, ownerId?: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     method: "POST",
     cache: "no-store",
-    headers: localOwnerHeaders({ "Content-Type": "application/json" }),
+    headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }, ownerId),
     body: JSON.stringify(payload),
   });
   return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.");
@@ -275,9 +303,8 @@ async function cloudFetch(path: string, options: RequestInit = {}) {
   try {
     return await fetch(endpoint, { ...options, signal: controller.signal });
   } catch (error) {
-    const isTimeout = error instanceof DOMException && error.name === "AbortError";
     throw cloudSyncError({
-      type: isTimeout ? "timeout" : "network",
+      type: classifyFetchError(error),
       endpoint,
       technicalMessage: error,
     });
@@ -539,9 +566,9 @@ async function recordSyncHistory(payload: {
   kept_local_total?: number;
   error_message?: string | null;
   details?: Record<string, unknown>;
-}) {
+}, ownerId?: string) {
   try {
-    await localPost("/sync/history", payload);
+    await localPost("/sync/history", payload, ownerId);
   } catch (error) {
     console.warn(`${LOG_PREFIX} no se pudo registrar historial local`, error);
   }
@@ -606,7 +633,17 @@ function friendlySyncError(error: unknown) {
   if (error instanceof CloudSyncError) return error.details.user_message;
   const message = error instanceof Error ? error.message : String(error || "");
   const normalized = message.toLowerCase();
-  if (normalized.includes("failed to fetch") || normalized.includes("networkerror")) return syncUserMessage("network");
+  if (
+    normalized.includes("failed to fetch") ||
+    normalized.includes("networkerror") ||
+    normalized.includes("load failed") ||
+    normalized.includes("err_connection") ||
+    normalized.includes("err_name_not_resolved") ||
+    normalized.includes("err_cert") ||
+    normalized.includes("err_timed_out") ||
+    normalized.includes("cors") ||
+    normalized.includes("preflight")
+  ) return syncUserMessage("network");
   if (normalized.includes("curso")) return "Hay otra sincronizacion en curso.";
   if (normalized.includes("sesion")) return "No hay sesion iniciada.";
   if (normalized.includes("confirmar") || normalized.includes("nube")) return "No se pudo confirmar la sincronizacion con la nube.";
@@ -637,8 +674,16 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
     throw new Error("Inicia sesion para sincronizar.");
   }
-  token = session.token;
-  userEmail = userEmail || session.user.email;
+  const snapshot: SyncRunSnapshot = {
+    ownerId: session.user.id,
+    token: session.token,
+    cloudApiUrl: CLOUD_API_URL,
+    userEmail: userEmail || session.user.email,
+    startedAt: nowIso(),
+    reason,
+  };
+  token = snapshot.token;
+  userEmail = snapshot.userEmail;
   if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: "/sync", technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
   if (syncInFlight) throw new Error("Ya hay una sincronizacion en curso.");
 
@@ -651,16 +696,17 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   let deletedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) as Record<SyncTable, number>;
 
   console.info(`${LOG_PREFIX} start`, {
-    cloudApiUrl: CLOUD_API_URL,
+    cloudApiUrl: snapshot.cloudApiUrl,
     hasToken: Boolean(token),
     user: userEmail || "usuario autenticado",
     mode,
     reason,
+    ownerId: snapshot.ownerId,
   });
 
   try {
-    deviceInfo = await getDeviceInfo();
-    const pending = await getLocalPending();
+    deviceInfo = await localGet<DeviceInfo>("/device/info", snapshot.ownerId);
+    const pending = await localGet<SyncPayload>("/sync/pending", snapshot.ownerId);
     pendingCounts = countByTable(pending);
     deletedCounts = countDeletedByTable(pending);
     console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, reason, device: deviceInfo.device_id, ...pendingCounts });
@@ -719,7 +765,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       remote_changes_total?: number;
       applied_remote_total?: number;
       kept_local_total?: number;
-    }>("/sync/apply-remote", remote);
+    }>("/sync/apply-remote", remote, snapshot.ownerId);
     console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
     const conflictsTotal = Number(applyResult.conflicts?.total || 0);
     const remoteChangesTotal = Number(applyResult.remote_changes_total || totalCount(pulledCounts));
@@ -728,7 +774,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
 
     let markSyncedExecuted = false;
     if (SYNC_TABLES.some((table) => accepted[table].length > 0)) {
-      await localPost("/sync/mark-synced", accepted);
+      await localPost("/sync/mark-synced", accepted, snapshot.ownerId);
       markSyncedExecuted = true;
       console.info(`${LOG_PREFIX} mark-synced`, { executed: true, mode, ...acceptedCounts });
     }
@@ -737,10 +783,15 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     }
 
     const syncedAt = new Date().toISOString();
-    if (mode === "auto") setLastAutoSyncAt(syncedAt);
-    else setLastManualSyncAt(syncedAt);
-    setLastSyncError(null);
-    setLastSyncErrorDetails(null);
+    const ownerStillActive = getActiveOwnerId() === snapshot.ownerId;
+    if (ownerStillActive) {
+      if (mode === "auto") setLastAutoSyncAt(syncedAt);
+      else setLastManualSyncAt(syncedAt);
+      setLastSyncError(null);
+      setLastSyncErrorDetails(null);
+    } else {
+      console.info(`${LOG_PREFIX} finished for previous owner`, { ownerId: snapshot.ownerId, activeOwnerId: getActiveOwnerId(), mode, reason });
+    }
     await recordSyncHistory({
       sync_id: historySyncId,
       device_id: deviceInfo.device_id,
@@ -767,8 +818,10 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
         conflicts: applyResult.conflicts,
         kept_local: applyResult.kept_local,
         reason,
+        owner_id: snapshot.ownerId,
+        owner_changed_during_sync: !ownerStillActive,
       },
-    });
+    }, snapshot.ownerId);
 
     return {
       syncedAt,
@@ -781,14 +834,17 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       appliedRemoteTotal,
       keptLocalTotal,
       reason,
+      ownerChangedDuringSync: !ownerStillActive,
     };
   } catch (error) {
     const friendly = friendlySyncError(error);
     const cloudError = error instanceof CloudSyncError
       ? error.details
       : makeSyncErrorDetails({ type: "unknown", endpoint: "/sync", technicalMessage: error, userMessage: friendly });
-    setLastSyncError(friendly);
-    setLastSyncErrorDetails(cloudError);
+    if (getActiveOwnerId() === snapshot.ownerId) {
+      setLastSyncError(friendly);
+      setLastSyncErrorDetails(cloudError);
+    }
     await recordSyncHistory({
       sync_id: historySyncId,
       device_id: deviceInfo?.device_id,
@@ -806,9 +862,10 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
         pending: pendingCounts,
         deleted: deletedCounts,
         reason,
+        owner_id: snapshot.ownerId,
         cloud_error: cloudError,
       },
-    });
+    }, snapshot.ownerId);
     throw new Error(friendly);
   } finally {
     syncInFlight = false;

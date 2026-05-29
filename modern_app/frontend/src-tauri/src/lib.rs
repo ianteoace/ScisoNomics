@@ -1,7 +1,37 @@
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+#[derive(Clone)]
+struct LocalApiToken(String);
+
+#[cfg(target_os = "windows")]
+fn fill_random_bytes(bytes: &mut [u8]) -> bool {
+  #[link(name = "advapi32")]
+  extern "system" {
+    fn SystemFunction036(random_buffer: *mut u8, random_buffer_length: u32) -> u8;
+  }
+  unsafe { SystemFunction036(bytes.as_mut_ptr(), bytes.len() as u32) != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn fill_random_bytes(_bytes: &mut [u8]) -> bool {
+  false
+}
+
+fn generate_local_api_token() -> String {
+  let mut bytes = [0u8; 32];
+  if fill_random_bytes(&mut bytes) {
+    return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+  }
+  let nanos = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|value| value.as_nanos())
+    .unwrap_or_default();
+  format!("sciso-{}-{}-{:p}", std::process::id(), nanos, &bytes)
+}
 
 #[tauri::command]
 fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
@@ -24,6 +54,11 @@ fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
 
   std::fs::write(output_path, bytes)
     .map_err(|e| format!("No se pudo escribir el archivo seleccionado: {e}"))
+}
+
+#[tauri::command]
+fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
+  token.0.clone()
 }
 
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
@@ -49,6 +84,7 @@ fn stop_backend_sidecar(backend_child: &BackendChild) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let backend_child: BackendChild = Arc::new(Mutex::new(None));
+  let local_api_token = generate_local_api_token();
   let setup_backend_child = Arc::clone(&backend_child);
   let close_backend_child = Arc::clone(&backend_child);
   let exit_backend_child = Arc::clone(&backend_child);
@@ -57,7 +93,8 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
-    .invoke_handler(tauri::generate_handler![save_binary_file])
+    .manage(LocalApiToken(local_api_token.clone()))
+    .invoke_handler(tauri::generate_handler![save_binary_file, get_local_api_token])
     .setup(move |app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -76,7 +113,7 @@ pub fn run() {
         }
       };
 
-      match sidecar_command.spawn() {
+      match sidecar_command.env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone()).spawn() {
         Ok((mut rx, child)) => {
           log::info!("Sidecar backend iniciado. PID: {}", child.pid());
           match setup_backend_child.lock() {

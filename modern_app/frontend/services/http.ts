@@ -1,9 +1,50 @@
 import { getActiveOwnerId } from "./cloudAuth";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+const LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token";
+const LOCAL_TOKEN_ENV = process.env.NEXT_PUBLIC_SCISONOMICS_LOCAL_TOKEN || "";
 
-export function localOwnerHeaders(extra?: HeadersInit): HeadersInit {
-  return { ...(extra || {}), "X-Scisonomics-Owner-Id": getActiveOwnerId() };
+let cachedLocalApiToken: string | null = LOCAL_TOKEN_ENV || null;
+let localApiTokenPromise: Promise<string | null> | null = null;
+
+async function loadLocalApiToken(): Promise<string | null> {
+  if (cachedLocalApiToken) return cachedLocalApiToken;
+  if (LOCAL_TOKEN_ENV) {
+    cachedLocalApiToken = LOCAL_TOKEN_ENV;
+    return cachedLocalApiToken;
+  }
+  if (typeof window === "undefined") return null;
+  if (localApiTokenPromise) return localApiTokenPromise;
+  localApiTokenPromise = import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<string>("get_local_api_token"))
+    .then((token) => {
+      cachedLocalApiToken = typeof token === "string" && token.trim() ? token : null;
+      return cachedLocalApiToken;
+    })
+    .catch(() => null)
+    .finally(() => {
+      localApiTokenPromise = null;
+    });
+  return localApiTokenPromise;
+}
+
+export function localOwnerHeaders(extra?: HeadersInit, ownerId?: string): HeadersInit {
+  const headers: Record<string, string> = {
+    ...((extra as Record<string, string>) || {}),
+    "X-Scisonomics-Owner-Id": ownerId || getActiveOwnerId(),
+  };
+  if (cachedLocalApiToken) headers[LOCAL_TOKEN_HEADER] = cachedLocalApiToken;
+  return headers;
+}
+
+export async function getLocalRequestHeaders(extra?: HeadersInit, ownerId?: string): Promise<HeadersInit> {
+  const token = await loadLocalApiToken();
+  const headers: Record<string, string> = {
+    ...((extra as Record<string, string>) || {}),
+    "X-Scisonomics-Owner-Id": ownerId || getActiveOwnerId(),
+  };
+  if (token) headers[LOCAL_TOKEN_HEADER] = token;
+  return headers;
 }
 
 function toConnectionError(error: unknown) {
@@ -14,14 +55,15 @@ function toConnectionError(error: unknown) {
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
-    console.error("HTTP request failed", { url: res.url, status: res.status, response: text });
+    console.error("HTTP request failed", { url: res.url, status: res.status, response: text.slice(0, 500) });
     let parsed: any = null;
     try {
       parsed = JSON.parse(text);
     } catch {
-      console.error("HTTP error body (raw):", text);
+      console.error("HTTP error body (raw):", text.slice(0, 500));
     }
 
+    if (res.status === 401 || res.status === 403) throw new Error("No se pudo validar la conexión local de ScisoNomics. Cerrá la app y volvé a abrirla.");
     if (res.status === 404) throw new Error("No se pudo encontrar la información solicitada.");
     if (res.status === 422) {
       const detail = Array.isArray(parsed?.detail) ? parsed.detail[0] : parsed?.detail;
@@ -46,7 +88,7 @@ async function parse<T>(res: Response): Promise<T> {
 export async function getJSON<T>(path: string): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: localOwnerHeaders() });
+    res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: await getLocalRequestHeaders() });
   } catch (error) {
     throw toConnectionError(error);
   }
@@ -58,7 +100,7 @@ export async function sendJSON<T>(path: string, method: string, body?: unknown):
   try {
     res = await fetch(`${API_URL}${path}`, {
       method,
-      headers: localOwnerHeaders({ "Content-Type": "application/json" }),
+      headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }),
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (error) {

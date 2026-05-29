@@ -26,7 +26,7 @@ import {
   type CloudHealthResult,
   type SyncOverview,
 } from "../../../services/cloudSync";
-import { API_URL, localOwnerHeaders } from "../../../services/http";
+import { API_URL, getLocalRequestHeaders } from "../../../services/http";
 import type { SettingsInfo } from "../../../types/domain";
 
 const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
@@ -115,10 +115,10 @@ export default function ConfiguracionPage() {
       const settings = await api.settingsInfo();
       setInfo(settings);
       const [diagnosticsResult, overviewResult] = await Promise.all([
-        fetch(`${API_URL}/app/diagnostics`, { cache: "no-store", headers: localOwnerHeaders() })
+        fetch(`${API_URL}/app/diagnostics`, { cache: "no-store", headers: await getLocalRequestHeaders() })
           .then((response) => (response.ok ? response.json() : null))
           .catch(() => null),
-        fetch(`${API_URL}/sync/overview`, { cache: "no-store", headers: localOwnerHeaders() })
+        fetch(`${API_URL}/sync/overview`, { cache: "no-store", headers: await getLocalRequestHeaders() })
           .then((response) => (response.ok ? response.json() : null))
           .catch(() => null),
       ]);
@@ -337,13 +337,13 @@ export default function ConfiguracionPage() {
     const health = cloudHealth || getLastCloudHealthResult();
     return [
       "ScisoNomics diagnostico",
-      "Version: 3.0.0",
+      "Version: 3.0.2",
       "Apariencia: modo oscuro fijo",
       `Modo: ${mode}`,
       `Cuenta activa: ${session?.user.email || "local"}`,
       `Owner activo: ${owner}`,
       `Backend local: ${info?.backend_ok || diagnostics?.ok ? "OK" : "Error"}`,
-      "Frontend version: 3.0.0",
+      "Frontend version: 3.0.2",
       `Backend version: ${backendVersion}`,
       `Backend frozen: ${diagnostics?.frozen ? "si" : "no"}`,
       `Frontend/backend mismatch: ${backendVersionMismatch ? "si" : "no"}`,
@@ -384,7 +384,7 @@ export default function ConfiguracionPage() {
   const backendLabel = info?.backend_ok || diagnostics?.ok ? "Conectado" : diagnostics?.initializing ? "Preparando" : "Error";
   const databaseLabel = diagnostics?.database_ready || info?.db_exists ? "Lista" : diagnostics?.initializing ? "Inicializando" : "Error";
   const backendVersion = diagnostics?.version || info?.version || "no disponible";
-  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.0.0");
+  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.0.2");
   const syncLabel = activeOwner === "local"
     ? "Modo local"
     : autoSyncEnabled
@@ -404,7 +404,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
             <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
-            <p className="text-sm text-slate-400">Version 3.0.0</p>
+            <p className="text-sm text-slate-400">Version 3.0.2</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Apariencia</p>
@@ -614,7 +614,7 @@ export default function ConfiguracionPage() {
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Version instalada</p>
-          <p className="mt-2 text-3xl font-black text-cyan-100">3.0.0</p>
+          <p className="mt-2 text-3xl font-black text-cyan-100">3.0.2</p>
           <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta version. ScisoNomics no descarga ni reemplaza ejecutables automaticamente.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -637,7 +637,7 @@ export default function ConfiguracionPage() {
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Aplicacion</p>
             <div className="mt-3 space-y-1 text-slate-300">
               <p><strong className="text-white">ScisoNomics</strong></p>
-              <p>Version instalada: 3.0.0</p>
+              <p>Version instalada: 3.0.2</p>
               <p>Tipo: Local-first</p>
               <p>Apariencia: modo oscuro fijo</p>
               <p>Stack: Next.js - Tauri - FastAPI - SQLite</p>
@@ -654,15 +654,13 @@ export default function ConfiguracionPage() {
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Novedades de v3.0.0</p>
+          <p className="font-semibold">Novedades de v3.0.2</p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
-            <li>Modo oscuro fijo.</li>
-            <li>Experiencia final de usuario.</li>
-            <li>Configuracion reorganizada por secciones.</li>
-            <li>Diagnostico seguro.</li>
-            <li>Actualizaciones manuales.</li>
-            <li>Acceso a carpetas de datos, backups y logs.</li>
-            <li>Onboarding liviano.</li>
+            <li>Sync endurecida con snapshot de owner por corrida.</li>
+            <li>API local protegida con token de sidecar en app instalada.</li>
+            <li>Google Login consume el resultado de polling una sola vez.</li>
+            <li>Verificacion de cuenta mas segura ante errores de red.</li>
+            <li>Migracion legacy de movimientos preservando metadata.</li>
           </ul>
         </div>
         <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades en modal</button>
@@ -764,16 +762,15 @@ export default function ConfiguracionPage() {
         </div>
       </Modal>
 
-      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.0.0" onClose={() => setReleaseNotesOpen(false)}>
+      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.0.2" onClose={() => setReleaseNotesOpen(false)}>
         <div className="mt-2 space-y-2 text-sm text-slate-300">
-          <p>Esta version se enfoca en pulido final y experiencia de uso.</p>
+          <p>Esta version se enfoca en estabilizacion, seguridad y hardening de sincronizacion.</p>
           <ul className="list-disc space-y-1 pl-5">
-            <li>Modo oscuro fijo en toda la app.</li>
-            <li>Configuracion reorganizada por secciones.</li>
-            <li>Acerca de ScisoNomics con estado local y rutas importantes.</li>
-            <li>Acceso rapido a carpetas de datos, backups y logs.</li>
-            <li>Diagnostico seguro para soporte, sin tokens ni datos financieros.</li>
-            <li>Actualizaciones manuales desde GitHub Releases.</li>
+            <li>La sincronizacion usa owner/token congelados durante toda la corrida.</li>
+            <li>La app no elimina cuentas guardadas por fallas temporales de conexion.</li>
+            <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>
+            <li>Google Login invalida el resultado de polling tras el primer consumo.</li>
+            <li>Se redujo PII en logs cloud y se corrigieron mensajes visibles.</li>
           </ul>
         </div>
       </Modal>

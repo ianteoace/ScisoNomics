@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import gettempdir, mkdtemp
 from typing import Any, Literal
 import csv
+import hmac
 import io
 import json
 import logging
@@ -41,7 +42,12 @@ from .deps import ensure_app_data_initialized, get_database_readiness, get_last_
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="3.0.0")
+app = FastAPI(title="Registro Finanzas API", version="3.0.2")
+_LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token"
+_LOCAL_TOKEN = os.getenv("SCISONOMICS_LOCAL_TOKEN", "").strip()
+_DEV_MODE_WITHOUT_LOCAL_TOKEN = not _LOCAL_TOKEN and not bool(getattr(sys, "frozen", False))
+_PUBLIC_PATHS = {"/health", "/ready", "/openapi.json"}
+_PUBLIC_PREFIXES = ("/docs", "/redoc")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -66,20 +72,45 @@ if not _logger.handlers:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1",
+        "http://localhost:3000",
+        "http://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+        "asset://localhost",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Scisonomics-Owner-Id", _LOCAL_TOKEN_HEADER, "Authorization"],
 )
 
 
 @app.middleware("http")
 async def owner_context_middleware(request: Request, call_next):
+    if request.method != "OPTIONS" and not _is_public_path(request.url.path):
+        _require_local_token(request)
     token = set_current_owner_id(request.headers.get("X-Scisonomics-Owner-Id"))
     try:
         return await call_next(request)
     finally:
         reset_current_owner_id(token)
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES)
+
+
+def _require_local_token(request: Request) -> None:
+    if _DEV_MODE_WITHOUT_LOCAL_TOKEN:
+        return
+    if not _LOCAL_TOKEN:
+        raise HTTPException(status_code=503, detail="El servicio local no tiene token de seguridad configurado.")
+    provided = request.headers.get(_LOCAL_TOKEN_HEADER, "")
+    if not provided or not hmac.compare_digest(provided, _LOCAL_TOKEN):
+        raise HTTPException(status_code=401, detail="No se pudo validar la conexión local de ScisoNomics.")
 
 
 def _current_owner() -> str:

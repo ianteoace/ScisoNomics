@@ -14,7 +14,7 @@ async function assertBackendReady() {
     try {
       health = JSON.parse(text);
     } catch {
-      console.error("Health response is not JSON", { status: response.status, body: text });
+      console.error("Health response is not JSON", { status: response.status, body: text.slice(0, 500) });
     }
 
     console.info("Backup health check", { status: response.status, health });
@@ -24,7 +24,7 @@ async function assertBackendReady() {
     }
   } catch (error) {
     console.error("Backup health check failed", error);
-      throw new Error("ScisoNomics todavía se está iniciando. Intentá nuevamente en unos segundos.");
+    throw new Error("ScisoNomics todavía se está iniciando. Intentá nuevamente en unos segundos.");
   }
 }
 
