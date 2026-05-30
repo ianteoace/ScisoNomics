@@ -536,7 +536,7 @@ def logout():
 
 @app.get("/sync/health")
 def sync_health(user: UserOut = Depends(get_current_user)):
-    return {"ok": True, "sync_ready": True, "user_id": user.id}
+    return {"ok": True, "service": "sync", "sync_ready": True, "user_id": user.id}
 
 
 @app.post("/sync/push")

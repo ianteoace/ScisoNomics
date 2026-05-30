@@ -16,14 +16,21 @@ import {
   getCloudApiUrl,
   getLastAutoSyncAt,
   getLastCloudHealthResult,
+  getLastCloudSessionTestResult,
+  getLastCloudSyncTestResult,
   getLastManualSyncAt,
   getLastSyncError,
   getLastSyncErrorDetails,
+  getLastSyncAttemptDetails,
   isAutoSyncEnabled,
   runManualSync,
   setAutoSyncEnabled,
   testCloudHealth,
+  testCloudSession,
+  testCloudSync,
   type CloudHealthResult,
+  type CloudSessionTestResult,
+  type CloudSyncTestResult,
   type SyncOverview,
 } from "../../../services/cloudSync";
 import { API_URL, getLocalRequestHeaders } from "../../../services/http";
@@ -97,7 +104,11 @@ export default function ConfiguracionPage() {
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [diagnosticText, setDiagnosticText] = useState<string | null>(null);
   const [cloudHealth, setCloudHealth] = useState<CloudHealthResult | null>(null);
+  const [cloudSessionTest, setCloudSessionTest] = useState<CloudSessionTestResult | null>(null);
+  const [cloudSyncTest, setCloudSyncTest] = useState<CloudSyncTestResult | null>(null);
   const [testingCloud, setTestingCloud] = useState(false);
+  const [testingCloudSession, setTestingCloudSession] = useState(false);
+  const [testingCloudSync, setTestingCloudSync] = useState(false);
   const { showError, showSuccess } = useToast();
 
   function selectSection(section: SettingsSectionId) {
@@ -125,6 +136,8 @@ export default function ConfiguracionPage() {
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
       setCloudHealth(getLastCloudHealthResult());
+      setCloudSessionTest(getLastCloudSessionTestResult());
+      setCloudSyncTest(getLastCloudSyncTestResult());
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setLoadError("");
     } catch (e: any) {
@@ -265,6 +278,30 @@ export default function ConfiguracionPage() {
     }
   }
 
+  async function handleTestCloudSession() {
+    setTestingCloudSession(true);
+    try {
+      const result = await testCloudSession();
+      setCloudSessionTest(result);
+      if (result.ok) showSuccess("Sesion cloud OK.");
+      else showError(result.user_message);
+    } finally {
+      setTestingCloudSession(false);
+    }
+  }
+
+  async function handleTestCloudSync() {
+    setTestingCloudSync(true);
+    try {
+      const result = await testCloudSync();
+      setCloudSyncTest(result);
+      if (result.ok) showSuccess("Sync cloud OK.");
+      else showError(result.user_message);
+    } finally {
+      setTestingCloudSync(false);
+    }
+  }
+
   function handleAutoSyncToggle(enabled: boolean) {
     if (activeOwner === "local" || !getActiveCloudSession()) {
       showError("La sincronizacion automatica requiere una cuenta cloud activa.");
@@ -335,6 +372,9 @@ export default function ConfiguracionPage() {
     const lastSync = getLastAutoSyncAt() || getLastManualSyncAt() || "sin sincronizaciones registradas";
     const syncError = getLastSyncErrorDetails();
     const health = cloudHealth || getLastCloudHealthResult();
+    const sessionTest = cloudSessionTest || getLastCloudSessionTestResult();
+    const syncTest = cloudSyncTest || getLastCloudSyncTestResult();
+    const syncAttempt = getLastSyncAttemptDetails();
     return [
       "ScisoNomics diagnostico",
       "Version: 3.0.2",
@@ -358,14 +398,43 @@ export default function ConfiguracionPage() {
       `Cloud health status code: ${health?.status_code ?? "no disponible"}`,
       `Cloud health version: ${health?.version || "no disponible"}`,
       `Cloud health mensaje tecnico: ${health?.technical_message || "no disponible"}`,
+      `Cloud session: ${sessionTest ? (sessionTest.ok ? "OK" : "Error") : "no probada"}`,
+      `Cloud session endpoint: ${sessionTest?.endpoint || "no disponible"}`,
+      `Cloud session method: ${sessionTest?.method || "no disponible"}`,
+      `Cloud session status code: ${sessionTest?.status_code ?? "no disponible"}`,
+      `Cloud session tipo: ${sessionTest?.type || "no disponible"}`,
+      `Cloud session timestamp: ${sessionTest?.timestamp || "no disponible"}`,
+      `Cloud session mensaje tecnico: ${sessionTest?.technical_message || "no disponible"}`,
+      `Cloud sync test: ${syncTest ? (syncTest.ok ? "OK" : "Error") : "no probado"}`,
+      `Cloud sync test endpoint: ${syncTest?.endpoint || "no disponible"}`,
+      `Cloud sync test method: ${syncTest?.method || "no disponible"}`,
+      `Cloud sync test status code: ${syncTest?.status_code ?? "no disponible"}`,
+      `Cloud sync test tipo: ${syncTest?.type || "no disponible"}`,
+      `Cloud sync test timestamp: ${syncTest?.timestamp || "no disponible"}`,
+      `Cloud sync test mensaje tecnico: ${syncTest?.technical_message || "no disponible"}`,
       `Sync automatica: ${isAutoSyncEnabled() ? "activada" : "desactivada"}`,
       `Ultima sincronizacion: ${lastSync}`,
       `Ultimo error sync: ${getLastSyncError() || "sin errores recientes"}`,
       `Ultimo error sync timestamp: ${syncError?.timestamp || "no disponible"}`,
       `Ultimo error sync tipo: ${syncError?.type || "no disponible"}`,
       `Ultimo error sync endpoint: ${syncError?.endpoint || "no disponible"}`,
+      `Ultimo error sync metodo: ${syncError?.method || "no disponible"}`,
+      `Ultimo error sync fase: ${syncError?.phase || "no disponible"}`,
+      `Ultimo error sync items: ${syncError?.items_total ?? "no disponible"}`,
+      `Ultimo error sync payload bytes aproximados: ${syncError?.payload_bytes ?? "no disponible"}`,
       `Ultimo error sync status code: ${syncError?.status_code ?? "no disponible"}`,
       `Ultimo error sync mensaje tecnico: ${syncError?.technical_message || "no disponible"}`,
+      `Ultimo error sync owner: ${syncError?.owner_used || "no disponible"}`,
+      `Ultimo error sync razon: ${syncError?.reason || "no disponible"}`,
+      `Ultimo error sync body construido: ${syncError?.body_constructed ?? "no disponible"}`,
+      `Ultimo error sync conteos pendientes: ${syncError?.pending_counts ? JSON.stringify(syncError.pending_counts) : "no disponible"}`,
+      `Ultimo intento sync fase: ${syncAttempt?.phase || "no disponible"}`,
+      `Ultimo intento sync endpoint: ${syncAttempt?.endpoint || "no disponible"}`,
+      `Ultimo intento sync metodo: ${syncAttempt?.method || "no disponible"}`,
+      `Ultimo intento sync status code: ${syncAttempt?.status_code ?? "no disponible"}`,
+      `Ultimo intento sync body construido: ${syncAttempt?.body_constructed ?? "no disponible"}`,
+      `Ultimo intento sync payload bytes aproximados: ${syncAttempt?.payload_bytes ?? "no disponible"}`,
+      `Ultimo intento sync mensaje tecnico: ${syncAttempt?.technical_message || "no disponible"}`,
       `Fecha: ${new Date().toISOString()}`,
     ].join("\n");
   }
@@ -578,6 +647,42 @@ export default function ConfiguracionPage() {
             </button>
           </div>
         </div>
+        <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sesion cloud autenticada</p>
+              <p className="mt-2 text-sm text-slate-300">
+                Estado: {cloudSessionTest ? (cloudSessionTest.ok ? "OK" : "Error") : "No probada"}
+                {cloudSessionTest?.status_code ? ` - HTTP ${cloudSessionTest.status_code}` : ""}
+              </p>
+              {cloudSessionTest?.endpoint ? <p className="mt-1 text-sm text-slate-300">Endpoint: {cloudSessionTest.endpoint}</p> : null}
+              {cloudSessionTest?.timestamp ? <p className="mt-1 text-sm text-slate-400">Timestamp: {cloudSessionTest.timestamp}</p> : null}
+              {cloudSessionTest && !cloudSessionTest.ok ? <p className="mt-2 text-sm text-amber-300">{cloudSessionTest.user_message}</p> : null}
+              {cloudSessionTest?.technical_message ? <p className="mt-1 text-xs text-slate-500">Detalle seguro: {cloudSessionTest.technical_message}</p> : null}
+            </div>
+            <button className="btn-secondary" type="button" onClick={handleTestCloudSession} disabled={testingCloudSession}>
+              {testingCloudSession ? "Probando..." : "Probar sesion cloud"}
+            </button>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Servicio sync cloud autenticado</p>
+              <p className="mt-2 text-sm text-slate-300">
+                Estado: {cloudSyncTest ? (cloudSyncTest.ok ? "OK" : "Error") : "No probado"}
+                {cloudSyncTest?.status_code ? ` - HTTP ${cloudSyncTest.status_code}` : ""}
+              </p>
+              {cloudSyncTest?.endpoint ? <p className="mt-1 text-sm text-slate-300">Endpoint: {cloudSyncTest.endpoint}</p> : null}
+              {cloudSyncTest?.timestamp ? <p className="mt-1 text-sm text-slate-400">Timestamp: {cloudSyncTest.timestamp}</p> : null}
+              {cloudSyncTest && !cloudSyncTest.ok ? <p className="mt-2 text-sm text-amber-300">{cloudSyncTest.user_message}</p> : null}
+              {cloudSyncTest?.technical_message ? <p className="mt-1 text-xs text-slate-500">Detalle seguro: {cloudSyncTest.technical_message}</p> : null}
+            </div>
+            <button className="btn-secondary" type="button" onClick={handleTestCloudSync} disabled={testingCloudSync}>
+              {testingCloudSync ? "Probando..." : "Probar sync cloud"}
+            </button>
+          </div>
+        </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4 text-xs text-slate-300">
           <p>DB path: {databasePath || "No disponible"}</p>
           <p className="mt-2">Backups path: {backupsPath || "No disponible"}</p>
@@ -587,9 +692,28 @@ export default function ConfiguracionPage() {
             <div className="mt-3 space-y-1 text-amber-200">
               <p>Ultimo error sync tipo: {getLastSyncErrorDetails()?.type}</p>
               <p>Endpoint: {getLastSyncErrorDetails()?.endpoint}</p>
+              <p>Metodo: {getLastSyncErrorDetails()?.method || "no disponible"}</p>
+              <p>Fase: {getLastSyncErrorDetails()?.phase || "no disponible"}</p>
+              <p>Items intentados: {getLastSyncErrorDetails()?.items_total ?? "no disponible"}</p>
+              <p>Payload aproximado: {getLastSyncErrorDetails()?.payload_bytes ?? "no disponible"} bytes</p>
+              <p>Body construido: {String(getLastSyncErrorDetails()?.body_constructed ?? "no disponible")}</p>
+              <p>Owner usado: {getLastSyncErrorDetails()?.owner_used || "no disponible"}</p>
+              <p>Razon: {getLastSyncErrorDetails()?.reason || "no disponible"}</p>
+              <p>Conteos pendientes: {getLastSyncErrorDetails()?.pending_counts ? JSON.stringify(getLastSyncErrorDetails()?.pending_counts) : "no disponible"}</p>
               <p>HTTP: {getLastSyncErrorDetails()?.status_code ?? "no disponible"}</p>
               <p>Timestamp: {getLastSyncErrorDetails()?.timestamp}</p>
               <p>Mensaje tecnico seguro: {getLastSyncErrorDetails()?.technical_message}</p>
+            </div>
+          ) : null}
+          {getLastSyncAttemptDetails() ? (
+            <div className="mt-3 space-y-1 border-t border-line pt-3 text-slate-400">
+              <p>Ultimo intento sync fase: {getLastSyncAttemptDetails()?.phase}</p>
+              <p>Endpoint: {getLastSyncAttemptDetails()?.endpoint}</p>
+              <p>Metodo: {getLastSyncAttemptDetails()?.method}</p>
+              <p>HTTP: {getLastSyncAttemptDetails()?.status_code ?? "no disponible"}</p>
+              <p>Body construido: {String(getLastSyncAttemptDetails()?.body_constructed ?? "no disponible")}</p>
+              <p>Payload aproximado: {getLastSyncAttemptDetails()?.payload_bytes ?? "no disponible"} bytes</p>
+              <p>Mensaje tecnico seguro: {getLastSyncAttemptDetails()?.technical_message}</p>
             </div>
           ) : null}
         </div>
@@ -597,6 +721,12 @@ export default function ConfiguracionPage() {
           <button className="btn" type="button" onClick={handleCopyDiagnostics}>Copiar diagnostico</button>
           <button className="btn-secondary" type="button" onClick={handleTestCloudConnection} disabled={testingCloud}>
             {testingCloud ? "Probando..." : "Probar conexion cloud"}
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleTestCloudSession} disabled={testingCloudSession}>
+            {testingCloudSession ? "Probando..." : "Probar sesion cloud"}
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleTestCloudSync} disabled={testingCloudSync}>
+            {testingCloudSync ? "Probando..." : "Probar sync cloud"}
           </button>
           <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
           <button className="btn-secondary" type="button" onClick={load}>Actualizar estado</button>
