@@ -7,6 +7,17 @@ const LOCAL_TOKEN_ENV = process.env.NEXT_PUBLIC_SCISONOMICS_LOCAL_TOKEN || "";
 let cachedLocalApiToken: string | null = LOCAL_TOKEN_ENV || null;
 let localApiTokenPromise: Promise<string | null> | null = null;
 
+export type LocalRequestSecurity = {
+  token_available: boolean;
+  token_header_added: boolean;
+  owner_header_added: boolean;
+  running_in_tauri: boolean;
+};
+
+function isRunningInTauri() {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
 async function loadLocalApiToken(): Promise<string | null> {
   if (cachedLocalApiToken) return cachedLocalApiToken;
   if (LOCAL_TOKEN_ENV) {
@@ -37,14 +48,40 @@ export function localOwnerHeaders(extra?: HeadersInit, ownerId?: string): Header
   return headers;
 }
 
-export async function getLocalRequestHeaders(extra?: HeadersInit, ownerId?: string): Promise<HeadersInit> {
+export async function getLocalRequestHeaders(extra?: HeadersInit, ownerId?: string, requireToken = false): Promise<HeadersInit> {
   const token = await loadLocalApiToken();
+  if (requireToken && isRunningInTauri() && !token) {
+    throw new Error("No se pudo autenticar contra el servicio local.");
+  }
   const headers: Record<string, string> = {
     ...((extra as Record<string, string>) || {}),
     "X-Scisonomics-Owner-Id": ownerId || getActiveOwnerId(),
   };
   if (token) headers[LOCAL_TOKEN_HEADER] = token;
   return headers;
+}
+
+export async function getLocalRequestSecurity(extra?: HeadersInit, ownerId?: string, requireToken = false): Promise<{ headers: HeadersInit; security: LocalRequestSecurity }> {
+  const headers = await getLocalRequestHeaders(extra, ownerId, requireToken);
+  const normalized = headers as Record<string, string>;
+  return {
+    headers,
+    security: {
+      token_available: Boolean(cachedLocalApiToken),
+      token_header_added: Boolean(normalized[LOCAL_TOKEN_HEADER]),
+      owner_header_added: Boolean(normalized["X-Scisonomics-Owner-Id"]),
+      running_in_tauri: isRunningInTauri(),
+    },
+  };
+}
+
+export function getLocalRequestSecuritySnapshot(ownerId?: string): LocalRequestSecurity {
+  return {
+    token_available: Boolean(cachedLocalApiToken),
+    token_header_added: Boolean(cachedLocalApiToken),
+    owner_header_added: Boolean(ownerId || getActiveOwnerId()),
+    running_in_tauri: isRunningInTauri(),
+  };
 }
 
 function toConnectionError(error: unknown) {

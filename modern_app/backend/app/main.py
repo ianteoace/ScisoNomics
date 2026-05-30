@@ -263,6 +263,11 @@ def app_diagnostics():
     }
 
 
+@app.get("/local/auth-check")
+def local_auth_check():
+    return {"ok": True, "service": "local", "owner_user_id": _current_owner()}
+
+
 @app.get("/meta")
 def meta(service: FinanceService = Depends(get_service)):
     return {

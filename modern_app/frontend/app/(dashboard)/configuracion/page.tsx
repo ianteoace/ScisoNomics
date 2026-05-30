@@ -18,6 +18,7 @@ import {
   getLastCloudHealthResult,
   getLastCloudSessionTestResult,
   getLastCloudSyncTestResult,
+  getLastLocalProtectedTestResult,
   getLastManualSyncAt,
   getLastSyncError,
   getLastSyncErrorDetails,
@@ -28,9 +29,11 @@ import {
   testCloudHealth,
   testCloudSession,
   testCloudSync,
+  testLocalProtectedService,
   type CloudHealthResult,
   type CloudSessionTestResult,
   type CloudSyncTestResult,
+  type LocalProtectedTestResult,
   type SyncOverview,
 } from "../../../services/cloudSync";
 import { API_URL, getLocalRequestHeaders } from "../../../services/http";
@@ -106,9 +109,11 @@ export default function ConfiguracionPage() {
   const [cloudHealth, setCloudHealth] = useState<CloudHealthResult | null>(null);
   const [cloudSessionTest, setCloudSessionTest] = useState<CloudSessionTestResult | null>(null);
   const [cloudSyncTest, setCloudSyncTest] = useState<CloudSyncTestResult | null>(null);
+  const [localProtectedTest, setLocalProtectedTest] = useState<LocalProtectedTestResult | null>(null);
   const [testingCloud, setTestingCloud] = useState(false);
   const [testingCloudSession, setTestingCloudSession] = useState(false);
   const [testingCloudSync, setTestingCloudSync] = useState(false);
+  const [testingLocalProtected, setTestingLocalProtected] = useState(false);
   const { showError, showSuccess } = useToast();
 
   function selectSection(section: SettingsSectionId) {
@@ -138,6 +143,7 @@ export default function ConfiguracionPage() {
       setCloudHealth(getLastCloudHealthResult());
       setCloudSessionTest(getLastCloudSessionTestResult());
       setCloudSyncTest(getLastCloudSyncTestResult());
+      setLocalProtectedTest(getLastLocalProtectedTestResult());
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setLoadError("");
     } catch (e: any) {
@@ -302,6 +308,18 @@ export default function ConfiguracionPage() {
     }
   }
 
+  async function handleTestLocalProtected() {
+    setTestingLocalProtected(true);
+    try {
+      const result = await testLocalProtectedService();
+      setLocalProtectedTest(result);
+      if (result.ok) showSuccess("Servicio local protegido OK.");
+      else showError(result.user_message);
+    } finally {
+      setTestingLocalProtected(false);
+    }
+  }
+
   function handleAutoSyncToggle(enabled: boolean) {
     if (activeOwner === "local" || !getActiveCloudSession()) {
       showError("La sincronizacion automatica requiere una cuenta cloud activa.");
@@ -375,6 +393,7 @@ export default function ConfiguracionPage() {
     const sessionTest = cloudSessionTest || getLastCloudSessionTestResult();
     const syncTest = cloudSyncTest || getLastCloudSyncTestResult();
     const syncAttempt = getLastSyncAttemptDetails();
+    const localTest = localProtectedTest || getLastLocalProtectedTestResult();
     return [
       "ScisoNomics diagnostico",
       "Version: 3.0.2",
@@ -412,6 +431,13 @@ export default function ConfiguracionPage() {
       `Cloud sync test tipo: ${syncTest?.type || "no disponible"}`,
       `Cloud sync test timestamp: ${syncTest?.timestamp || "no disponible"}`,
       `Cloud sync test mensaje tecnico: ${syncTest?.technical_message || "no disponible"}`,
+      `Local protected test: ${localTest ? (localTest.ok ? "OK" : "Error") : "no probado"}`,
+      `Local protected test endpoint: ${localTest?.endpoint || "no disponible"}`,
+      `Local protected test status code: ${localTest?.status_code ?? "no disponible"}`,
+      `Local protected test token disponible: ${localTest?.security.token_available ?? "no disponible"}`,
+      `Local protected test token header agregado: ${localTest?.security.token_header_added ?? "no disponible"}`,
+      `Local protected test owner header agregado: ${localTest?.security.owner_header_added ?? "no disponible"}`,
+      `Local protected test mensaje tecnico: ${localTest?.technical_message || "no disponible"}`,
       `Sync automatica: ${isAutoSyncEnabled() ? "activada" : "desactivada"}`,
       `Ultima sincronizacion: ${lastSync}`,
       `Ultimo error sync: ${getLastSyncError() || "sin errores recientes"}`,
@@ -428,6 +454,9 @@ export default function ConfiguracionPage() {
       `Ultimo error sync razon: ${syncError?.reason || "no disponible"}`,
       `Ultimo error sync body construido: ${syncError?.body_constructed ?? "no disponible"}`,
       `Ultimo error sync conteos pendientes: ${syncError?.pending_counts ? JSON.stringify(syncError.pending_counts) : "no disponible"}`,
+      `Ultimo error sync token local disponible: ${syncError?.local_security?.token_available ?? "no disponible"}`,
+      `Ultimo error sync token local agregado: ${syncError?.local_security?.token_header_added ?? "no disponible"}`,
+      `Ultimo error sync owner local agregado: ${syncError?.local_security?.owner_header_added ?? "no disponible"}`,
       `Ultimo intento sync fase: ${syncAttempt?.phase || "no disponible"}`,
       `Ultimo intento sync endpoint: ${syncAttempt?.endpoint || "no disponible"}`,
       `Ultimo intento sync metodo: ${syncAttempt?.method || "no disponible"}`,
@@ -683,6 +712,28 @@ export default function ConfiguracionPage() {
             </button>
           </div>
         </div>
+        <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Servicio local protegido</p>
+              <p className="mt-2 text-sm text-slate-300">
+                Estado: {localProtectedTest ? (localProtectedTest.ok ? "OK" : "Error") : "No probado"}
+                {localProtectedTest?.status_code ? ` - HTTP ${localProtectedTest.status_code}` : ""}
+              </p>
+              {localProtectedTest?.endpoint ? <p className="mt-1 text-sm text-slate-300">Endpoint: {localProtectedTest.endpoint}</p> : null}
+              {localProtectedTest ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Token disponible: {localProtectedTest.security.token_available ? "si" : "no"} · Header token: {localProtectedTest.security.token_header_added ? "si" : "no"} · Header owner: {localProtectedTest.security.owner_header_added ? "si" : "no"}
+                </p>
+              ) : null}
+              {localProtectedTest && !localProtectedTest.ok ? <p className="mt-2 text-sm text-amber-300">{localProtectedTest.user_message}</p> : null}
+              {localProtectedTest?.technical_message ? <p className="mt-1 text-xs text-slate-500">Detalle seguro: {localProtectedTest.technical_message}</p> : null}
+            </div>
+            <button className="btn-secondary" type="button" onClick={handleTestLocalProtected} disabled={testingLocalProtected}>
+              {testingLocalProtected ? "Probando..." : "Probar servicio local protegido"}
+            </button>
+          </div>
+        </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4 text-xs text-slate-300">
           <p>DB path: {databasePath || "No disponible"}</p>
           <p className="mt-2">Backups path: {backupsPath || "No disponible"}</p>
@@ -700,6 +751,9 @@ export default function ConfiguracionPage() {
               <p>Owner usado: {getLastSyncErrorDetails()?.owner_used || "no disponible"}</p>
               <p>Razon: {getLastSyncErrorDetails()?.reason || "no disponible"}</p>
               <p>Conteos pendientes: {getLastSyncErrorDetails()?.pending_counts ? JSON.stringify(getLastSyncErrorDetails()?.pending_counts) : "no disponible"}</p>
+              <p>Token local disponible: {String(getLastSyncErrorDetails()?.local_security?.token_available ?? "no disponible")}</p>
+              <p>Header token local agregado: {String(getLastSyncErrorDetails()?.local_security?.token_header_added ?? "no disponible")}</p>
+              <p>Header owner agregado: {String(getLastSyncErrorDetails()?.local_security?.owner_header_added ?? "no disponible")}</p>
               <p>HTTP: {getLastSyncErrorDetails()?.status_code ?? "no disponible"}</p>
               <p>Timestamp: {getLastSyncErrorDetails()?.timestamp}</p>
               <p>Mensaje tecnico seguro: {getLastSyncErrorDetails()?.technical_message}</p>
@@ -727,6 +781,9 @@ export default function ConfiguracionPage() {
           </button>
           <button className="btn-secondary" type="button" onClick={handleTestCloudSync} disabled={testingCloudSync}>
             {testingCloudSync ? "Probando..." : "Probar sync cloud"}
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleTestLocalProtected} disabled={testingLocalProtected}>
+            {testingLocalProtected ? "Probando..." : "Probar servicio local protegido"}
           </button>
           <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
           <button className="btn-secondary" type="button" onClick={load}>Actualizar estado</button>

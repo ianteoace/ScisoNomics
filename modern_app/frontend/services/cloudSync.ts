@@ -1,4 +1,4 @@
-import { API_URL, getLocalRequestHeaders } from "./http";
+import { API_URL, getLocalRequestHeaders, getLocalRequestSecurity, getLocalRequestSecuritySnapshot, type LocalRequestSecurity } from "./http";
 import { getActiveCloudSession, getActiveOwnerId } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
@@ -9,6 +9,7 @@ const LAST_CLOUD_HEALTH_KEY = "scisonomics_last_cloud_health";
 const LAST_CLOUD_SESSION_TEST_KEY = "scisonomics_last_cloud_session_test";
 const LAST_CLOUD_SYNC_TEST_KEY = "scisonomics_last_cloud_sync_test";
 const LAST_SYNC_ATTEMPT_KEY = "scisonomics_last_sync_attempt";
+const LAST_LOCAL_PROTECTED_TEST_KEY = "scisonomics_last_local_protected_test";
 const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
 const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
@@ -37,6 +38,7 @@ export type SyncErrorDetails = {
   owner_used: string | null;
   reason: SyncReason | null;
   pending_counts: Partial<Record<SyncTable, number>> | null;
+  local_security: LocalRequestSecurity | null;
   timestamp: string;
   cloud_api_url: string;
   type: SyncErrorType;
@@ -168,6 +170,17 @@ export type CloudSessionTestResult = {
 
 export type CloudSyncTestResult = CloudSessionTestResult;
 
+export type LocalProtectedTestResult = {
+  ok: boolean;
+  endpoint: string;
+  method: "GET";
+  status_code: number | null;
+  user_message: string;
+  technical_message: string;
+  timestamp: string;
+  security: LocalRequestSecurity;
+};
+
 type SyncRunSnapshot = {
   ownerId: string;
   token: string;
@@ -256,6 +269,7 @@ function makeSyncErrorDetails(input: {
   ownerUsed?: string | null;
   reason?: SyncReason | null;
   pendingCounts?: Partial<Record<SyncTable, number>> | null;
+  localSecurity?: LocalRequestSecurity | null;
 }): SyncErrorDetails {
   return {
     user_message: input.userMessage || syncUserMessage(input.type),
@@ -270,6 +284,7 @@ function makeSyncErrorDetails(input: {
     owner_used: input.ownerUsed ?? null,
     reason: input.reason ?? null,
     pending_counts: input.pendingCounts ?? null,
+    local_security: input.localSecurity ?? null,
     timestamp: nowIso(),
     cloud_api_url: CLOUD_API_URL || "no configurada",
     type: input.type,
@@ -290,6 +305,7 @@ function cloudSyncError(input: {
   ownerUsed?: string | null;
   reason?: SyncReason | null;
   pendingCounts?: Partial<Record<SyncTable, number>> | null;
+  localSecurity?: LocalRequestSecurity | null;
 }) {
   return new CloudSyncError(makeSyncErrorDetails(input));
 }
@@ -325,6 +341,7 @@ async function parseResponse<T>(
     ownerUsed?: string | null;
     reason?: SyncReason | null;
     pendingCounts?: Partial<Record<SyncTable, number>> | null;
+    localSecurity?: LocalRequestSecurity | null;
   } = {},
 ): Promise<T> {
   if (!response.ok) {
@@ -344,6 +361,7 @@ async function parseResponse<T>(
       ownerUsed: options.ownerUsed,
       reason: options.reason,
       pendingCounts: options.pendingCounts,
+      localSecurity: options.localSecurity,
     });
   }
   try {
@@ -363,34 +381,67 @@ async function parseResponse<T>(
       ownerUsed: options.ownerUsed,
       reason: options.reason,
       pendingCounts: options.pendingCounts,
+      localSecurity: options.localSecurity,
     });
   }
 }
 
 async function localGet<T>(path: string, ownerId?: string, phase?: SyncDiagnosticPhase): Promise<T> {
   const endpoint = `${API_URL}${path}`;
+  let security: LocalRequestSecurity | null = null;
   try {
-    const response = await fetch(endpoint, { cache: "no-store", headers: await getLocalRequestHeaders(undefined, ownerId) });
-    return parseResponse<T>(response, "No se pudo leer la informacion local para sincronizar.", { cloud: Boolean(phase), method: "GET", phase, ownerUsed: ownerId });
+    const request = await getLocalRequestSecurity(undefined, ownerId, Boolean(phase));
+    security = request.security;
+    const response = await fetch(endpoint, { cache: "no-store", headers: request.headers });
+    return parseResponse<T>(response, "No se pudo leer la informacion local para sincronizar.", { cloud: Boolean(phase), method: "GET", phase, ownerUsed: ownerId, localSecurity: security });
   } catch (error) {
-    if (!phase || error instanceof CloudSyncError) throw error;
-    throw cloudSyncError({ type: classifyFetchError(error), endpoint, technicalMessage: error, method: "GET", phase, ownerUsed: ownerId });
+    if (!phase) throw error;
+    if (error instanceof CloudSyncError) {
+      if (error.details.status_code === 401 || error.details.status_code === 403) {
+        throw cloudSyncError({ type: error.details.type, endpoint: error.details.endpoint, statusCode: error.details.status_code, technicalMessage: error.details.technical_message, method: error.details.method, phase: error.details.phase, userMessage: "No se pudo autenticar contra el servicio local.", ownerUsed: ownerId, localSecurity: security });
+      }
+      throw error;
+    }
+    security ||= getLocalRequestSecuritySnapshot(ownerId);
+    throw cloudSyncError({ type: classifyFetchError(error), endpoint, technicalMessage: error, method: "GET", phase, ownerUsed: ownerId, localSecurity: security });
   }
 }
 
 async function localPost<T>(path: string, payload: unknown, ownerId?: string, phase?: SyncDiagnosticPhase): Promise<T> {
   const endpoint = `${API_URL}${path}`;
+  let security: LocalRequestSecurity | null = null;
   try {
+    const request = await getLocalRequestSecurity({ "Content-Type": "application/json" }, ownerId, Boolean(phase));
+    security = request.security;
     const response = await fetch(endpoint, {
       method: "POST",
       cache: "no-store",
-      headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }, ownerId),
+      headers: request.headers,
       body: JSON.stringify(payload),
     });
-    return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.", { cloud: Boolean(phase), method: "POST", phase, ownerUsed: ownerId });
+    return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.", { cloud: Boolean(phase), method: "POST", phase, ownerUsed: ownerId, localSecurity: security });
   } catch (error) {
-    if (!phase || error instanceof CloudSyncError) throw error;
-    throw cloudSyncError({ type: classifyFetchError(error), endpoint, technicalMessage: error, method: "POST", phase, ownerUsed: ownerId });
+    if (!phase) throw error;
+    if (error instanceof CloudSyncError) {
+      if (error.details.status_code === 401 || error.details.status_code === 403) {
+        throw cloudSyncError({ type: error.details.type, endpoint: error.details.endpoint, statusCode: error.details.status_code, technicalMessage: error.details.technical_message, method: error.details.method, phase: error.details.phase, userMessage: "No se pudo autenticar contra el servicio local.", ownerUsed: ownerId, localSecurity: security });
+      }
+      throw error;
+    }
+    security ||= getLocalRequestSecuritySnapshot(ownerId);
+    const type = classifyFetchError(error);
+    throw cloudSyncError({
+      type,
+      endpoint,
+      technicalMessage: error,
+      method: "POST",
+      phase,
+      ownerUsed: ownerId,
+      localSecurity: security,
+      userMessage: type === "network" && phase === "local_apply_remote"
+        ? "La sincronizacion cloud funciono, pero fallo la comunicacion con el servicio local al aplicar datos remotos. Puede ser token local, CORS local o backend local no disponible."
+        : undefined,
+    });
   }
 }
 
@@ -775,6 +826,16 @@ export function getLastSyncAttemptDetails(): SyncAttemptDetails | null {
   }
 }
 
+export function getLastLocalProtectedTestResult(): LocalProtectedTestResult | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_LOCAL_PROTECTED_TEST_KEY);
+    return raw ? (JSON.parse(raw) as LocalProtectedTestResult) : null;
+  } catch {
+    return null;
+  }
+}
+
 function setLastCloudSessionTestResult(value: CloudSessionTestResult) {
   if (typeof window === "undefined") return;
   try {
@@ -875,6 +936,16 @@ function setLastSyncAttemptDetails(value: SyncAttemptDetails) {
     window.localStorage.setItem(LAST_SYNC_ATTEMPT_KEY, JSON.stringify(value));
   } catch {
     // El diagnostico de sync no debe bloquear la sincronizacion.
+  }
+  emitSyncStateChanged();
+}
+
+function setLastLocalProtectedTestResult(value: LocalProtectedTestResult) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_LOCAL_PROTECTED_TEST_KEY, JSON.stringify(value));
+  } catch {
+    // El diagnostico local no debe bloquear la app.
   }
   emitSyncStateChanged();
 }
@@ -1054,6 +1125,49 @@ export async function testCloudSync(): Promise<CloudSyncTestResult> {
       timestamp: details.timestamp,
     };
     setLastCloudSyncTestResult(result);
+    return result;
+  }
+}
+
+export async function testLocalProtectedService(): Promise<LocalProtectedTestResult> {
+  const timestamp = nowIso();
+  const endpoint = `${API_URL}/local/auth-check`;
+  const ownerId = getActiveOwnerId();
+  let security = getLocalRequestSecuritySnapshot(ownerId);
+  try {
+    const request = await getLocalRequestSecurity(undefined, ownerId, true);
+    security = request.security;
+    const response = await fetch(endpoint, { cache: "no-store", headers: request.headers });
+    const body = await response.json().catch(() => null);
+    const result: LocalProtectedTestResult = {
+      ok: response.ok && Boolean(body?.ok),
+      endpoint,
+      method: "GET",
+      status_code: response.status,
+      user_message: response.ok ? "Servicio local protegido OK." : response.status === 401 || response.status === 403
+        ? "No se pudo autenticar contra el servicio local."
+        : "El servicio local respondio con un error.",
+      technical_message: response.ok ? "Local /local/auth-check respondio correctamente." : safeTechnicalMessage(body?.detail || `HTTP ${response.status}`),
+      timestamp,
+      security,
+    };
+    setLastLocalProtectedTestResult(result);
+    return result;
+  } catch (error) {
+    security = getLocalRequestSecuritySnapshot(ownerId);
+    const result: LocalProtectedTestResult = {
+      ok: false,
+      endpoint,
+      method: "GET",
+      status_code: null,
+      user_message: safeTechnicalMessage(error).includes("autenticar")
+        ? "No se pudo autenticar contra el servicio local."
+        : "No pudimos conectar con el servicio local protegido. Puede ser token local, CORS local o backend local no disponible.",
+      technical_message: safeTechnicalMessage(error),
+      timestamp,
+      security,
+    };
+    setLastLocalProtectedTestResult(result);
     return result;
   }
 }
@@ -1294,7 +1408,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     });
     const pulledCounts = countByTable(remote);
     console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
-    const applyResult = await localPost<{
+    type ApplyRemoteResult = {
       ok: boolean;
       result: Record<string, number>;
       applied?: Record<SyncTable, number>;
@@ -1303,7 +1417,18 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       remote_changes_total?: number;
       applied_remote_total?: number;
       kept_local_total?: number;
-    }>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote");
+    };
+    const pulledTotal = totalCount(pulledCounts);
+    const applyResult: ApplyRemoteResult = pulledTotal > 0
+      ? await localPost<ApplyRemoteResult>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote")
+      : {
+          ok: true,
+          result: {},
+          remote_changes_total: 0,
+          applied_remote_total: 0,
+          kept_local_total: 0,
+        };
+    if (pulledTotal === 0) console.info(`${LOG_PREFIX} apply-remote skipped`, { mode, reason: "empty_remote_payload" });
     console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
     const conflictsTotal = Number(applyResult.conflicts?.total || 0);
     const remoteChangesTotal = Number(applyResult.remote_changes_total || totalCount(pulledCounts));
