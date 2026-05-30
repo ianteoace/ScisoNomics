@@ -56,11 +56,14 @@ pyinstaller --noconfirm --onefile --name scisonomics-backend --collect-all uvico
 Salida:
 - `modern_app/backend/dist/scisonomics-backend.exe`
 
-Copiar a sidecar de Tauri:
+Validar y copiar el sidecar de Tauri:
 
 ```powershell
-Copy-Item .\dist\scisonomics-backend.exe ..\frontend\src-tauri\binaries\scisonomics-backend-x86_64-pc-windows-msvc.exe -Force
+cd ..\frontend
+npm run prepare:sidecar
 ```
+
+`prepare:sidecar` falla si el EXE no existe, si alguna fuente Python es mas nueva que el binario, si las versiones frontend/Tauri/backend no coinciden o si el hash copiado difiere. Regenera primero el EXE con PyInstaller cuando cambie el backend.
 
 ## 3) Frontend
 
@@ -110,6 +113,8 @@ cd modern_app/frontend
 npm run tauri:build
 ```
 
+`tauri:build` ejecuta automaticamente `prepare:sidecar` antes del bundle para evitar publicar frontend nuevo con backend viejo.
+
 Salida esperada (Windows):
 - `modern_app/frontend/src-tauri/target/release/bundle/`
 - instalador `.msi` y/o `.exe` segun toolchain disponible.
@@ -139,6 +144,10 @@ npm run tauri:build
 - En v2.6 la sincronizacion automatica tambien consulta cambios remotos aunque no haya pendientes locales. Se ejecuta al iniciar, por intervalo, al recuperar foco y despues de cambios locales. Tambien se mejora visualmente el dashboard.
 - En v3.0.0 se fija el modo oscuro, se elimina el selector claro/oscuro, se expone diagnostico seguro desde Configuracion > Acerca de ScisoNomics y las actualizaciones se realizan manualmente desde GitHub Releases.
 - En v3.0.1 se agrega estabilizacion de sync/auth: snapshot de owner por corrida, token local para el sidecar en app instalada y Google Login one-time-use.
+- Antes de v3.1.0 se incorporan tags y relaciones movimiento-tag a sync, cursor incremental por owner y `schema_version` local formal.
+- El CSP desktop restringe conexiones al sidecar local, localhost de desarrollo y Railway. `script-src 'unsafe-inline'` se conserva porque el export estatico de Next lo necesita para hidratacion.
+- `shell:allow-spawn` se mantiene como permiso minimo necesario para iniciar `app.shell().sidecar("scisonomics-backend")`; no se amplio `plugins.shell.scope`.
+- Los JWT siguen centralizados en el servicio de auth. La expiracion cloud por defecto baja a 240 minutos. Migrar a secure storage nativo requiere incorporar un plugin del sistema operativo y se deja como tarea separada para no romper sesiones multicuentas existentes.
 
 ## Rutas locales principales
 

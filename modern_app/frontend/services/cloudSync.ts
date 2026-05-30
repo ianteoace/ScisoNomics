@@ -18,7 +18,7 @@ const LOG_PREFIX = "[manual-sync]";
 const CLOUD_SYNC_TIMEOUT_MS = 15000;
 export const DATA_CHANGED_EVENT = "scisonomics:data-changed";
 export const SYNC_STATE_CHANGED_EVENT = "scisonomics:sync-state-changed";
-const SYNC_TABLES = ["categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos"] as const;
+const SYNC_TABLES = ["categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags"] as const;
 type SyncTable = (typeof SYNC_TABLES)[number];
 type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
 type AcceptedPayload = Record<SyncTable, string[]>;
@@ -206,6 +206,8 @@ export type LocalDbIntegrityResult = {
   warnings_count: number;
   repairable_count: number;
   backup_recommended: boolean;
+  schema_version?: string | null;
+  expected_schema_version?: string;
   safe_summary: string[];
   issues: Array<{ code: string; severity: "warning" | "critical"; table: string | null; count: number; repairable: boolean }>;
 };
@@ -233,6 +235,10 @@ class CloudSyncError extends Error {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function shortIdentifier(value: string) {
+  return value ? `${value.slice(0, 6)}...` : "unknown";
 }
 
 export function getCloudApiUrl() {
@@ -375,7 +381,7 @@ async function parseResponse<T>(
 ): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    console.error(`${LOG_PREFIX} HTTP error`, { url: response.url, status: response.status, body });
+    console.error(`${LOG_PREFIX} HTTP error`, { endpoint: new URL(response.url).pathname, status: response.status });
     if (!options.cloud) throw new Error(typeof body?.detail === "string" ? body.detail : fallback);
     throw cloudSyncError({
       type: classifyHttpStatus(response.status),
@@ -1491,7 +1497,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     hasUser: Boolean(userEmail),
     mode,
     reason,
-    ownerId: snapshot.ownerId,
+    ownerId: shortIdentifier(snapshot.ownerId),
   });
 
   try {
@@ -1507,12 +1513,13 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     const pending = await localGet<SyncPayload>("/sync/pending", snapshot.ownerId, "local_pending");
     pendingCounts = countByTable(pending);
     deletedCounts = countDeletedByTable(pending);
-    console.info(`${LOG_PREFIX} pending`, { hasUser: Boolean(userEmail), mode, reason, device: deviceInfo.device_id, ...pendingCounts });
+    console.info(`${LOG_PREFIX} pending`, { hasUser: Boolean(userEmail), mode, reason, device: shortIdentifier(deviceInfo.device_id), ...pendingCounts });
 
     const pushResult = await cloudPost<{
       ok: boolean;
       accepted: Partial<Record<SyncTable, unknown>>;
       ignored: Record<SyncTable, number>;
+      conflicts?: Record<SyncTable, number>;
       counts?: Record<string, number>;
     }>("/sync/push", token, {
       device_id: deviceInfo.device_id,
@@ -1542,9 +1549,9 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     const hasMismatch = SYNC_TABLES.some((table) => {
       const pendingCount = pendingCounts[table];
       return (
-        accepted[table].length !== pendingCount ||
+        accepted[table].length + Number(pushResult.ignored?.[table] || 0) !== pendingCount ||
         counts[`${table}_received`] !== pendingCount ||
-        counts[`${table}_saved`] !== pendingCount
+        counts[`${table}_saved`] !== accepted[table].length
       );
     });
     if (hasMismatch) {
@@ -1557,7 +1564,10 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
     }
 
-    const remoteResponse = await cloudGet<SyncPayload>("/sync/pull", token, {
+    const cursorState = await localGet<{ ok: boolean; cursor: string | null }>("/sync/cursor", snapshot.ownerId, "local_pending");
+    const pullCursor = cursorState.cursor;
+    const pullPath = pullCursor ? `/sync/pull?since=${encodeURIComponent(pullCursor)}` : "/sync/pull";
+    const remoteResponse = await cloudGet<SyncPayload & { cursor?: string | null }>(pullPath, token, {
       phase: "cloud_pull",
       itemsTotal: 0,
       ownerUsed: snapshot.ownerId,
@@ -1612,7 +1622,15 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       setLastSyncError(null);
       setLastSyncErrorDetails(null);
     } else {
-      console.info(`${LOG_PREFIX} finished for previous owner`, { ownerId: snapshot.ownerId, activeOwnerId: getActiveOwnerId(), mode, reason });
+      console.info(`${LOG_PREFIX} finished for previous owner`, {
+        ownerId: shortIdentifier(snapshot.ownerId),
+        activeOwnerId: shortIdentifier(getActiveOwnerId()),
+        mode,
+        reason,
+      });
+    }
+    if (remoteResponse.cursor) {
+      await localPost("/sync/cursor", { cursor: remoteResponse.cursor }, snapshot.ownerId, "local_mark_synced");
     }
     await recordSyncHistory({
       sync_id: historySyncId,

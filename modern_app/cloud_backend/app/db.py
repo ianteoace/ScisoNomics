@@ -105,6 +105,8 @@ SYNC_CLOUD_TABLES = (
     "cloud_gastos_programados",
     "cloud_gastos_fijos",
     "cloud_presupuestos",
+    "cloud_tags",
+    "cloud_movimiento_tags",
 )
 
 
@@ -297,6 +299,44 @@ def _init_sqlite() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS cloud_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                color TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_tags_user ON cloud_tags(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_movimiento_tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                sync_id TEXT NOT NULL,
+                movimiento_sync_id TEXT NOT NULL,
+                tag_sync_id TEXT NOT NULL,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_movimiento_tags_user ON cloud_movimiento_tags(user_id)")
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS cloud_devices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT NOT NULL,
@@ -473,6 +513,42 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_presupuestos_user ON cloud_presupuestos(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_tags (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                color TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_tags_user ON cloud_tags(user_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_movimiento_tags (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                sync_id TEXT NOT NULL,
+                movimiento_sync_id TEXT NOT NULL,
+                tag_sync_id TEXT NOT NULL,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                remote_updated_at TEXT NOT NULL,
+                UNIQUE(user_id, sync_id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_movimiento_tags_user ON cloud_movimiento_tags(user_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS cloud_devices (

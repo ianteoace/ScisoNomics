@@ -49,7 +49,7 @@ def ensure_app_data_initialized() -> Database:
                     pass
             MAIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
             db = Database(db_path=WEB_DB_PATH)
-            _LOGGER.info("[db] path: %s", db.db_path)
+            _LOGGER.info("[db] file: %s", Path(db.db_path).name)
             db.init_db()
             _update_init_status(db, created_now=created_now)
             _DB_INSTANCE = db
@@ -60,7 +60,7 @@ def ensure_app_data_initialized() -> Database:
         except Exception as exc:
             _DB_INIT_ERROR = str(exc)
             _DB_INIT_DONE = False
-            _LOGGER.exception("[db] initialization failed: %s", exc)
+            _LOGGER.exception("[db] initialization failed. error_type=%s", type(exc).__name__)
             raise
         finally:
             _DB_INITIALIZING = False

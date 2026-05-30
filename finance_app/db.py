@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from contextlib import closing
 import sqlite3
-import shutil
 import uuid
 
 from .paths import ensure_app_data_layout, get_backup_dir, get_db_path, get_logs_dir
 
 DB_PATH = get_db_path()
+CURRENT_SCHEMA_VERSION = "3"
 
 
 class Database:
@@ -27,7 +28,6 @@ class Database:
     def init_db(self) -> None:
         with self.connect() as conn:
             try:
-                self._backup_before_risky_migrations(conn)
                 self._migrate_movimientos_allow_ahorro(conn)
                 conn.executescript(
                     """
@@ -193,10 +193,21 @@ class Database:
                 self._migrate_sync_columns(conn)
                 self._migrate_owner_columns(conn)
                 self._migrate_categorias_owner_unique(conn)
+                self._set_schema_version(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
                     return
                 raise
+
+    def _set_schema_version(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            INSERT INTO app_config (key, value, updated_at)
+            VALUES ('schema_version', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """,
+            (CURRENT_SCHEMA_VERSION,),
+        )
 
     def _seed_default_categories(self, conn: sqlite3.Connection) -> None:
         count_row = conn.execute("SELECT COUNT(*) AS total FROM categorias WHERE owner_user_id = 'local'").fetchone()
@@ -267,7 +278,7 @@ class Database:
         if not needs_table_migration:
             return
 
-        self._backup_before_categories_type_migration()
+        self._create_required_migration_backup("categorias_extended_types")
         self._append_startup_log("Iniciando migracion segura de categorias para tipos ahorro/inversion.")
 
         # Capturar estructura e indices actuales para preservar columnas/ids y relaciones.
@@ -306,9 +317,13 @@ class Database:
             col_defs.append(col_def)
             col_names.append(name)
 
-        quoted_cols = ", ".join(col_names)
+        quoted_cols = ", ".join(self._quote_identifier(column) for column in col_names)
+        if conn.in_transaction:
+            conn.commit()
+        old_foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0] or 0)
         conn.execute("PRAGMA foreign_keys = OFF")
         try:
+            conn.execute("BEGIN")
             conn.execute(f"CREATE TABLE categorias_new ({', '.join(col_defs)})")
             conn.execute(
                 f"INSERT INTO categorias_new ({quoted_cols}) SELECT {quoted_cols} FROM categorias"
@@ -316,17 +331,20 @@ class Database:
             conn.execute("DROP TABLE categorias")
             conn.execute("ALTER TABLE categorias_new RENAME TO categorias")
             for idx in index_rows:
-                if idx["sql"]:
-                    conn.execute(str(idx["sql"]))
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_categorias_nombre_tipo ON categorias(nombre, tipo)"
-            )
+                sql = str(idx["sql"] or "")
+                normalized_sql = sql.lower().replace(" ", "")
+                if sql and not ("uniqueindex" in normalized_sql and "(nombre,tipo)" in normalized_sql):
+                    conn.execute(sql)
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar categorias.")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            self._append_startup_log("Fallo migracion categorias_extended_types. Se hizo rollback.")
+            raise
         finally:
-            conn.execute("PRAGMA foreign_keys = ON")
-
-        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if fk_issues:
-            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar categorias.")
+            conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
 
         self._append_startup_log("Migracion de categorias finalizada correctamente.")
 
@@ -370,6 +388,7 @@ class Database:
         sql_text = str(create_sql[0]).lower()
         if "'ahorro'" in sql_text and "'inversion'" in sql_text:
             return
+        self._create_required_migration_backup("movimientos_extended_types")
         self._append_startup_log("Iniciando migracion segura de movimientos para tipos ahorro/inversion.")
         table_info = conn.execute("PRAGMA table_info(movimientos)").fetchall()
         if not table_info:
@@ -425,6 +444,9 @@ class Database:
                     conn.execute(sql)
                 except sqlite3.OperationalError as exc:
                     self._append_startup_log(f"No se pudo recrear indice de movimientos {idx['name']}: {exc}")
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar movimientos.")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -433,54 +455,27 @@ class Database:
         finally:
             conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
 
-        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if fk_issues:
-            self._append_startup_log(f"foreign_key_check fallo luego de migrar movimientos: {fk_issues}")
-            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar movimientos.")
         self._append_startup_log("Migracion segura de movimientos finalizada correctamente.")
 
-    def _backup_before_risky_migrations(self, conn: sqlite3.Connection) -> None:
-        create_sql = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='movimientos'"
-        ).fetchone()
-        if not create_sql or not create_sql[0]:
-            return
-        sql_text = str(create_sql[0]).lower()
-        requires_rebuild = "'ahorro'" not in sql_text or "'inversion'" not in sql_text
-        if not requires_rebuild:
-            return
+    def _create_required_migration_backup(self, reason: str) -> Path:
         backup_dir = get_backup_dir()
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-            target = backup_dir / f"finanzas_backup_pre_migration_{stamp}.db"
-            shutil.copy2(self.db_path, target)
-        except OSError:
-            # No bloquear la app por permisos de backup en tiempo de inicio.
-            return
-
-    def _backup_before_categories_type_migration(self) -> None:
-        backup_dir = get_backup_dir()
-        try:
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-            target = backup_dir / f"finanzas_backup_pre_category_type_migration_{stamp}.db"
-            shutil.copy2(self.db_path, target)
-            self._append_startup_log(f"Backup pre-migracion de categorias: {target}")
-        except OSError as exc:
-            self._append_startup_log(f"No se pudo crear backup pre-migracion de categorias: {exc}")
-
-    def _backup_before_categoria_owner_unique_migration(self) -> None:
-        backup_dir = get_backup_dir()
+        target: Path | None = None
         try:
             backup_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            target = backup_dir / f"finanzas_backup_pre_categoria_owner_unique_{stamp}.db"
-            if self.db_path.exists():
-                shutil.copy2(self.db_path, target)
-                self._append_startup_log(f"Backup pre-migracion unique owner categorias: {target}")
-        except OSError as exc:
-            self._append_startup_log(f"No se pudo crear backup pre-migracion unique owner categorias: {exc}")
+            target = backup_dir / f"finanzas_backup_pre_migration_{reason}_{stamp}_{uuid.uuid4().hex[:8]}.db"
+            with closing(sqlite3.connect(self.db_path, timeout=30)) as source:
+                with closing(sqlite3.connect(target, timeout=30)) as destination:
+                    source.backup(destination)
+            if not target.exists() or target.stat().st_size <= 0:
+                raise OSError("El backup previo quedo vacio.")
+            self._append_startup_log(f"Backup obligatorio creado. reason={reason} file={target.name}")
+            return target
+        except Exception as exc:
+            if target is not None:
+                target.unlink(missing_ok=True)
+            self._append_startup_log(f"Backup obligatorio fallo. reason={reason} error_type={type(exc).__name__}")
+            raise RuntimeError("No se pudo crear el backup obligatorio previo a la migracion.") from exc
 
     def _append_startup_log(self, message: str) -> None:
         log_dir = get_logs_dir()
@@ -558,13 +553,14 @@ class Database:
         fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_issues:
             self._append_startup_log(f"foreign_key_check detecto inconsistencias luego de owner migration: {fk_issues}")
+            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de owner migration.")
 
     def _migrate_categorias_owner_unique(self, conn: sqlite3.Connection) -> None:
         if not self._categorias_has_global_unique(conn):
             self._ensure_categorias_owner_indexes(conn)
             return
 
-        self._backup_before_categoria_owner_unique_migration()
+        self._create_required_migration_backup("categorias_owner_unique")
         self._append_startup_log("Iniciando migracion de categorias a UNIQUE(owner_user_id, nombre, tipo).")
 
         table_info = conn.execute("PRAGMA table_info(categorias)").fetchall()
@@ -621,6 +617,9 @@ class Database:
             conn.execute("DROP TABLE categorias")
             conn.execute("ALTER TABLE categorias_owner_new RENAME TO categorias")
             self._recreate_categorias_indexes_after_owner_unique(conn, index_rows)
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar unique owner categorias.")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -628,11 +627,6 @@ class Database:
             raise
         finally:
             conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
-
-        fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if fk_issues:
-            self._append_startup_log(f"foreign_key_check fallo luego de unique owner categorias: {fk_issues}")
-            raise sqlite3.IntegrityError("foreign_key_check detecto inconsistencias luego de migrar unique owner categorias.")
 
         self._append_startup_log("Migracion unique owner categorias finalizada correctamente.")
 

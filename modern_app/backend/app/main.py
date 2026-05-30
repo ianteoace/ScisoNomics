@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import gettempdir, mkdtemp
 from typing import Any, Literal
+from contextlib import closing
 import csv
 import hmac
 import io
@@ -21,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from finance_app.exporter import export_date_range_report, export_filtered_movimientos, export_monthly_report, export_yearly_report
+from finance_app.db import CURRENT_SCHEMA_VERSION
 from finance_app.services import (
     LOCAL_OWNER_ID,
     FinanceService,
@@ -137,64 +139,27 @@ async def file_not_found_handler(_: Request, exc: FileNotFoundError):
     return JSONResponse(status_code=500, content={"detail": str(exc) or "Error de archivo local."})
 
 
-def _yes_no(value: bool) -> str:
-    return "si" if value else "no"
-
-
 @app.on_event("startup")
 def log_db_path() -> None:
     try:
         ensure_app_data_initialized()
         exists = WEB_DB_PATH.exists()
         size_bytes = WEB_DB_PATH.stat().st_size if exists else 0
-        print(f"Usando base SQLite: {WEB_DB_PATH.resolve()}")
-        print(f"Existe: {_yes_no(exists)}")
-        print(f"Tamaño: {size_bytes} bytes")
-        _logger.info("Startup backend OK. db=%s exists=%s size=%s", WEB_DB_PATH.resolve(), exists, size_bytes)
+        _logger.info("Startup backend OK. db_file=%s exists=%s size=%s", WEB_DB_PATH.name, exists, size_bytes)
     except Exception as exc:
-        _logger.exception("Error en startup backend: %s", exc)
-        print(f"Error inicializando base SQLite: {exc}")
+        _logger.exception("Error inicializando backend local. error_type=%s", type(exc).__name__)
 
 
 @app.get("/health")
 def health():
     try:
         ensure_app_data_initialized()
-        status = get_last_init_status()
-        db_path = Path(str(status.get("db_path", WEB_DB_PATH)))
-        db_exists = bool(status.get("db_exists", db_path.exists()))
-        db_initialized = bool(status.get("db_initialized", False))
-        database_ready = bool(status.get("database_ready", db_initialized))
-        return {
-            "ok": True,
-            "db_path": str(db_path),
-            "db_exists": db_exists,
-            "db_initialized": db_initialized,
-            "database_ready": database_ready,
-            "initializing": bool(status.get("initializing", False)),
-            "database_error": status.get("database_error"),
-            "data_dir": str(status.get("data_dir", get_data_dir())),
-            "backups_dir": str(status.get("backups_dir", get_backup_dir())),
-            "logs_dir": str(status.get("logs_dir", get_logs_dir())),
-            "frozen": bool(getattr(sys, "frozen", False)),
-            "executable": str(sys.executable),
-            "version": app.version,
-        }
+        return {"ok": True, "status": "healthy", "version": app.version}
     except Exception as exc:
-        _logger.exception("Error en /health: %s", exc)
-        status = get_last_init_status()
+        _logger.exception("Error en /health. error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=500,
-            content={
-                "ok": False,
-                "error": "Error de inicializacion del backend local.",
-                "detail": str(exc),
-                "database_ready": False,
-                "initializing": False,
-                "database_error": str(exc),
-                "db_path": str(status.get("db_path", WEB_DB_PATH)),
-                "logs_path": str(get_logs_dir() / "backend-startup.log"),
-            },
+            content={"ok": False, "status": "unavailable", "version": app.version},
         )
 
 
@@ -204,20 +169,19 @@ def ready():
     if status.get("database_ready"):
         return {
             "ok": True,
+            "status": "ready",
             "database_ready": True,
             "initializing": False,
             "version": app.version,
-            "database_path": str(status.get("db_path", WEB_DB_PATH)),
         }
     return JSONResponse(
         status_code=503,
         content={
             "ok": False,
+            "status": "initializing" if status.get("initializing", False) else "unavailable",
             "database_ready": False,
             "initializing": bool(status.get("initializing", False)),
-            "database_error": status.get("database_error"),
             "version": app.version,
-            "database_path": str(status.get("db_path", WEB_DB_PATH)),
         },
     )
 
@@ -230,7 +194,7 @@ def _safe_app_paths() -> dict[str, str]:
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError:
-            _logger.warning("No se pudo asegurar carpeta de app: %s", folder)
+            _logger.warning("No se pudo asegurar carpeta de app. folder=%s", folder.name)
     return {
         "database_path": str(WEB_DB_PATH),
         "data_dir": str(data_dir),
@@ -551,7 +515,7 @@ def get_stats_anual(year: int = Query(...), service: FinanceService = Depends(ge
             """
             SELECT c.nombre AS categoria, COALESCE(SUM(m.monto),0) AS total, COUNT(m.id) AS movimientos
             FROM movimientos m
-            JOIN categorias c ON c.id = m.categoria_id
+            JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
             WHERE strftime('%Y', m.fecha) = ? AND m.tipo = 'gasto'
               AND (m.deleted_at IS NULL OR m.deleted_at = '')
               AND (c.deleted_at IS NULL OR c.deleted_at = '')
@@ -1019,6 +983,16 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
         _ensure_sync_metadata_columns(conn)
         summary: dict[str, int] = {table: 0 for table in SYNC_TABLES}
         category_map: dict[int, int] = {}
+        tag_map: dict[int, int] = {}
+        local_movement_tags = conn.execute(
+            """
+            SELECT mt.movimiento_id, mt.tag_id
+            FROM movimiento_tags mt
+            JOIN movimientos m ON m.id = mt.movimiento_id
+            WHERE mt.owner_user_id = ? AND m.owner_user_id = ?
+            """,
+            (LOCAL_OWNER_ID, LOCAL_OWNER_ID),
+        ).fetchall()
 
         category_ids = _local_category_ids_for_claim(conn)
         if category_ids:
@@ -1057,6 +1031,32 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
                 )
                 category_map[local_category_id] = local_category_id
                 summary["categorias"] += 1
+
+        for local_tag_id in sorted({int(row["tag_id"]) for row in local_movement_tags}):
+            tag = conn.execute(
+                "SELECT id, nombre FROM tags WHERE id = ? AND owner_user_id = ?",
+                (local_tag_id, LOCAL_OWNER_ID),
+            ).fetchone()
+            if not tag:
+                continue
+            existing = conn.execute(
+                "SELECT id FROM tags WHERE owner_user_id = ? AND nombre = ? LIMIT 1",
+                (owner, tag["nombre"]),
+            ).fetchone()
+            if existing:
+                tag_map[local_tag_id] = int(existing["id"])
+                continue
+            conn.execute(
+                """
+                UPDATE tags
+                SET owner_user_id = ?,
+                    sync_status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND owner_user_id = ?
+                """,
+                (owner, local_tag_id, LOCAL_OWNER_ID),
+            )
+            tag_map[local_tag_id] = local_tag_id
 
         def mapped_category_id(value: Any) -> Any:
             if value is None:
@@ -1099,10 +1099,10 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
                     """
                     SELECT id
                     FROM presupuestos
-                    WHERE categoria_id = ? AND mes = ? AND anio = ? AND id != ?
+                    WHERE owner_user_id = ? AND categoria_id = ? AND mes = ? AND anio = ? AND id != ?
                     LIMIT 1
                     """,
-                    (target_category_id, row["mes"], row["anio"], row["id"]),
+                    (owner, target_category_id, row["mes"], row["anio"], row["id"]),
                 ).fetchone()
                 if existing:
                     continue
@@ -1121,6 +1121,18 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
             return claimed
 
         summary["movimientos"] = claim_category_table("movimientos")
+        for relation in local_movement_tags:
+            conn.execute(
+                """
+                UPDATE movimiento_tags
+                SET owner_user_id = ?,
+                    tag_id = ?,
+                    sync_status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?
+                """,
+                (owner, tag_map.get(int(relation["tag_id"]), relation["tag_id"]), relation["movimiento_id"], relation["tag_id"], LOCAL_OWNER_ID),
+            )
         summary["gastos_programados"] = claim_category_table("gastos_programados")
         summary["gastos_fijos"] = claim_category_table("gastos_fijos")
         summary["presupuestos"] = claim_presupuestos()
@@ -1328,12 +1340,19 @@ def _parse_sync_datetime(value: Any) -> datetime | None:
             return None
 
 
-def _remote_is_newer(remote_updated_at: Any, local_updated_at: Any) -> bool:
-    remote_dt = _parse_sync_datetime(remote_updated_at)
-    local_dt = _parse_sync_datetime(local_updated_at)
-    if remote_dt is None or local_dt is None:
+def _remote_is_newer(item: dict[str, Any], local: sqlite3.Row) -> bool:
+    """Compare cloud revisions, not notebook clocks. Device id is a deterministic tie-breaker."""
+    remote_dt = _parse_sync_datetime(item.get("remote_updated_at"))
+    local_dt = _parse_sync_datetime(local["last_remote_updated_at"])
+    if remote_dt is None:
         return False
-    return remote_dt > local_dt
+    if local_dt is None or remote_dt > local_dt:
+        return True
+    if remote_dt < local_dt:
+        return False
+    remote_device = str(item.get("last_modified_device_id") or "")
+    local_device = str(local["last_remote_device_id"] or "")
+    return remote_device > local_device
 
 
 def _changed_after(value: Any, baseline: Any) -> bool:
@@ -1350,6 +1369,10 @@ def _basic_conflict_detected(local: sqlite3.Row, item: dict[str, Any], current_d
     remote_device_id = str(item.get("last_modified_device_id") or "").strip()
     if current_device_id and remote_device_id and remote_device_id == current_device_id:
         return False
+    remote_revision = str(item.get("remote_updated_at") or "").strip()
+    local_revision = str(local["last_remote_updated_at"] or "").strip()
+    if remote_revision:
+        return remote_revision != local_revision
     last_synced_at = local["last_synced_at"]
     return _changed_after(local["updated_at"], last_synced_at) and _changed_after(item.get("updated_at"), last_synced_at)
 
@@ -1410,7 +1433,8 @@ def _remote_meta_values(item: dict[str, Any]) -> tuple[Any, Any, Any]:
     )
 
 
-SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+SYNC_TABLES = ("categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags")
+INTEGRITY_SYNC_TABLES = SYNC_TABLES
 CLAIMABLE_LOCAL_DATA_TABLES = ("movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
 EXPECTED_LOCAL_COLUMNS: dict[str, set[str]] = {
     "categorias": {"id", "nombre", "tipo", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
@@ -1419,6 +1443,8 @@ EXPECTED_LOCAL_COLUMNS: dict[str, set[str]] = {
     "gastos_programados": {"id", "descripcion", "categoria_id", "monto_estimado", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
     "gastos_fijos": {"id", "categoria_id", "monto", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
     "presupuestos": {"id", "categoria_id", "mes", "anio", "monto", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "tags": {"id", "nombre", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "movimiento_tags": {"movimiento_id", "tag_id", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
 }
 
 
@@ -1441,14 +1467,47 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _count_rows(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -> int:
+    return int(conn.execute(query, params).fetchone()[0] or 0)
+
+
+def _append_count_issue(
+    issues: list[dict[str, Any]],
+    conn: sqlite3.Connection,
+    code: str,
+    severity: str,
+    table: str,
+    query: str,
+    repairable: bool = False,
+) -> None:
+    count = _count_rows(conn, query)
+    if count:
+        issues.append(_db_integrity_issue(code, severity, table, count, repairable))
+
+
+def _has_index_with_columns(conn: sqlite3.Connection, table: str, expected: tuple[str, ...], unique: bool | None = None) -> bool:
+    for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        if unique is not None and bool(index["unique"]) != unique:
+            continue
+        columns = tuple(str(row["name"]) for row in conn.execute(f"PRAGMA index_info({index['name']})").fetchall())
+        if columns == expected:
+            return True
+    return False
+
+
+def _tables_have_columns(conn: sqlite3.Connection, requirements: dict[str, set[str]], existing_tables: set[str]) -> bool:
+    return all(table in existing_tables and columns.issubset(_table_columns(conn, table)) for table, columns in requirements.items())
+
+
 def _local_db_integrity_report() -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
+    detected_schema_version: str | None = None
     if not WEB_DB_PATH.exists():
         issues.append(_db_integrity_issue("database_missing", "critical", None, 1, False))
-        return _build_local_db_integrity_response(issues)
+        return _build_local_db_integrity_response(issues, detected_schema_version)
 
     try:
-        with _open_local_db(read_only=True) as conn:
+        with closing(_open_local_db(read_only=True)) as conn:
             table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             existing_tables = {str(row["name"]) for row in table_rows}
             for table, required_columns in EXPECTED_LOCAL_COLUMNS.items():
@@ -1467,7 +1526,7 @@ def _local_db_integrity_report() -> dict[str, Any]:
             if not integrity_row or str(integrity_row[0]).lower() != "ok":
                 issues.append(_db_integrity_issue("sqlite_integrity_check_failed", "critical", None, 1, False))
 
-            for table in SYNC_TABLES:
+            for table in INTEGRITY_SYNC_TABLES:
                 if table not in existing_tables:
                     continue
                 columns = _table_columns(conn, table)
@@ -1499,14 +1558,140 @@ def _local_db_integrity_report() -> dict[str, Any]:
                     duplicate_count = int(duplicates[0] or 0)
                     if duplicate_count:
                         issues.append(_db_integrity_issue("duplicate_sync_id", "critical", table, duplicate_count, False))
+
+            relationship_checks = [
+                (
+                    "cross_owner_category_reference",
+                    "movimientos",
+                    {"movimientos": {"categoria_id", "owner_user_id"}, "categorias": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM movimientos child JOIN categorias parent ON parent.id = child.categoria_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_meta_reference",
+                    "movimientos",
+                    {"movimientos": {"meta_id", "owner_user_id"}, "metas_ahorro": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM movimientos child JOIN metas_ahorro parent ON parent.id = child.meta_id WHERE child.meta_id IS NOT NULL AND child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_category_reference",
+                    "gastos_fijos",
+                    {"gastos_fijos": {"categoria_id", "owner_user_id"}, "categorias": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM gastos_fijos child JOIN categorias parent ON parent.id = child.categoria_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_category_reference",
+                    "gastos_programados",
+                    {"gastos_programados": {"categoria_id", "owner_user_id"}, "categorias": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM gastos_programados child JOIN categorias parent ON parent.id = child.categoria_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_category_reference",
+                    "presupuestos",
+                    {"presupuestos": {"categoria_id", "owner_user_id"}, "categorias": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM presupuestos child JOIN categorias parent ON parent.id = child.categoria_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_movement_tag_reference",
+                    "movimiento_tags",
+                    {"movimiento_tags": {"movimiento_id", "owner_user_id"}, "movimientos": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM movimiento_tags child JOIN movimientos parent ON parent.id = child.movimiento_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+                (
+                    "cross_owner_tag_reference",
+                    "movimiento_tags",
+                    {"movimiento_tags": {"tag_id", "owner_user_id"}, "tags": {"id", "owner_user_id"}},
+                    "SELECT COUNT(*) FROM movimiento_tags child JOIN tags parent ON parent.id = child.tag_id WHERE child.owner_user_id <> parent.owner_user_id",
+                ),
+            ]
+            for code, table, requirements, query in relationship_checks:
+                if _tables_have_columns(conn, requirements, existing_tables):
+                    _append_count_issue(issues, conn, code, "critical", table, query)
+
+            logical_uniques = [
+                ("duplicate_owner_category", "categorias", ("owner_user_id", "nombre", "tipo")),
+                ("duplicate_owner_tag", "tags", ("owner_user_id", "nombre")),
+                ("duplicate_owner_budget", "presupuestos", ("owner_user_id", "categoria_id", "mes", "anio")),
+                ("duplicate_owner_movement_tag", "movimiento_tags", ("owner_user_id", "movimiento_id", "tag_id")),
+            ]
+            for code, table, columns in logical_uniques:
+                if table not in existing_tables or not set(columns).issubset(_table_columns(conn, table)):
+                    continue
+                grouped = ", ".join(columns)
+                _append_count_issue(
+                    issues,
+                    conn,
+                    code,
+                    "critical",
+                    table,
+                    f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} GROUP BY {grouped} HAVING COUNT(*) > 1)",
+                )
+
+            owner_index_tables = (*INTEGRITY_SYNC_TABLES, "sync_history", "sync_conflicts")
+            for table in owner_index_tables:
+                if table in existing_tables and "owner_user_id" in _table_columns(conn, table):
+                    has_owner_index = any(
+                        "owner_user_id" in tuple(
+                            str(row["name"]) for row in conn.execute(f"PRAGMA index_info({index['name']})").fetchall()
+                        )
+                        for index in conn.execute(f"PRAGMA index_list({table})").fetchall()
+                    )
+                    if not has_owner_index:
+                        issues.append(_db_integrity_issue("missing_owner_index", "warning", table, 1, False))
+
+            expected_unique_indexes = [
+                ("categorias", ("owner_user_id", "nombre", "tipo")),
+                ("tags", ("owner_user_id", "nombre")),
+                ("presupuestos", ("owner_user_id", "categoria_id", "mes", "anio")),
+            ]
+            for table, columns in expected_unique_indexes:
+                if table in existing_tables and not _has_index_with_columns(conn, table, columns, unique=True):
+                    issues.append(_db_integrity_issue("missing_owner_unique_constraint", "critical", table, 1, False))
+
+            date_checks = [
+                ("movimientos", "fecha"),
+                ("gastos_programados", "fecha_vencimiento"),
+                ("metas_ahorro", "fecha_objetivo"),
+            ]
+            for table, column in date_checks:
+                if table in existing_tables and column in _table_columns(conn, table):
+                    _append_count_issue(
+                        issues,
+                        conn,
+                        f"invalid_{column}",
+                        "warning",
+                        table,
+                        f"SELECT COUNT(*) FROM {table} WHERE {column} IS NOT NULL AND trim({column}) <> '' AND date({column}) IS NULL",
+                    )
+
+            for table in ("sync_history", "sync_conflicts"):
+                if table in existing_tables and "owner_user_id" in _table_columns(conn, table):
+                    _append_count_issue(
+                        issues,
+                        conn,
+                        "missing_owner_user_id",
+                        "critical",
+                        table,
+                        f"SELECT COUNT(*) FROM {table} WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''",
+                    )
+
+            if "app_config" not in existing_tables:
+                issues.append(_db_integrity_issue("schema_version_unavailable", "warning", "app_config", 1, False))
+            else:
+                schema_version = conn.execute("SELECT value FROM app_config WHERE key = 'schema_version'").fetchone()
+                if not schema_version or not str(schema_version["value"] or "").strip():
+                    issues.append(_db_integrity_issue("schema_version_missing", "warning", "app_config", 1, False))
+                else:
+                    detected_schema_version = str(schema_version["value"]).strip()
+                    if detected_schema_version != CURRENT_SCHEMA_VERSION:
+                        issues.append(_db_integrity_issue("schema_version_unknown", "critical", "app_config", 1, False))
     except sqlite3.Error as exc:
         _logger.exception("Fallo chequeo de integridad local. error_type=%s", type(exc).__name__)
         issues.append(_db_integrity_issue("database_unreadable", "critical", None, 1, False))
 
-    return _build_local_db_integrity_response(issues)
+    return _build_local_db_integrity_response(issues, detected_schema_version)
 
 
-def _build_local_db_integrity_response(issues: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_local_db_integrity_response(issues: list[dict[str, Any]], detected_schema_version: str | None = None) -> dict[str, Any]:
     critical_count = sum(int(issue["count"]) for issue in issues if issue["severity"] == "critical")
     warning_count = sum(int(issue["count"]) for issue in issues if issue["severity"] == "warning")
     repairable_count = sum(int(issue["count"]) for issue in issues if issue["repairable"])
@@ -1521,6 +1706,8 @@ def _build_local_db_integrity_response(issues: list[dict[str, Any]]) -> dict[str
         "warnings_count": warning_count,
         "repairable_count": repairable_count,
         "backup_recommended": status != "healthy",
+        "schema_version": detected_schema_version,
+        "expected_schema_version": CURRENT_SCHEMA_VERSION,
         "safe_summary": summary,
         "issues": issues,
     }
@@ -1535,7 +1722,7 @@ def _create_local_backup() -> Path:
     target = backup_dir / f"finanzas_backup_{stamp}.db"
     if target.exists():
         target = backup_dir / f"finanzas_backup_{stamp}_{uuid4().hex[:8]}.db"
-    with _open_local_db(read_only=True) as source, sqlite3.connect(target) as destination:
+    with closing(_open_local_db(read_only=True)) as source, closing(sqlite3.connect(target)) as destination:
         source.backup(destination)
     return target
 
@@ -1573,23 +1760,24 @@ def local_db_repair():
 
     repaired_count = 0
     now = datetime.now().isoformat(timespec="seconds")
-    with _open_local_db() as conn:
-        for table in SYNC_TABLES:
-            columns = _table_columns(conn, table)
-            if "created_at" in columns:
-                cursor = conn.execute(f"UPDATE {table} SET created_at = ? WHERE created_at IS NULL OR trim(created_at) = '' OR datetime(created_at) IS NULL", (now,))
-                repaired_count += max(cursor.rowcount, 0)
-            if "updated_at" in columns:
-                cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
-                repaired_count += max(cursor.rowcount, 0)
-            if "sync_status" in columns:
-                cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')")
-                repaired_count += max(cursor.rowcount, 0)
-            if "sync_id" in columns:
-                rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
-                for row in rows:
-                    conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
-                repaired_count += len(rows)
+    with closing(_open_local_db()) as conn:
+        with conn:
+            for table in INTEGRITY_SYNC_TABLES:
+                columns = _table_columns(conn, table)
+                if "created_at" in columns:
+                    cursor = conn.execute(f"UPDATE {table} SET created_at = ? WHERE created_at IS NULL OR trim(created_at) = '' OR datetime(created_at) IS NULL", (now,))
+                    repaired_count += max(cursor.rowcount, 0)
+                if "updated_at" in columns:
+                    cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
+                    repaired_count += max(cursor.rowcount, 0)
+                if "sync_status" in columns:
+                    cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')")
+                    repaired_count += max(cursor.rowcount, 0)
+                if "sync_id" in columns:
+                    rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
+                    for row in rows:
+                        conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
+                    repaired_count += len(rows)
 
     after = _local_db_integrity_report()
     unresolved_count = int(after["issues_count"])
@@ -1621,41 +1809,59 @@ def _local_category_ids_for_claim(conn: sqlite3.Connection) -> list[int]:
 
 SYNC_SELECTS: dict[str, str] = {
     "categorias": """
-        SELECT sync_id, nombre, tipo, owner_user_id, created_at, updated_at, deleted_at, sync_status, last_synced_at
+        SELECT sync_id, nombre, tipo, owner_user_id, created_at, updated_at, deleted_at, sync_status, last_synced_at,
+               last_remote_updated_at
         FROM categorias
     """,
     "movimientos": """
         SELECT
           m.sync_id, m.fecha, m.tipo, m.monto, m.descripcion, m.categoria_id,
           c.sync_id AS categoria_sync_id,
-          m.owner_user_id, m.created_at, m.updated_at, m.deleted_at, m.sync_status, m.last_synced_at
+          m.owner_user_id, m.created_at, m.updated_at, m.deleted_at, m.sync_status, m.last_synced_at,
+          m.last_remote_updated_at
         FROM movimientos m
-        LEFT JOIN categorias c ON c.id = m.categoria_id
+        LEFT JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
     """,
     "metas_ahorro": """
         SELECT sync_id, nombre, monto_objetivo, monto_inicial, fecha_objetivo, descripcion, estado,
-               owner_user_id, created_at, updated_at, deleted_at, sync_status, last_synced_at
+               owner_user_id, created_at, updated_at, deleted_at, sync_status, last_synced_at, last_remote_updated_at
         FROM metas_ahorro
     """,
     "gastos_programados": """
         SELECT gp.sync_id, gp.descripcion, gp.monto_estimado, gp.fecha_vencimiento, gp.estado,
                gp.es_recurrente, gp.frecuencia, gp.categoria_id, c.sync_id AS categoria_sync_id,
-               gp.owner_user_id, gp.created_at, gp.updated_at, gp.deleted_at, gp.sync_status, gp.last_synced_at
+               gp.owner_user_id, gp.created_at, gp.updated_at, gp.deleted_at, gp.sync_status, gp.last_synced_at,
+               gp.last_remote_updated_at
         FROM gastos_programados gp
-        LEFT JOIN categorias c ON c.id = gp.categoria_id
+        LEFT JOIN categorias c ON c.id = gp.categoria_id AND c.owner_user_id = gp.owner_user_id
     """,
     "gastos_fijos": """
         SELECT gf.sync_id, gf.descripcion, gf.monto, gf.dia_vencimiento, gf.activo,
                gf.categoria_id, c.sync_id AS categoria_sync_id,
-               gf.owner_user_id, gf.created_at, gf.updated_at, gf.deleted_at, gf.sync_status, gf.last_synced_at
+               gf.owner_user_id, gf.created_at, gf.updated_at, gf.deleted_at, gf.sync_status, gf.last_synced_at,
+               gf.last_remote_updated_at
         FROM gastos_fijos gf
-        LEFT JOIN categorias c ON c.id = gf.categoria_id
+        LEFT JOIN categorias c ON c.id = gf.categoria_id AND c.owner_user_id = gf.owner_user_id
     """,
     "presupuestos": """
         SELECT p.sync_id, p.mes, p.anio, p.monto, p.categoria_id, c.sync_id AS categoria_sync_id,
-               p.owner_user_id, p.created_at, p.updated_at, p.deleted_at, p.sync_status, p.last_synced_at
+               p.owner_user_id, p.created_at, p.updated_at, p.deleted_at, p.sync_status, p.last_synced_at,
+               p.last_remote_updated_at
         FROM presupuestos p
-        LEFT JOIN categorias c ON c.id = p.categoria_id
+        LEFT JOIN categorias c ON c.id = p.categoria_id AND c.owner_user_id = p.owner_user_id
+    """,
+    "tags": """
+        SELECT sync_id, nombre, color, owner_user_id, created_at, updated_at, deleted_at, sync_status, last_synced_at,
+               last_remote_updated_at
+        FROM tags
+    """,
+    "movimiento_tags": """
+        SELECT mt.sync_id, m.sync_id AS movimiento_sync_id, t.sync_id AS tag_sync_id,
+               mt.owner_user_id, mt.created_at, mt.updated_at, mt.deleted_at, mt.sync_status, mt.last_synced_at,
+               mt.last_remote_updated_at
+        FROM movimiento_tags mt
+        JOIN movimientos m ON m.id = mt.movimiento_id AND m.owner_user_id = mt.owner_user_id
+        JOIN tags t ON t.id = mt.tag_id AND t.owner_user_id = mt.owner_user_id
     """,
 }
 
@@ -1666,6 +1872,8 @@ SYNC_STATUS_PREFIX: dict[str, str] = {
     "gastos_programados": "gp.",
     "gastos_fijos": "gf.",
     "presupuestos": "p.",
+    "tags": "",
+    "movimiento_tags": "mt.",
 }
 
 
@@ -1693,6 +1901,17 @@ def _local_category_id(conn: sqlite3.Connection, item: dict[str, Any]) -> int | 
     return None
 
 
+def _local_sync_id_record_id(conn: sqlite3.Connection, table: str, sync_id: Any) -> int | None:
+    clean_sync_id = str(sync_id or "").strip()
+    if not clean_sync_id:
+        return None
+    row = conn.execute(
+        f"SELECT id FROM {table} WHERE sync_id = ? AND owner_user_id = ?",
+        (clean_sync_id, _current_owner()),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def _sync_status_value(item: dict[str, Any]) -> str:
     return "synced"
 
@@ -1715,12 +1934,12 @@ def _apply_simple_remote(
     values = [item.get(field) for field in fields]
     if local:
         conflict = _basic_conflict_detected(local, item, current_device_id)
-        if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+        if conflict and not _remote_is_newer(item, local):
             _record_sync_conflict(conn, table, local, item, "kept_local", now, result)
             result[f"{table}_kept_local"] = result.get(f"{table}_kept_local", 0) + 1
             result["kept_local_total"] = int(result.get("kept_local_total", 0)) + 1
             return
-        if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+        if _remote_is_newer(item, local):
             if conflict:
                 _record_sync_conflict(conn, table, local, item, "applied_remote", now, result)
             assignments = ", ".join([f"{field} = ?" for field in fields])
@@ -1767,6 +1986,96 @@ def _apply_simple_remote(
     result["applied_remote_total"] = int(result.get("applied_remote_total", 0)) + 1
 
 
+def _apply_remote_tag(
+    conn: sqlite3.Connection,
+    item: dict[str, Any],
+    result: dict[str, Any],
+    now: str,
+    current_device_id: str | None,
+) -> None:
+    sync_id = str(item.get("sync_id") or "").strip()
+    nombre = str(item.get("nombre") or "").strip()
+    owner = _current_owner()
+    if not sync_id or not nombre:
+        result["tags_skipped"] += 1
+        return
+    local = conn.execute("SELECT * FROM tags WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+    if local:
+        _apply_simple_remote(conn, "tags", item, ["nombre", "color"], result, now, current_device_id)
+        return
+    existing = conn.execute("SELECT * FROM tags WHERE nombre = ? AND owner_user_id = ?", (nombre, owner)).fetchone()
+    if existing:
+        if _remote_is_newer(item, existing):
+            conn.execute(
+                """
+                UPDATE tags
+                SET sync_id = ?, color = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE id = ? AND owner_user_id = ?
+                """,
+                (sync_id, item.get("color"), item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), existing["id"], owner),
+            )
+            result["tags_updated"] += 1
+            result["applied_remote_total"] += 1
+        return
+    _apply_simple_remote(conn, "tags", item, ["nombre", "color"], result, now, current_device_id)
+
+
+def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], result: dict[str, Any], now: str) -> None:
+    sync_id = str(item.get("sync_id") or "").strip()
+    owner = _current_owner()
+    movimiento_id = _local_sync_id_record_id(conn, "movimientos", item.get("movimiento_sync_id"))
+    tag_id = _local_sync_id_record_id(conn, "tags", item.get("tag_sync_id"))
+    if not sync_id or movimiento_id is None or tag_id is None:
+        result["movimiento_tags_skipped"] += 1
+        return
+    local = conn.execute("SELECT * FROM movimiento_tags WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+    if local:
+        if _remote_is_newer(item, local):
+            conn.execute(
+                """
+                UPDATE movimiento_tags
+                SET movimiento_id = ?, tag_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced',
+                    last_synced_at = ?, last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE sync_id = ? AND owner_user_id = ?
+                """,
+                (movimiento_id, tag_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), sync_id, owner),
+            )
+            result["movimiento_tags_updated"] += 1
+            result["applied_remote_total"] += 1
+        return
+    existing = conn.execute(
+        "SELECT * FROM movimiento_tags WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?",
+        (movimiento_id, tag_id, owner),
+    ).fetchone()
+    if existing:
+        if _remote_is_newer(item, existing):
+            conn.execute(
+                """
+                UPDATE movimiento_tags
+                SET sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?
+                """,
+                (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), movimiento_id, tag_id, owner),
+            )
+            result["movimiento_tags_updated"] += 1
+            result["applied_remote_total"] += 1
+        return
+    conn.execute(
+        """
+        INSERT INTO movimiento_tags (
+            movimiento_id, tag_id, owner_user_id, sync_id, created_at, updated_at, deleted_at, sync_status,
+            last_synced_at, last_remote_device_id, last_remote_device_name, last_remote_updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
+        """,
+        (movimiento_id, tag_id, owner, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item)),
+    )
+    result["movimiento_tags_inserted"] += 1
+    result["applied_remote_total"] += 1
+
+
 @app.get("/sync/pending")
 def sync_pending(service: FinanceService = Depends(get_service)):
     owner = _require_cloud_owner()
@@ -1775,6 +2084,25 @@ def sync_pending(service: FinanceService = Depends(get_service)):
         _ensure_sync_metadata_columns(conn)
         payload = {table: _sync_pending_rows(conn, table, owner) for table in SYNC_TABLES}
     return {"ok": True, **payload}
+
+
+@app.get("/sync/cursor")
+def sync_cursor_get(service: FinanceService = Depends(get_service)):
+    owner = _require_cloud_owner()
+    with service.db.connect() as conn:
+        return {"ok": True, "cursor": _config_get(conn, f"sync_pull_cursor:{owner}")}
+
+
+@app.post("/sync/cursor")
+async def sync_cursor_set(request: Request, service: FinanceService = Depends(get_service)):
+    owner = _require_cloud_owner()
+    payload = await request.json()
+    cursor = str(payload.get("cursor") or "").strip() if isinstance(payload, dict) else ""
+    if not cursor or _parse_sync_datetime(cursor) is None:
+        raise HTTPException(status_code=422, detail="Cursor de sincronizacion invalido.")
+    with service.db.connect() as conn:
+        _config_set(conn, f"sync_pull_cursor:{owner}", cursor)
+    return {"ok": True, "cursor": cursor}
 
 
 @app.post("/sync/mark-synced")
@@ -1868,12 +2196,12 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             local = conn.execute("SELECT * FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
             if local:
                 conflict = _basic_conflict_detected(local, item, current_device_id)
-                if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                if conflict and not _remote_is_newer(item, local):
                     _record_sync_conflict(conn, "categorias", local, item, "kept_local", now, result)
                     result["categorias_kept_local"] += 1
                     result["kept_local_total"] += 1
                     continue
-                if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                if _remote_is_newer(item, local):
                     if conflict:
                         _record_sync_conflict(conn, "categorias", local, item, "applied_remote", now, result)
                     conn.execute(
@@ -1907,7 +2235,7 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     "SELECT * FROM categorias WHERE nombre = ? AND tipo = ? AND owner_user_id = ?",
                     (nombre, tipo, owner),
                 ).fetchone()
-                if existing and _remote_is_newer(item.get("updated_at"), existing["updated_at"]):
+                if existing and _remote_is_newer(item, existing):
                     conn.execute(
                         """
                         UPDATE categorias
@@ -1919,6 +2247,9 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     )
                     result["categorias_updated"] += 1
                     result["applied_remote_total"] += 1
+
+        for item in payload.get("tags", []) or []:
+            _apply_remote_tag(conn, item, result, now, current_device_id)
 
         for item in payload.get("metas_ahorro", []) or []:
             _apply_simple_remote(
@@ -1969,12 +2300,12 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             )
             if local:
                 conflict = _basic_conflict_detected(local, item, current_device_id)
-                if conflict and not _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                if conflict and not _remote_is_newer(item, local):
                     _record_sync_conflict(conn, "movimientos", local, item, "kept_local", now, result)
                     result["movimientos_kept_local"] += 1
                     result["kept_local_total"] += 1
                     continue
-                if _remote_is_newer(item.get("updated_at"), local["updated_at"]):
+                if _remote_is_newer(item, local):
                     if conflict:
                         _record_sync_conflict(conn, "movimientos", local, item, "applied_remote", now, result)
                     conn.execute(
@@ -2017,6 +2348,9 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             )
             result["movimientos_inserted"] += 1
             result["applied_remote_total"] += 1
+
+        for item in payload.get("movimiento_tags", []) or []:
+            _apply_remote_movement_tag(conn, item, result, now)
 
     applied = {table: int(result.get(f"{table}_inserted", 0)) + int(result.get(f"{table}_updated", 0)) for table in SYNC_TABLES}
     kept_local = {table: int(result.get(f"{table}_kept_local", 0)) for table in SYNC_TABLES}
@@ -2075,58 +2409,9 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
             raise HTTPException(status_code=400, detail="Debes indicar source_path.")
 
         source = Path(source_path_value).expanduser()
-        _logger.info(
-            "Restaurar copia solicitado. source_path=%s exists=%s is_file=%s size=%s",
-            source,
-            source.exists(),
-            source.is_file() if source.exists() else False,
-            source.stat().st_size if source.exists() and source.is_file() else None,
-        )
-        if not source.exists():
-            raise HTTPException(status_code=400, detail="La copia seleccionada no existe.")
-        if not source.is_file():
-            raise HTTPException(status_code=400, detail="La ruta seleccionada no es un archivo valido.")
-        if source.stat().st_size <= 0:
-            raise HTTPException(status_code=400, detail="La copia seleccionada esta vacia.")
-        if source.suffix.lower() != ".db":
-            raise HTTPException(status_code=400, detail="Debes seleccionar un archivo .db valido.")
-
-        try:
-            with sqlite3.connect(source) as conn:
-                check_row = conn.execute("PRAGMA integrity_check").fetchone()
-                check_value = str(check_row[0]).lower() if check_row and check_row[0] is not None else ""
-                table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                table_names = sorted(str(row[0]) for row in table_rows)
-        except sqlite3.Error as exc:
-            _logger.exception("La copia seleccionada no se pudo abrir como SQLite: %s", exc)
-            raise HTTPException(status_code=400, detail="La copia seleccionada no es una base SQLite valida.") from exc
-
-        required_tables = {"categorias", "movimientos"}
-        existing_tables_lower = {name.lower() for name in table_names}
-        missing_tables = sorted(required_tables - existing_tables_lower)
-        _logger.info(
-            "Validacion de copia: integrity_check=%s tablas=%s missing=%s",
-            check_value,
-            ",".join(table_names),
-            ",".join(missing_tables),
-        )
-        if check_value != "ok":
-            raise HTTPException(status_code=400, detail="La copia seleccionada no es una base SQLite valida.")
-        if missing_tables:
-            raise HTTPException(status_code=400, detail="La copia seleccionada no tiene la estructura minima requerida.")
-
-        db_path = Path(service.db.db_path)
         pre_restore_backups = get_data_dir() / "backups"
-        _logger.info(
-            "Restaurar copia: source_path=%s db_path=%s backups_dir=%s integrity_check=%s tablas=%s",
-            source,
-            db_path,
-            pre_restore_backups,
-            check_value,
-            ",".join(table_names),
-        )
         safety = service.restore_database_from_path(source, pre_restore_backups)
-        _logger.info("Restaurar copia OK: backup_pre_restore=%s", safety)
+        _logger.info("Restaurar copia OK. source=%s backup_pre_restore=%s", source.name, safety.name)
         return {"ok": True, "safety_backup": str(safety)}
     except HTTPException:
         raise
@@ -2146,15 +2431,15 @@ def download_backup(service: FinanceService = Depends(get_service)):
     try:
         ensure_app_data_initialized()
         source = Path(service.db.db_path)
-        _logger.info("Solicitud de copia de seguridad. db_path=%s", source)
+        _logger.info("Solicitud de copia de seguridad. db_file=%s", source.name)
         if not source.exists():
-            _logger.error("No existe la DB para copia de seguridad. db_path=%s", source)
+            _logger.error("No existe la DB para copia de seguridad. db_file=%s", source.name)
             raise HTTPException(status_code=404, detail="No existe la base de datos local.")
         if not source.is_file():
-            _logger.error("La ruta de DB no es un archivo. db_path=%s", source)
+            _logger.error("La ruta de DB no es un archivo. db_file=%s", source.name)
             raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.")
         if source.stat().st_size <= 0:
-            _logger.error("La DB esta vacia. db_path=%s", source)
+            _logger.error("La DB esta vacia. db_file=%s", source.name)
             raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.")
 
         filename = f"ScisoNomics_copia_seguridad_{datetime.now().strftime('%Y-%m-%d')}.db"
@@ -2275,6 +2560,8 @@ def create_backup(service: FinanceService = Depends(get_service)):
 
 @app.post("/backups/restore")
 def restore_backup_from_name(payload: BackupRestoreIn, service: FinanceService = Depends(get_service)):
+    if Path(payload.file_name).name != payload.file_name:
+        raise HTTPException(status_code=400, detail="Nombre de backup invalido.")
     backup_file = _backup_dir() / payload.file_name
     safety = service.restore_database(backup_file, _backup_dir())
     return {"ok": True, "safety_backup": str(safety)}

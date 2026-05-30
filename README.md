@@ -34,6 +34,10 @@ Versión estable actual: **v3.0.1**
 - Google Login consume el resultado de polling una sola vez.
 - Mejor clasificacion de errores de red/cloud.
 - Migracion legacy de movimientos mas segura y preservando metadata.
+- Tags y relaciones movimiento-tag participan del contrato de sync.
+- Pull incremental por cursor de servidor con fallback completo para primera sync y clientes anteriores.
+- `schema_version` local formal para detectar instalaciones incompatibles antes de sincronizar.
+- El bundle valida que el sidecar generado sea reciente y coincida con las versiones frontend/Tauri/backend.
 
 ## Novedades de v3.0.0
 

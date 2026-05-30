@@ -79,7 +79,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
           console.info("Startup health response", { attempt, status: response.status, health });
 
           if (response.ok && isBackendReady(health)) {
-            if (health?.frozen && health.version && health.version !== FRONTEND_VERSION) {
+            if (health?.version && health.version !== FRONTEND_VERSION) {
               console.error("Backend/frontend version mismatch", { frontendVersion: FRONTEND_VERSION, backendVersion: health.version });
               setErrorDescription(
                 "Detectamos que el servicio local no coincide con la version instalada. Cerra ScisoNomics y volve a abrirla. Si el problema continua, reinstala la ultima version sin omitir archivos.",

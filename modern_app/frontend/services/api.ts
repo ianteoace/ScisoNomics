@@ -89,7 +89,7 @@ export const api = {
     const response = await fetch(`${API_URL}/backup/download`, { method: "GET", headers: await getLocalRequestHeaders() });
     if (!response.ok) {
       const text = await response.text();
-      console.error("Backup download failed", { status: response.status, response: text });
+      console.error("Backup download failed", { status: response.status });
       let detail = "No se pudo crear la copia de seguridad.";
       try {
         const parsed = JSON.parse(text);
@@ -117,10 +117,10 @@ export const api = {
     try {
       parsed = text ? JSON.parse(text) : null;
     } catch {
-      console.error("Restore response is not JSON", { status: response.status, response: text, sourcePath });
+      console.error("Restore response is not JSON", { status: response.status });
     }
     if (!response.ok) {
-      console.error("Restore backup failed", { status: response.status, response: parsed || text, sourcePath });
+      console.error("Restore backup failed", { status: response.status });
       const detail = parsed?.detail || parsed?.message || text || "No se pudo restaurar la copia de seguridad.";
       throw new Error(typeof detail === "string" ? detail : "No se pudo restaurar la copia de seguridad.");
     }

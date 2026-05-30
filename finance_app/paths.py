@@ -3,6 +3,7 @@
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -43,11 +44,10 @@ def get_logs_dir() -> Path:
 def ensure_app_data_layout() -> None:
     app_dir = get_app_data_dir()
     data_dir = get_data_dir()
-    backup_dir = get_backup_dir()
     logs_dir = get_logs_dir()
     app_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    get_backup_dir().mkdir(parents=True, exist_ok=True)
     try:
         logs_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -55,7 +55,6 @@ def ensure_app_data_layout() -> None:
         pass
     _migrate_best_legacy_db(
         new_db_path=get_db_path(),
-        backup_dir=backup_dir,
         candidates=[
             Path.cwd() / "data" / "finanzas.db",
             Path.cwd() / "dist" / "data" / "finanzas.db",
@@ -71,23 +70,23 @@ def _migrate_legacy_file(old_path: Path, new_path: Path) -> None:
     shutil.copy2(old_path, new_path)
 
 
-def _migrate_best_legacy_db(new_db_path: Path, backup_dir: Path, candidates: list[Path]) -> None:
-    existing_candidates = [path for path in candidates if path.exists()]
-    if not existing_candidates and new_db_path.exists():
+def _migrate_best_legacy_db(new_db_path: Path, candidates: list[Path]) -> None:
+    # La DB oficial nunca debe ser reemplazada automaticamente.
+    if new_db_path.exists():
         return
 
-    best_source = _pick_db_with_more_movements([new_db_path, *existing_candidates])
-    if best_source is None:
-        # Fallback to legacy one-shot migration if schema/read fails.
-        _migrate_legacy_file(Path.cwd() / "data" / "finanzas.db", new_db_path)
+    existing_candidates = [path for path in candidates if path.exists()]
+    if not existing_candidates:
         return
-    if best_source == new_db_path:
+
+    best_source = _pick_db_with_more_movements(existing_candidates)
+    if best_source is None:
+        _append_layout_log("legacy_db_migration_skipped reason=no_valid_candidate")
         return
 
     new_db_path.parent.mkdir(parents=True, exist_ok=True)
-    if new_db_path.exists():
-        _backup_file(new_db_path, backup_dir)
     shutil.copy2(best_source, new_db_path)
+    _append_layout_log(f"legacy_db_migrated source_file={best_source.name} source_parent={best_source.parent.name}")
 
 
 def _pick_db_with_more_movements(paths: list[Path]) -> Path | None:
@@ -108,15 +107,19 @@ def _pick_db_with_more_movements(paths: list[Path]) -> Path | None:
 
 def _safe_count_movimientos(db_path: Path) -> int | None:
     try:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             row = conn.execute("SELECT COUNT(*) FROM movimientos").fetchone()
         return int(row[0]) if row else 0
     except Exception:
         return None
 
 
-def _backup_file(path: Path, backup_dir: Path) -> None:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    target = backup_dir / f"finanzas_pre_migracion_{stamp}.db"
-    shutil.copy2(path, target)
+def _append_layout_log(message: str) -> None:
+    try:
+        log_dir = get_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with (log_dir / "backend-startup.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} [paths] {message}\n")
+    except OSError:
+        pass

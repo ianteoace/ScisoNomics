@@ -135,18 +135,9 @@ export default function MovimientosPage() {
       const suggestedName = `ScisoNomics_reporte_${desde}_a_${hasta}.xlsx`;
 
       if (isTauri) {
-        const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
-
-        const selectedPath = await save({
-          defaultPath: suggestedName,
-          filters: [{ name: "Excel", extensions: ["xlsx"] }],
-        });
-
-        if (!selectedPath) return;
-
-        const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
         const bytes = new Uint8Array(await blob.arrayBuffer());
-        await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
+        const saved = await invoke<boolean>("save_binary_file", { fileName: suggestedName, extension: "xlsx", bytes: Array.from(bytes) });
+        if (!saved) return;
         showSuccess("Reporte exportado correctamente.");
         return;
       }

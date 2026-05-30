@@ -28,14 +28,18 @@ Variables de entorno:
 SCISONOMICS_ENV=production
 SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
 DATABASE_URL=postgresql://...
-SCISONOMICS_ALLOWED_ORIGINS=*
-SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=1440
+SCISONOMICS_ALLOWED_ORIGINS=http://tauri.localhost,https://tauri.localhost,tauri://localhost
+SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=240
 SCISONOMICS_GOOGLE_CLIENT_ID=...
 SCISONOMICS_GOOGLE_CLIENT_SECRET=...
 SCISONOMICS_GOOGLE_REDIRECT_URI=https://TU_BACKEND/auth/google/callback
 ```
 
 `SCISONOMICS_CLOUD_DATABASE_URL` tiene prioridad sobre `DATABASE_URL`. En Railway puede usarse `DATABASE_URL` directamente desde PostgreSQL.
+
+En produccion `SCISONOMICS_ALLOWED_ORIGINS` es obligatorio y no acepta `*`. En desarrollo, si se omite, se habilitan solamente los origins locales de Tauri y Next.
+
+La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso centralizado al token para compatibilidad multicuentas; migrar sesiones persistentes a secure storage nativo requiere una version dedicada con plugin del sistema operativo y migracion controlada.
 
 ## Endpoints
 
@@ -65,7 +69,7 @@ SCISONOMICS_GOOGLE_REDIRECT_URI=https://TU_BACKEND/auth/google/callback
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`
 - `SCISONOMICS_GOOGLE_REDIRECT_URI`
 
-La sincronizacion manual y automatica opcional acepta categorias, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
+La sincronizacion manual y automatica opcional acepta categorias, tags, relaciones movimiento-tag, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
 
 Desde v2.4.0 el backend cloud tambien registra dispositivos por usuario (`device_id`, `device_name`, `last_seen_at`) para preparar uso multi-dispositivo.
 
@@ -80,3 +84,5 @@ Desde v2.8.0 el cliente desktop puede guardar varias cuentas cloud en el mismo d
 Desde v2.9.0 Google Login esta disponible como metodo opcional. El backend cloud genera `login_request_id`, redirige a Google con `state`, recibe el callback, vincula por `google_sub` o email existente y emite el mismo JWT propio de ScisoNomics. Si faltan variables `SCISONOMICS_GOOGLE_CLIENT_ID`, `SCISONOMICS_GOOGLE_CLIENT_SECRET` o `SCISONOMICS_GOOGLE_REDIRECT_URI`, `/auth/google/start` devuelve error controlado. No guardar secretos de Google en frontend/Tauri.
 
 Desde v3.0.1 se mantiene Google Login, email/password y sync por JWT, con hardening de polling Google one-time-use, CORS mas explicito y logs con menos PII.
+
+Antes de v3.1.0 el pull incorpora cursor incremental por revision de servidor. El primer pull o un cliente viejo conserva fallback completo. Los cambios cloud usan `remote_updated_at` generado en servidor y baseline optimista para evitar que el reloj incorrecto de una notebook pise silenciosamente cambios de otro dispositivo.

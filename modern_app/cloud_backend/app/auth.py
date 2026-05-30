@@ -32,11 +32,11 @@ def get_jwt_secret() -> str:
 
 
 def get_token_expiration_minutes() -> int:
-    raw = os.getenv("SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES", "1440")
+    raw = os.getenv("SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES", "240")
     try:
         return max(5, int(raw))
     except ValueError:
-        return 1440
+        return 240
 
 
 def hash_password(password: str) -> str:

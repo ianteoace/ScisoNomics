@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -34,26 +35,60 @@ fn generate_local_api_token() -> String {
 }
 
 #[tauri::command]
-fn save_binary_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
-  if path.trim().is_empty() {
-    return Err("Ruta de archivo invalida.".to_string());
+async fn save_binary_file(app: tauri::AppHandle, file_name: String, extension: String, bytes: Vec<u8>) -> Result<bool, String> {
+  let allowed_extension = match extension.trim().to_ascii_lowercase().as_str() {
+    "db" => "db",
+    "xlsx" => "xlsx",
+    _ => return Err("Tipo de archivo no permitido.".to_string()),
+  };
+  let suggested_path = std::path::Path::new(file_name.trim());
+  let safe_file_name = suggested_path
+    .file_name()
+    .and_then(|value| value.to_str())
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| "Nombre de archivo invalido.".to_string())?;
+  if safe_file_name != file_name.trim() || suggested_path.components().count() != 1 {
+    return Err("El nombre de archivo no puede incluir carpetas.".to_string());
+  }
+  let suggested_extension = suggested_path
+    .extension()
+    .and_then(|value| value.to_str())
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+  if suggested_extension != allowed_extension {
+    return Err("La extension del archivo no esta permitida.".to_string());
   }
   if bytes.is_empty() {
     return Err("El archivo recibido esta vacio.".to_string());
   }
 
-  let output_path = std::path::Path::new(&path);
+  let selected = app
+    .dialog()
+    .file()
+    .add_filter("Archivo ScisoNomics", &[allowed_extension])
+    .set_file_name(safe_file_name)
+    .blocking_save_file();
+  let Some(selected) = selected else {
+    return Ok(false);
+  };
+  let output_path = selected
+    .into_path()
+    .map_err(|_| "La ubicacion seleccionada no es valida.".to_string())?;
   if output_path.exists() && output_path.is_dir() {
     return Err("La ubicacion seleccionada es una carpeta, no un archivo.".to_string());
   }
-
-  if let Some(parent) = output_path.parent() {
-    std::fs::create_dir_all(parent)
-      .map_err(|e| format!("No se pudo preparar la carpeta destino: {e}"))?;
+  let selected_extension = output_path
+    .extension()
+    .and_then(|value| value.to_str())
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+  if selected_extension != allowed_extension {
+    return Err("La extension seleccionada no esta permitida.".to_string());
   }
 
-  std::fs::write(output_path, bytes)
-    .map_err(|e| format!("No se pudo escribir el archivo seleccionado: {e}"))
+  std::fs::write(&output_path, bytes)
+    .map_err(|e| format!("No se pudo escribir el archivo seleccionado: {e}"))?;
+  Ok(true)
 }
 
 #[tauri::command]

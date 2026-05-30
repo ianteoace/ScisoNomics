@@ -11,6 +11,7 @@ import tempfile
 import logging
 from uuid import uuid4
 from pathlib import Path
+from contextlib import closing
 from contextvars import ContextVar
 
 from .db import Database
@@ -116,6 +117,27 @@ class FinanceService:
 
     def _active_owner_clause(self, alias: str | None = None) -> str:
         return f"{self._active_clause(alias)} AND {self._owner_clause(alias)}"
+
+    def _require_owned_record(self, conn: sqlite3.Connection, table: str, row_id: int, label: str) -> None:
+        row = conn.execute(
+            f"SELECT 1 FROM {table} WHERE id = ? AND owner_user_id = ? AND (deleted_at IS NULL OR deleted_at = '') LIMIT 1",
+            (row_id, self._owner_id()),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"{label} no existe o no pertenece a la cuenta activa.")
+
+    def _validate_movement_references(
+        self,
+        conn: sqlite3.Connection,
+        categoria_id: int,
+        meta_id: int | None,
+        tag_ids: list[int],
+    ) -> None:
+        self._require_owned_record(conn, "categorias", categoria_id, "La categoria seleccionada")
+        if meta_id is not None:
+            self._require_owned_record(conn, "metas_ahorro", meta_id, "La meta seleccionada")
+        for tag_id in sorted({int(tag_id) for tag_id in tag_ids if int(tag_id) > 0}):
+            self._require_owned_record(conn, "tags", tag_id, "Una etiqueta seleccionada")
 
     def _soft_delete(self, conn: sqlite3.Connection, table: str, row_id: int) -> int:
         result = conn.execute(
@@ -244,8 +266,8 @@ class FinanceService:
                           AND (m2.fecha < m.fecha OR (m2.fecha = m.fecha AND m2.id <= m.id))
                     ) AS saldo_acumulado
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
-                LEFT JOIN metas_ahorro ma ON ma.id = m.meta_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
+                LEFT JOIN metas_ahorro ma ON ma.id = m.meta_id AND ma.owner_user_id = m.owner_user_id
                 {where}
                 ORDER BY m.fecha DESC, m.id DESC
                 """,
@@ -262,7 +284,7 @@ class FinanceService:
                 """
                 SELECT m.id, m.fecha, m.tipo, c.nombre AS categoria, m.descripcion, m.monto
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
                   AND m.owner_user_id = ?
@@ -278,6 +300,7 @@ class FinanceService:
             meta_id = None
         try:
             with self.db.connect() as conn:
+                self._validate_movement_references(conn, data.categoria_id, meta_id, data.tag_ids or [])
                 conn.execute(
                     """
                     INSERT INTO movimientos (
@@ -309,6 +332,8 @@ class FinanceService:
             meta_id = None
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "movimientos", movimiento_id, "El movimiento seleccionado")
+                self._validate_movement_references(conn, data.categoria_id, meta_id, data.tag_ids or [])
                 conn.execute(
                     """
                     UPDATE movimientos
@@ -356,14 +381,29 @@ class FinanceService:
         return payload
 
     def _replace_movimiento_tags(self, conn: sqlite3.Connection, movimiento_id: int, tag_ids: list[int]) -> None:
-        conn.execute("DELETE FROM movimiento_tags WHERE movimiento_id = ? AND owner_user_id = ?", (movimiento_id, self._owner_id()))
         unique_ids = sorted({int(tag_id) for tag_id in tag_ids if int(tag_id) > 0})
+        self._require_owned_record(conn, "movimientos", movimiento_id, "El movimiento seleccionado")
+        for tag_id in unique_ids:
+            self._require_owned_record(conn, "tags", tag_id, "Una etiqueta seleccionada")
+        conn.execute(
+            """
+            UPDATE movimiento_tags
+            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
+            WHERE movimiento_id = ? AND owner_user_id = ? AND (deleted_at IS NULL OR deleted_at = '')
+            """,
+            (movimiento_id, self._owner_id()),
+        )
         conn.executemany(
             """
             INSERT INTO movimiento_tags (
                 movimiento_id, tag_id, owner_user_id, sync_id, created_at, updated_at, sync_status
             )
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
+            ON CONFLICT(movimiento_id, tag_id) DO UPDATE SET
+                owner_user_id = excluded.owner_user_id,
+                deleted_at = NULL,
+                updated_at = CURRENT_TIMESTAMP,
+                sync_status = 'pending'
             """,
             [(movimiento_id, tag_id, self._owner_id(), self._new_sync_id()) for tag_id in unique_ids],
         )
@@ -376,6 +416,8 @@ class FinanceService:
                 FROM movimiento_tags mt
                 JOIN tags t ON t.id = mt.tag_id
                 WHERE mt.movimiento_id = ? AND mt.owner_user_id = ? AND t.owner_user_id = ?
+                  AND (mt.deleted_at IS NULL OR mt.deleted_at = '')
+                  AND (t.deleted_at IS NULL OR t.deleted_at = '')
                 ORDER BY t.nombre
                 """,
                 (movimiento_id, self._owner_id(), self._owner_id()),
@@ -384,7 +426,7 @@ class FinanceService:
 
     def list_tags(self) -> list[dict]:
         with self.db.connect() as conn:
-            rows = conn.execute("SELECT id, nombre, color FROM tags WHERE owner_user_id = ? ORDER BY nombre", (self._owner_id(),)).fetchall()
+            rows = conn.execute("SELECT id, nombre, color FROM tags WHERE owner_user_id = ? AND (deleted_at IS NULL OR deleted_at = '') ORDER BY nombre", (self._owner_id(),)).fetchall()
         return [dict(row) for row in rows]
 
     def create_tag(self, data: TagInput) -> None:
@@ -412,7 +454,14 @@ class FinanceService:
 
     def delete_tag(self, tag_id: int) -> None:
         with self.db.connect() as conn:
-            conn.execute("DELETE FROM tags WHERE id = ? AND owner_user_id = ?", (tag_id, self._owner_id()))
+            conn.execute(
+                "UPDATE tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
+                (tag_id, self._owner_id()),
+            )
+            conn.execute(
+                "UPDATE movimiento_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE tag_id = ? AND owner_user_id = ?",
+                (tag_id, self._owner_id()),
+            )
 
     def list_metas_ahorro(self) -> list[dict]:
         with self.db.connect() as conn:
@@ -488,7 +537,7 @@ class FinanceService:
                     m.monto,
                     c.nombre AS categoria
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
                   AND (m.deleted_at IS NULL OR m.deleted_at = '')
                   AND m.owner_user_id = ?
@@ -517,7 +566,7 @@ class FinanceService:
                 """
                 SELECT m.id, m.fecha, m.descripcion, m.monto, c.nombre AS categoria
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE m.tipo = 'gasto'
                 AND strftime('%m', m.fecha) = ? AND strftime('%Y', m.fecha) = ?
                 AND (m.deleted_at IS NULL OR m.deleted_at = '')
@@ -574,8 +623,8 @@ class FinanceService:
     def backup_database(self, backups_dir: Path) -> Path:
         source = Path(self.db.db_path)
         backups_dir.mkdir(parents=True, exist_ok=True)
-        output = backups_dir / f"finanzas_backup_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.db"
-        shutil.copy2(source, output)
+        output = backups_dir / f"finanzas_backup_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_{uuid4().hex[:8]}.db"
+        self._copy_sqlite_database(source, output)
         return output
 
     def list_backups(self, backups_dir: Path) -> list[dict]:
@@ -587,20 +636,7 @@ class FinanceService:
         ]
 
     def restore_database(self, backup_file: Path, backup_before_restore_dir: Path) -> Path:
-        if not backup_file.exists():
-            raise FileNotFoundError("El backup seleccionado no existe.")
-        safety = self.backup_database(backup_before_restore_dir)
-        target = Path(self.db.db_path)
-        tmp = target.parent / f"tmp_restore_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-        shutil.copy2(backup_file, tmp)
-        with sqlite3.connect(tmp) as conn:
-            check = conn.execute("PRAGMA integrity_check").fetchone()
-            if not check or str(check[0]).lower() != "ok":
-                tmp.unlink(missing_ok=True)
-                raise ValueError("El backup seleccionado es inválido.")
-        shutil.copy2(tmp, target)
-        tmp.unlink(missing_ok=True)
-        return safety
+        return self.restore_database_from_path(backup_file, backup_before_restore_dir)
 
     def _build_unique_backup_path(self, backup_dir: Path) -> Path:
         stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -612,66 +648,57 @@ class FinanceService:
         return candidate
 
     def _create_pre_restore_backup(self, target: Path, preferred_dir: Path) -> Path:
-        _ = preferred_dir
-        attempted: list[str] = []
         backup_dirs = (
+            preferred_dir,
             target.parent / "backups",
             target.parent.parent / "backups",
             Path(tempfile.gettempdir()) / "ScisoNomics" / "backups",
         )
         for backup_dir in backup_dirs:
             try:
-                _logger.info("Probando backup_dir=%s", backup_dir)
                 backup_dir.mkdir(parents=True, exist_ok=True)
                 if backup_dir.exists() and not backup_dir.is_dir():
-                    _logger.error("backup_dir existe pero no es carpeta: %s", backup_dir)
-                    attempted.append(f"{backup_dir} (no es carpeta)")
                     continue
-                print("db_path:", target)
-                print("backup_dir:", backup_dir)
                 safety = self._build_unique_backup_path(backup_dir)
-                existed = safety.exists()
-                is_dir = safety.is_dir() if safety.exists() else False
-                while existed or is_dir:
-                    safety = self._build_unique_backup_path(backup_dir)
-                    existed = safety.exists()
-                    is_dir = safety.is_dir() if safety.exists() else False
-                _logger.info("backup_path generado=%s existed=%s is_dir=%s", safety, existed, is_dir)
-                print("backup_path final:", safety)
-                _logger.info("inicio shutil.copy2 db_path=%s -> backup_path=%s", target, safety)
-                shutil.copy2(target, safety)
-                _logger.info("fin shutil.copy2 backup_path=%s size=%s", safety, safety.stat().st_size if safety.exists() else -1)
+                self._copy_sqlite_database(target, safety)
                 if not safety.exists() or safety.stat().st_size <= 0:
                     raise RuntimeError("La copia de seguridad previa se creo pero quedo vacia o inexistente.")
+                _logger.info("Backup previo a restore creado. file=%s", safety.name)
                 return safety
             except Exception as exc:
-                print("error creando copia previa:", repr(exc))
-                _logger.exception("Fallo creando copia previa en %s: %s", backup_dir, exc)
-                attempted.append(f"{backup_dir} ({exc})")
+                _logger.warning("Fallo creando backup previo a restore. error_type=%s", type(exc).__name__)
         raise RuntimeError("No se pudo crear una copia de seguridad previa.")
 
     def _validate_scisonomics_db(self, path: Path) -> None:
-        conn: sqlite3.Connection | None = None
-        cur: sqlite3.Cursor | None = None
+        required_columns = {
+            "categorias": {"id", "nombre", "tipo", "owner_user_id"},
+            "movimientos": {"id", "fecha", "tipo", "categoria_id", "monto", "owner_user_id"},
+            "gastos_fijos": {"id", "categoria_id", "monto", "owner_user_id"},
+            "gastos_programados": {"id", "categoria_id", "monto_estimado", "owner_user_id"},
+            "presupuestos": {"id", "categoria_id", "mes", "anio", "monto", "owner_user_id"},
+            "metas_ahorro": {"id", "nombre", "monto_objetivo", "owner_user_id"},
+        }
         try:
-            conn = sqlite3.connect(str(path))
-            cur = conn.cursor()
-            integrity = cur.execute("PRAGMA integrity_check").fetchone()
-            tables = {
-                str(row[0]).lower()
-                for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            if not integrity or str(integrity[0]).lower() != "ok":
-                raise ValueError("La copia seleccionada no paso la validacion de integridad.")
-            required_tables = {"categorias", "movimientos"}
-            missing = sorted(required_tables - tables)
-            if missing:
-                raise ValueError(f"La copia seleccionada no contiene las tablas requeridas: {missing}")
-        finally:
-            if cur is not None:
-                cur.close()
-            if conn is not None:
-                conn.close()
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=30)) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()
+                if not integrity or str(integrity[0]).lower() != "ok":
+                    raise ValueError("La copia seleccionada no paso la validacion de integridad.")
+                fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if fk_issues:
+                    raise ValueError("La copia seleccionada contiene relaciones invalidas.")
+                tables = {
+                    str(row[0]).lower()
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                if set(required_columns) - tables:
+                    raise ValueError("La copia seleccionada no contiene todas las tablas requeridas.")
+                for table, expected in required_columns.items():
+                    columns = {str(row[1]).lower() for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                    if expected - columns:
+                        raise ValueError("La copia seleccionada no tiene una estructura compatible.")
+        except sqlite3.Error as exc:
+            raise ValueError("La copia seleccionada no es una base SQLite valida.") from exc
 
     def validate_restore_source(self, source_path: Path) -> None:
         if not source_path.exists():
@@ -693,18 +720,12 @@ class FinanceService:
         while tmp.exists():
             tmp = target.parent / f"tmp_restore_{tmp_stamp}_{tmp_suffix}.db"
             tmp_suffix += 1
-        print("tmp_restore_path:", tmp)
 
         try:
-            print("inicio copia source -> tmp")
             shutil.copy2(source_path, tmp)
-            print("fin copia source -> tmp")
-            print("inicio validacion tmp")
             self._validate_scisonomics_db(tmp)
-            print("fin validacion tmp")
-            print("inicio reemplazo db actual")
-            shutil.copy2(tmp, target)
-            print("fin reemplazo db actual")
+            os.replace(tmp, target)
+            _logger.info("Restore atomico completado. source=%s safety=%s", source_path.name, safety.name)
         except PermissionError as exc:
             raise RuntimeError(
                 "No se pudo restaurar porque la base de datos esta en uso. Cerra y volve a abrir ScisoNomics."
@@ -713,10 +734,25 @@ class FinanceService:
             if tmp.exists():
                 try:
                     tmp.unlink(missing_ok=True)
-                    print("tmp_restore eliminado:", tmp)
                 except PermissionError:
-                    print("No se pudo borrar tmp_restore porque esta en uso:", tmp)
+                    _logger.warning("No se pudo eliminar temporal de restore. file=%s", tmp.name)
         return safety
+
+    @staticmethod
+    def _copy_sqlite_database(source: Path, output: Path) -> None:
+        if not source.exists() or not source.is_file():
+            raise FileNotFoundError("No existe una base de datos local para respaldar.")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if output.exists():
+                output.unlink()
+            uri = f"{source.resolve().as_uri()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=30)) as source_conn:
+                with closing(sqlite3.connect(output, timeout=30)) as output_conn:
+                    source_conn.backup(output_conn)
+        except Exception:
+            output.unlink(missing_ok=True)
+            raise
 
     def get_config_value(self, key: str, default: str = "") -> str:
         with self.db.connect() as conn:
@@ -828,7 +864,7 @@ class FinanceService:
                 SELECT gf.id, gf.categoria_id, c.nombre AS categoria, gf.descripcion,
                        gf.monto, gf.dia_vencimiento, gf.activo
                 FROM gastos_fijos gf
-                JOIN categorias c ON c.id = gf.categoria_id
+                JOIN categorias c ON c.id = gf.categoria_id AND c.owner_user_id = gf.owner_user_id
                 WHERE (gf.deleted_at IS NULL OR gf.deleted_at = '') AND gf.owner_user_id = ? AND c.owner_user_id = ?
                 ORDER BY gf.activo DESC, gf.dia_vencimiento ASC
                 """,
@@ -839,6 +875,7 @@ class FinanceService:
     def create_gasto_fijo(self, data: GastoFijoInput) -> None:
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
                 conn.execute(
                     """
                     INSERT INTO gastos_fijos (
@@ -855,6 +892,8 @@ class FinanceService:
     def update_gasto_fijo(self, gasto_id: int, data: GastoFijoInput) -> None:
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "gastos_fijos", gasto_id, "El gasto fijo seleccionado")
+                self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
                 conn.execute(
                     """
                     UPDATE gastos_fijos
@@ -902,6 +941,7 @@ class FinanceService:
 
             inserted = 0
             for row in fixed_rows:
+                self._require_owned_record(conn, "categorias", int(row["categoria_id"]), "La categoria del gasto fijo")
                 last_day = calendar.monthrange(year, month)[1]
                 day = min(int(row["dia_vencimiento"]), last_day)
                 movement_date = date(year, month, day).isoformat()
@@ -954,7 +994,7 @@ class FinanceService:
                     COALESCE(SUM(m.monto), 0) AS total,
                     COUNT(m.id) AS movimientos
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE m.tipo = ?
                   AND strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
@@ -981,7 +1021,7 @@ class FinanceService:
                     m.monto,
                     c.nombre AS categoria
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE m.tipo = 'gasto'
                   AND m.categoria_id = ?
                   AND strftime('%m', m.fecha) = ?
@@ -1030,7 +1070,7 @@ class FinanceService:
             SELECT gp.id, gp.descripcion, gp.categoria_id, c.nombre AS categoria, gp.monto_estimado,
                    gp.fecha_vencimiento, gp.estado, gp.es_recurrente, gp.frecuencia, gp.created_at
             FROM gastos_programados gp
-            JOIN categorias c ON c.id = gp.categoria_id
+            JOIN categorias c ON c.id = gp.categoria_id AND c.owner_user_id = gp.owner_user_id
         """
         where: list[str] = ["(gp.deleted_at IS NULL OR gp.deleted_at = '')", "gp.owner_user_id = ?", "c.owner_user_id = ?"]
         params: list = [self._owner_id(), self._owner_id()]
@@ -1057,6 +1097,7 @@ class FinanceService:
         self._validate_gasto_programado(data)
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
                 conn.execute(
                     """
                     INSERT INTO gastos_programados (
@@ -1084,6 +1125,8 @@ class FinanceService:
         self._validate_gasto_programado(data)
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "gastos_programados", gasto_id, "El gasto programado seleccionado")
+                self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
                 conn.execute(
                     """
                     UPDATE gastos_programados
@@ -1138,6 +1181,7 @@ class FinanceService:
             ).fetchone()
             if not row:
                 raise ValueError("No se encontró el gasto programado seleccionado.")
+            self._require_owned_record(conn, "categorias", int(row["categoria_id"]), "La categoria del gasto programado")
             if row["estado"] == "pagado":
                 return {"changed": False, "generated_next": False, "is_recurrent": bool(row["es_recurrente"])}
 
@@ -1339,7 +1383,7 @@ class FinanceService:
                     p.monto AS monto_presupuestado,
                     COALESCE(SUM(CASE WHEN m.tipo = 'gasto' THEN m.monto ELSE 0 END), 0) AS monto_gastado
                 FROM presupuestos p
-                JOIN categorias c ON c.id = p.categoria_id
+                JOIN categorias c ON c.id = p.categoria_id AND c.owner_user_id = p.owner_user_id
                 LEFT JOIN movimientos m
                   ON m.categoria_id = p.categoria_id
                  AND m.tipo = 'gasto'
@@ -1379,11 +1423,12 @@ class FinanceService:
         if data.monto <= 0:
             raise ValueError("El monto debe ser mayor a 0.")
         with self.db.connect() as conn:
+            self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
             conn.execute(
                 """
                 INSERT INTO presupuestos (categoria_id, mes, anio, monto, owner_user_id, sync_id, created_at, updated_at, sync_status)
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
-                ON CONFLICT(categoria_id, mes, anio)
+                ON CONFLICT(owner_user_id, categoria_id, mes, anio)
                 DO UPDATE SET monto = excluded.monto, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 """,
                 (data.categoria_id, data.mes, data.anio, data.monto, self._owner_id(), self._new_sync_id()),
@@ -1424,7 +1469,7 @@ class FinanceService:
                 """
                 SELECT COALESCE(SUM(m.monto), 0) AS total
                 FROM movimientos m
-                JOIN categorias c ON c.id = m.categoria_id
+                JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
                 WHERE strftime('%m', m.fecha) = ?
                   AND strftime('%Y', m.fecha) = ?
                   AND lower(c.nombre) LIKE '%invers%'

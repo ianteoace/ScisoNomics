@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from .auth import create_access_token, decode_access_token, get_jwt_secret, hash_password, verify_password
-from .db import connect, get_database_engine, get_database_path, init_db
+from .db import connect, get_database_engine, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
@@ -25,8 +25,15 @@ _logger = logging.getLogger("scisonomics.cloud")
 
 
 def allowed_origins() -> list[str]:
-    raw = os.getenv("SCISONOMICS_ALLOWED_ORIGINS", "*").strip()
+    raw = os.getenv("SCISONOMICS_ALLOWED_ORIGINS", "").strip()
+    env = os.getenv("SCISONOMICS_ENV", "development").strip().lower()
+    if not raw:
+        if env == "production":
+            raise RuntimeError("SCISONOMICS_ALLOWED_ORIGINS es obligatorio en produccion.")
+        return ["http://127.0.0.1:3000", "http://localhost:3000", "tauri://localhost", "https://tauri.localhost"]
     if raw == "*":
+        if env == "production":
+            raise RuntimeError("SCISONOMICS_ALLOWED_ORIGINS no puede ser '*' en produccion.")
         return ["*"]
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
@@ -50,7 +57,7 @@ def startup() -> None:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def normalize_email(email: str) -> str:
@@ -174,8 +181,8 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
             mask_email(email),
             True,
             True,
-            email_row["id"],
-            google_row["id"],
+            short_identifier(email_row["id"]),
+            short_identifier(google_row["id"]),
         )
         conn.execute(
             """
@@ -203,7 +210,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
             mask_email(email),
             True,
             bool(email_row),
-            google_row["id"],
+            short_identifier(google_row["id"]),
         )
         conn.execute(
             """
@@ -223,7 +230,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
             mask_email(email),
             False,
             True,
-            email_row["id"],
+            short_identifier(email_row["id"]),
         )
         conn.execute(
             """
@@ -243,7 +250,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
         mask_email(email),
         False,
         False,
-        user_id,
+        short_identifier(user_id),
     )
     conn.execute(
         """
@@ -268,17 +275,7 @@ def parse_sync_datetime(value: Any) -> datetime | None:
             return None
 
 
-def incoming_is_newer(incoming_updated_at: Any, stored_updated_at: Any) -> bool:
-    incoming_dt = parse_sync_datetime(incoming_updated_at)
-    stored_dt = parse_sync_datetime(stored_updated_at)
-    if incoming_dt is None:
-        return False
-    if stored_dt is None:
-        return True
-    return incoming_dt >= stored_dt
-
-
-SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+SYNC_TABLES = ("categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags")
 
 SYNC_CONFIG: dict[str, dict[str, Any]] = {
     "categorias": {
@@ -317,6 +314,18 @@ SYNC_CONFIG: dict[str, dict[str, Any]] = {
         "fields": ("categoria_sync_id", "mes", "anio", "monto"),
         "order": "anio DESC, mes DESC, id DESC",
     },
+    "tags": {
+        "table": "cloud_tags",
+        "required": ("nombre",),
+        "fields": ("nombre", "color"),
+        "order": "nombre, id DESC",
+    },
+    "movimiento_tags": {
+        "table": "cloud_movimiento_tags",
+        "required": ("movimiento_sync_id", "tag_sync_id"),
+        "fields": ("movimiento_sync_id", "tag_sync_id"),
+        "order": "id DESC",
+    },
 }
 
 
@@ -327,12 +336,13 @@ def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
     return all(item.get(field) not in (None, "") for field in config["required"])
 
 
-def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str, device_id: str | None, device_name: str | None) -> tuple[list[str], int]:
+def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str, device_id: str | None, device_name: str | None) -> tuple[list[str], int, int]:
     config = SYNC_CONFIG[key]
     table = config["table"]
     fields = list(config["fields"])
     accepted: list[str] = []
     ignored = 0
+    conflicts = 0
 
     for item in items:
         if not isinstance(item, dict) or not _valid_sync_item(item, config):
@@ -340,15 +350,20 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
             continue
         sync_id = str(item.get("sync_id") or "").strip()
         existing = conn.execute(
-            f"SELECT updated_at FROM {table} WHERE user_id = ? AND sync_id = ?",
+            f"SELECT remote_updated_at, last_modified_device_id FROM {table} WHERE user_id = ? AND sync_id = ?",
             (user_id, sync_id),
         ).fetchone()
 
-        if existing and not incoming_is_newer(item.get("updated_at"), existing["updated_at"]):
-            accepted.append(sync_id)
+        # Old clients omit the baseline and keep full-pull compatibility. New clients
+        # use the cloud revision to avoid overwriting changes from another device.
+        baseline = str(item.get("last_remote_updated_at") or "").strip()
+        current_revision = str(existing["remote_updated_at"] or "").strip() if existing else ""
+        current_device = str(existing["last_modified_device_id"] or "").strip() if existing else ""
+        if existing and baseline and baseline != current_revision and current_device != str(device_id or ""):
+            conflicts += 1
+            ignored += 1
             continue
-
-        last_modified_at = item.get("updated_at") or now
+        last_modified_at = now
         base_columns = [
             "user_id", "sync_id", *fields, "created_at", "updated_at", "deleted_at", "sync_status", "remote_updated_at",
             "last_modified_device_id", "last_modified_device_name", "last_modified_at",
@@ -397,10 +412,10 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
         else:
             ignored += 1
 
-    return accepted, ignored
+    return accepted, ignored, conflicts
 
 
-def _pull_table(conn, user_id: str, key: str) -> list[dict[str, Any]]:
+def _pull_table(conn, user_id: str, key: str, since: str | None = None, until: str | None = None) -> list[dict[str, Any]]:
     config = SYNC_CONFIG[key]
     table = config["table"]
     fields = ", ".join([
@@ -414,16 +429,24 @@ def _pull_table(conn, user_id: str, key: str) -> list[dict[str, Any]]:
         "last_modified_device_name",
         "last_modified_at",
     ])
+    where = ["user_id = ?"]
+    params: list[Any] = [user_id]
+    if since:
+        where.append("remote_updated_at > ?")
+        params.append(since)
+    if until:
+        where.append("remote_updated_at <= ?")
+        params.append(until)
     return [
         dict(row)
         for row in conn.execute(
             f"""
             SELECT sync_id, {fields}
             FROM {table}
-            WHERE user_id = ?
+            WHERE {" AND ".join(where)}
             ORDER BY {config["order"]}
             """,
-            (user_id,),
+            tuple(params),
         ).fetchall()
     ]
 
@@ -472,10 +495,7 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
 def health():
     init_db()
     database = get_database_engine()
-    response = {"ok": True, "service": "scisonomics-cloud-auth", "database": database, "version": app.version}
-    if database == "sqlite":
-        response["database_path"] = str(get_database_path())
-    return response
+    return {"ok": True, "service": "scisonomics-cloud-auth", "database": database, "version": app.version}
 
 
 @app.post("/auth/register", response_model=AuthResponse)
@@ -544,6 +564,7 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
     init_db()
     accepted = {table: [] for table in SYNC_TABLES}
     ignored = {table: 0 for table in SYNC_TABLES}
+    conflicts = {table: 0 for table in SYNC_TABLES}
     received = {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
     now = now_iso()
     device_id = str(payload.get("device_id") or "").strip() or None
@@ -553,25 +574,27 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
         _upsert_device(conn, user.id, device_id, device_name, now)
         for table in SYNC_TABLES:
             items = payload.get(table, []) or []
-            table_accepted, table_ignored = _push_table(conn, user.id, table, items, now, device_id, device_name)
+            table_accepted, table_ignored, table_conflicts = _push_table(conn, user.id, table, items, now, device_id, device_name)
             accepted[table] = table_accepted
             ignored[table] = table_ignored
+            conflicts[table] = table_conflicts
 
     counts = {}
     for table in SYNC_TABLES:
         counts[f"{table}_received"] = received[table]
         counts[f"{table}_saved"] = len(accepted[table])
-    if any(received[table] != len(accepted[table]) for table in SYNC_TABLES):
+    if any(received[table] != len(accepted[table]) + ignored[table] for table in SYNC_TABLES):
         raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
-    return {"ok": True, "accepted": accepted, "ignored": ignored, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
+    return {"ok": True, "accepted": accepted, "ignored": ignored, "conflicts": conflicts, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
 
 
 @app.get("/sync/pull")
-def sync_pull(user: UserOut = Depends(get_current_user)):
+def sync_pull(since: str | None = Query(default=None), user: UserOut = Depends(get_current_user)):
     init_db()
+    cursor = now_iso()
     with connect() as conn:
-        payload = {table: _pull_table(conn, user.id, table) for table in SYNC_TABLES}
-    return {"ok": True, **payload}
+        payload = {table: _pull_table(conn, user.id, table, since, cursor) for table in SYNC_TABLES}
+    return {"ok": True, "cursor": cursor, "incremental": bool(since), **payload}
 
 
 @app.get("/sync/debug-counts")

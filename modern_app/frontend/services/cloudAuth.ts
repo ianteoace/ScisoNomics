@@ -175,6 +175,17 @@ function normalizeAccount(account: StoredCloudAccount): StoredCloudAccount {
   };
 }
 
+function maskEmail(value: string) {
+  const email = normalizeEmail(value);
+  const [localPart, domain = ""] = email.split("@");
+  if (!localPart || !domain) return "***";
+  return `${localPart.slice(0, 2)}***@${domain}`;
+}
+
+function shortUserId(value: string) {
+  return value ? `${value.slice(0, 6)}...` : "unknown";
+}
+
 function normalizeState(state: StoredAuthState): StoredAuthState {
   const byId = new Map<string, StoredCloudAccount>();
   const discardedOwnerMap = new Map<string, string>();
@@ -209,9 +220,9 @@ function normalizeState(state: StoredAuthState): StoredAuthState {
     byEmail.set(emailKey, keep);
     discardedOwnerMap.set(discard.user.id, keep.user.id);
     console.info("[auth] deduped stored account by normalized email", {
-      email: emailKey,
-      keptUserId: keep.user.id,
-      removedUserId: discard.user.id,
+      email: maskEmail(emailKey),
+      keptUserId: shortUserId(keep.user.id),
+      removedUserId: shortUserId(discard.user.id),
     });
   }
   const accounts = Array.from(byEmail.values()).sort((a, b) => accountTimeValue(b.lastUsedAt) - accountTimeValue(a.lastUsedAt));
@@ -235,7 +246,7 @@ function migrateLegacySessionIfNeeded() {
   const account: StoredCloudAccount = { token, user, storage, addedAt: nowIso(), lastUsedAt: nowIso() };
   saveSplitState({ activeOwnerId: user.id, accounts: [account] });
   removeLegacySessionKeys();
-  console.info("[auth] migrated legacy single session", { userId: user.id, email: user.email, storage });
+  console.info("[auth] migrated legacy single session", { userId: shortUserId(user.id), email: maskEmail(user.email), storage });
 }
 
 export function isCloudAuthConfigured() {
@@ -313,7 +324,7 @@ export function addOrUpdateAccount(session: { token: string; user: CloudUser }, 
   };
   const accounts = [account, ...state.accounts.filter((item) => item.user.id !== session.user.id)];
   saveStoredAuthState({ activeOwnerId: options.makeActive === false ? state.activeOwnerId : session.user.id, accounts }, { notify: options.notify });
-  console.info("[auth] account stored", { userId: session.user.id, email: session.user.email, storage });
+  console.info("[auth] account stored", { userId: shortUserId(session.user.id), email: maskEmail(session.user.email), storage });
 }
 
 export function switchActiveOwner(ownerId: string) {
@@ -321,7 +332,7 @@ export function switchActiveOwner(ownerId: string) {
   const nextOwner = ownerId === LOCAL_OWNER_ID || state.accounts.some((account) => account.user.id === ownerId) ? ownerId : LOCAL_OWNER_ID;
   const accounts = state.accounts.map((account) => (account.user.id === nextOwner ? { ...account, lastUsedAt: nowIso() } : account));
   saveStoredAuthState({ activeOwnerId: nextOwner, accounts });
-  console.info("[owner] active owner changed", { ownerId: nextOwner });
+  console.info("[owner] active owner changed", { mode: nextOwner === LOCAL_OWNER_ID ? "local" : "cloud" });
 }
 
 export function switchToLocalMode() {
@@ -437,11 +448,11 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
   const state = getStoredAuthState();
   const session = ownerId ? state.accounts.find((account) => account.user.id === ownerId) || null : getActiveCloudSession();
   if (!session) return null;
-  console.info("[auth] verify start", { userId: session.user.id, email: session.user.email });
+  console.info("[auth] verify start", { userId: shortUserId(session.user.id), email: maskEmail(session.user.email) });
   try {
     const user = await cloudAuth.me(session.token);
     addOrUpdateAccount({ token: session.token, user }, { remember: session.storage === "persistent", makeActive: state.activeOwnerId === session.user.id, notify: false });
-    console.info("[auth] verify success", { userId: user.id, email: user.email });
+    console.info("[auth] verify success", { userId: shortUserId(user.id), email: maskEmail(user.email) });
     return { ...session, user };
   } catch (error) {
     console.warn("[auth] verify failed", error);

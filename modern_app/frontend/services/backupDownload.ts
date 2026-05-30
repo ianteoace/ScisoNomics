@@ -14,10 +14,10 @@ async function assertBackendReady() {
     try {
       health = JSON.parse(text);
     } catch {
-      console.error("Health response is not JSON", { status: response.status, body: text.slice(0, 500) });
+      console.error("Health response is not JSON", { status: response.status });
     }
 
-    console.info("Backup health check", { status: response.status, health });
+    console.info("Backup health check", { status: response.status, ok: Boolean(health?.ok) });
 
     if (!response.ok || !health?.ok || health.db_exists === false || health.db_initialized === false) {
       throw new Error("Backend not ready");
@@ -64,23 +64,12 @@ export async function createSecurityCopyWithSaveDialog() {
     }
   }
 
-  const [{ save }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
-  const selectedPath = await save({
-    defaultPath: suggestedName,
-    filters: [{ name: "Base de datos SQLite", extensions: ["db"] }],
-  });
-
-  if (!selectedPath) return;
-
-  const targetPath = Array.isArray(selectedPath) ? selectedPath[0] : selectedPath;
-  console.info("Backup save path selected", { path: targetPath });
-
   let blob: Blob;
   try {
     const result = await api.downloadBackup();
     blob = result.blob;
     if (blob.size <= 0) {
-      console.error("Backup download returned an empty file", { path: targetPath });
+      console.error("Backup download returned an empty file");
       throw new Error("Empty backup response");
     }
   } catch (error) {
@@ -90,9 +79,9 @@ export async function createSecurityCopyWithSaveDialog() {
 
   try {
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    await invoke("save_binary_file", { path: targetPath, bytes: Array.from(bytes) });
+    await invoke<boolean>("save_binary_file", { fileName: suggestedName, extension: "db", bytes: Array.from(bytes) });
   } catch (error) {
-    console.error("Error saving backup file", { path: targetPath, error });
+    console.error("Error saving backup file", error);
     throw new Error("No se pudo guardar la copia de seguridad en la ubicación seleccionada. Probá elegir otra carpeta.");
   }
 }

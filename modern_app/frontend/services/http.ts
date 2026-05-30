@@ -92,13 +92,11 @@ function toConnectionError(error: unknown) {
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const text = await res.text();
-    console.error("HTTP request failed", { url: res.url, status: res.status, response: text.slice(0, 500) });
+    console.error("HTTP request failed", { endpoint: new URL(res.url).pathname, status: res.status });
     let parsed: any = null;
     try {
       parsed = JSON.parse(text);
-    } catch {
-      console.error("HTTP error body (raw):", text.slice(0, 500));
-    }
+    } catch {}
 
     if (res.status === 401 || res.status === 403) throw new Error("No se pudo validar la conexión local de ScisoNomics. Cerrá la app y volvé a abrirla.");
     if (res.status === 404) throw new Error("No se pudo encontrar la información solicitada.");

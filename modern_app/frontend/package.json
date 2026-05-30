@@ -7,14 +7,15 @@
     "build": "next build",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",
+    "tauri:build": "npm run prepare:sidecar && tauri build"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-opener": "^2.4.1",
     "framer-motion": "^11.3.19",
     "lucide-react": "^0.511.0",
-    "next": "14.2.5",
+    "next": "14.2.35",
     "next-themes": "^0.3.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -32,4 +33,3 @@
     "typescript": "5.5.4"
   }
 }
-
