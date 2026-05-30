@@ -10,34 +10,23 @@ import { Modal } from "../../../components/ui/Modal";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
-import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveCloudSession, getActiveOwnerId, isCloudAuthConfigured } from "../../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveCloudSession, getActiveOwnerId } from "../../../services/cloudAuth";
 import {
   SYNC_STATE_CHANGED_EVENT,
-  getCloudApiUrl,
   getLastAutoSyncAt,
-  getLastCloudHealthResult,
-  getLastCloudSessionTestResult,
-  getLastCloudSyncTestResult,
-  getLastLocalProtectedTestResult,
   getLastManualSyncAt,
   getLastSyncError,
-  getLastSyncErrorDetails,
-  getLastSyncAttemptDetails,
+  getLocalDbIntegrity,
+  createLocalBackup,
+  repairLocalDb,
   isAutoSyncEnabled,
   runManualSync,
   setAutoSyncEnabled,
-  testCloudHealth,
-  testCloudSession,
-  testCloudSync,
-  testLocalProtectedService,
-  type CloudHealthResult,
-  type CloudSessionTestResult,
-  type CloudSyncTestResult,
-  type LocalProtectedTestResult,
   type SyncOverview,
+  type LocalDbIntegrityResult,
 } from "../../../services/cloudSync";
 import { API_URL, getLocalRequestHeaders } from "../../../services/http";
-import type { SettingsInfo } from "../../../types/domain";
+import type { BackupState, SettingsInfo } from "../../../types/domain";
 
 const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
 const RELEASES_URL = "https://github.com/iante/scisonomics/releases";
@@ -59,7 +48,7 @@ const SETTINGS_SECTIONS = [
   { id: "cuenta", label: "Cuenta", hint: "Multicuentas" },
   { id: "sync", label: "Sincronizacion", hint: "Manual y automatica" },
   { id: "datos", label: "Datos y backups", hint: "DB, backups y restore" },
-  { id: "diagnostico", label: "Diagnostico", hint: "Salud y logs" },
+  { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
   { id: "actualizaciones", label: "Actualizaciones", hint: "Releases manuales" },
   { id: "acerca", label: "Acerca de", hint: "Version y novedades" },
 ] as const;
@@ -69,7 +58,6 @@ type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 type AppDiagnostics = {
   ok: boolean;
   version: string;
-  appearance: string;
   database_ready: boolean;
   initializing: boolean;
   database_error?: string | null;
@@ -98,6 +86,8 @@ export default function ConfiguracionPage() {
   const [info, setInfo] = useState<SettingsInfo | null>(null);
   const [diagnostics, setDiagnostics] = useState<AppDiagnostics | null>(null);
   const [syncOverview, setSyncOverview] = useState<SyncOverview | null>(null);
+  const [localIntegrity, setLocalIntegrity] = useState<LocalDbIntegrityResult | null>(null);
+  const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [restoring, setRestoring] = useState(false);
@@ -106,14 +96,9 @@ export default function ConfiguracionPage() {
   const [selectedRestorePath, setSelectedRestorePath] = useState<string | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [diagnosticText, setDiagnosticText] = useState<string | null>(null);
-  const [cloudHealth, setCloudHealth] = useState<CloudHealthResult | null>(null);
-  const [cloudSessionTest, setCloudSessionTest] = useState<CloudSessionTestResult | null>(null);
-  const [cloudSyncTest, setCloudSyncTest] = useState<CloudSyncTestResult | null>(null);
-  const [localProtectedTest, setLocalProtectedTest] = useState<LocalProtectedTestResult | null>(null);
-  const [testingCloud, setTestingCloud] = useState(false);
-  const [testingCloudSession, setTestingCloudSession] = useState(false);
-  const [testingCloudSync, setTestingCloudSync] = useState(false);
-  const [testingLocalProtected, setTestingLocalProtected] = useState(false);
+  const [checkingLocalIntegrity, setCheckingLocalIntegrity] = useState(false);
+  const [creatingLocalBackup, setCreatingLocalBackup] = useState(false);
+  const [repairingLocalDb, setRepairingLocalDb] = useState(false);
   const { showError, showSuccess } = useToast();
 
   function selectSection(section: SettingsSectionId) {
@@ -130,20 +115,20 @@ export default function ConfiguracionPage() {
     try {
       const settings = await api.settingsInfo();
       setInfo(settings);
-      const [diagnosticsResult, overviewResult] = await Promise.all([
+      const [diagnosticsResult, overviewResult, integrityResult, backupsResult] = await Promise.all([
         fetch(`${API_URL}/app/diagnostics`, { cache: "no-store", headers: await getLocalRequestHeaders() })
           .then((response) => (response.ok ? response.json() : null))
           .catch(() => null),
         fetch(`${API_URL}/sync/overview`, { cache: "no-store", headers: await getLocalRequestHeaders() })
           .then((response) => (response.ok ? response.json() : null))
           .catch(() => null),
+        getLocalDbIntegrity().catch(() => null),
+        api.backups().catch(() => null),
       ]);
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
-      setCloudHealth(getLastCloudHealthResult());
-      setCloudSessionTest(getLastCloudSessionTestResult());
-      setCloudSyncTest(getLastCloudSyncTestResult());
-      setLocalProtectedTest(getLastLocalProtectedTestResult());
+      setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
+      setBackupState(backupsResult);
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setLoadError("");
     } catch (e: any) {
@@ -272,51 +257,48 @@ export default function ConfiguracionPage() {
     }
   }
 
-  async function handleTestCloudConnection() {
-    setTestingCloud(true);
+  async function handleReviewLocalData() {
+    setCheckingLocalIntegrity(true);
     try {
-      const result = await testCloudHealth();
-      setCloudHealth(result);
-      if (result.ok) showSuccess(result.version ? `Conexion cloud OK. Version ${result.version}.` : "Conexion cloud OK.");
-      else showError(result.user_message);
+      const result = await getLocalDbIntegrity();
+      setLocalIntegrity(result);
+      if (result.status === "healthy") showSuccess("Tus datos locales estan correctos.");
+      else if (result.status === "warning") showError("Encontramos datos locales que conviene reparar antes de continuar.");
+      else showError("Tus datos locales requieren reparacion antes de sincronizar.");
+    } catch {
+      showError("No pudimos revisar tus datos locales. Cerra y volve a abrir ScisoNomics.");
     } finally {
-      setTestingCloud(false);
+      setCheckingLocalIntegrity(false);
     }
   }
 
-  async function handleTestCloudSession() {
-    setTestingCloudSession(true);
+  async function handleCreateLocalBackup() {
+    setCreatingLocalBackup(true);
     try {
-      const result = await testCloudSession();
-      setCloudSessionTest(result);
-      if (result.ok) showSuccess("Sesion cloud OK.");
-      else showError(result.user_message);
+      await createLocalBackup();
+      setBackupState(await api.backups());
+      showSuccess("Backup creado correctamente.");
+    } catch {
+      showError("No pudimos crear el backup local. Intenta nuevamente.");
     } finally {
-      setTestingCloudSession(false);
+      setCreatingLocalBackup(false);
     }
   }
 
-  async function handleTestCloudSync() {
-    setTestingCloudSync(true);
+  async function handleRepairLocalData() {
+    setRepairingLocalDb(true);
     try {
-      const result = await testCloudSync();
-      setCloudSyncTest(result);
-      if (result.ok) showSuccess("Sync cloud OK.");
-      else showError(result.user_message);
+      const result = await repairLocalDb();
+      setLocalIntegrity(await getLocalDbIntegrity());
+      setBackupState(await api.backups());
+      if (result.ok && result.unresolved_count === 0) showSuccess("Reparacion completada. No se eliminaron datos financieros.");
+      else showError("Creamos un backup, pero algunos problemas requieren revision manual.");
+    } catch {
+      setLocalIntegrity(await getLocalDbIntegrity().catch(() => null));
+      setBackupState(await api.backups().catch(() => null));
+      showError("Creamos un backup antes de revisar. Algunos problemas requieren revision manual.");
     } finally {
-      setTestingCloudSync(false);
-    }
-  }
-
-  async function handleTestLocalProtected() {
-    setTestingLocalProtected(true);
-    try {
-      const result = await testLocalProtectedService();
-      setLocalProtectedTest(result);
-      if (result.ok) showSuccess("Servicio local protegido OK.");
-      else showError(result.user_message);
-    } finally {
-      setTestingLocalProtected(false);
+      setRepairingLocalDb(false);
     }
   }
 
@@ -383,95 +365,6 @@ export default function ConfiguracionPage() {
     }
   }
 
-  function buildDiagnosticText() {
-    const session = getActiveCloudSession();
-    const owner = getActiveOwnerId();
-    const mode = owner === "local" ? "local" : "cloud";
-    const lastSync = getLastAutoSyncAt() || getLastManualSyncAt() || "sin sincronizaciones registradas";
-    const syncError = getLastSyncErrorDetails();
-    const health = cloudHealth || getLastCloudHealthResult();
-    const sessionTest = cloudSessionTest || getLastCloudSessionTestResult();
-    const syncTest = cloudSyncTest || getLastCloudSyncTestResult();
-    const syncAttempt = getLastSyncAttemptDetails();
-    const localTest = localProtectedTest || getLastLocalProtectedTestResult();
-    return [
-      "ScisoNomics diagnostico",
-      "Version: 3.0.2",
-      "Apariencia: modo oscuro fijo",
-      `Modo: ${mode}`,
-      `Cuenta activa: ${session?.user.email || "local"}`,
-      `Owner activo: ${owner}`,
-      `Backend local: ${info?.backend_ok || diagnostics?.ok ? "OK" : "Error"}`,
-      "Frontend version: 3.0.2",
-      `Backend version: ${backendVersion}`,
-      `Backend frozen: ${diagnostics?.frozen ? "si" : "no"}`,
-      `Frontend/backend mismatch: ${backendVersionMismatch ? "si" : "no"}`,
-      "Proceso backend esperado: scisonomics-backend.exe",
-      `Base de datos: ${diagnostics?.database_ready || info?.db_exists ? "OK" : diagnostics?.initializing ? "Inicializando" : "Error"}`,
-      `DB path: ${diagnostics?.database_path || info?.db_path || "no disponible"}`,
-      `Backups path: ${diagnostics?.backups_path || info?.backups_dir || "no disponible"}`,
-      `Logs path: ${diagnostics?.logs_path || info?.logs_dir || "no disponible"}`,
-      `Cloud configurado: ${isCloudAuthConfigured() ? "si" : "no"}`,
-      `Cloud API URL: ${getCloudApiUrl() || "no configurada"}`,
-      `Cloud health: ${health ? (health.ok ? "OK" : "Error") : "no probado"}`,
-      `Cloud health status code: ${health?.status_code ?? "no disponible"}`,
-      `Cloud health version: ${health?.version || "no disponible"}`,
-      `Cloud health mensaje tecnico: ${health?.technical_message || "no disponible"}`,
-      `Cloud session: ${sessionTest ? (sessionTest.ok ? "OK" : "Error") : "no probada"}`,
-      `Cloud session endpoint: ${sessionTest?.endpoint || "no disponible"}`,
-      `Cloud session method: ${sessionTest?.method || "no disponible"}`,
-      `Cloud session status code: ${sessionTest?.status_code ?? "no disponible"}`,
-      `Cloud session tipo: ${sessionTest?.type || "no disponible"}`,
-      `Cloud session timestamp: ${sessionTest?.timestamp || "no disponible"}`,
-      `Cloud session mensaje tecnico: ${sessionTest?.technical_message || "no disponible"}`,
-      `Cloud sync test: ${syncTest ? (syncTest.ok ? "OK" : "Error") : "no probado"}`,
-      `Cloud sync test endpoint: ${syncTest?.endpoint || "no disponible"}`,
-      `Cloud sync test method: ${syncTest?.method || "no disponible"}`,
-      `Cloud sync test status code: ${syncTest?.status_code ?? "no disponible"}`,
-      `Cloud sync test tipo: ${syncTest?.type || "no disponible"}`,
-      `Cloud sync test timestamp: ${syncTest?.timestamp || "no disponible"}`,
-      `Cloud sync test mensaje tecnico: ${syncTest?.technical_message || "no disponible"}`,
-      `Local protected test: ${localTest ? (localTest.ok ? "OK" : "Error") : "no probado"}`,
-      `Local protected test endpoint: ${localTest?.endpoint || "no disponible"}`,
-      `Local protected test status code: ${localTest?.status_code ?? "no disponible"}`,
-      `Local protected test token disponible: ${localTest?.security.token_available ?? "no disponible"}`,
-      `Local protected test token header agregado: ${localTest?.security.token_header_added ?? "no disponible"}`,
-      `Local protected test owner header agregado: ${localTest?.security.owner_header_added ?? "no disponible"}`,
-      `Local protected test mensaje tecnico: ${localTest?.technical_message || "no disponible"}`,
-      `Sync automatica: ${isAutoSyncEnabled() ? "activada" : "desactivada"}`,
-      `Ultima sincronizacion: ${lastSync}`,
-      `Ultimo error sync: ${getLastSyncError() || "sin errores recientes"}`,
-      `Ultimo error sync timestamp: ${syncError?.timestamp || "no disponible"}`,
-      `Ultimo error sync tipo: ${syncError?.type || "no disponible"}`,
-      `Ultimo error sync endpoint: ${syncError?.endpoint || "no disponible"}`,
-      `Ultimo error sync metodo: ${syncError?.method || "no disponible"}`,
-      `Ultimo error sync fase: ${syncError?.phase || "no disponible"}`,
-      `Ultimo error sync items: ${syncError?.items_total ?? "no disponible"}`,
-      `Ultimo error sync payload bytes aproximados: ${syncError?.payload_bytes ?? "no disponible"}`,
-      `Ultimo error sync status code: ${syncError?.status_code ?? "no disponible"}`,
-      `Ultimo error sync mensaje tecnico: ${syncError?.technical_message || "no disponible"}`,
-      `Ultimo error sync owner: ${syncError?.owner_used || "no disponible"}`,
-      `Ultimo error sync razon: ${syncError?.reason || "no disponible"}`,
-      `Ultimo error sync body construido: ${syncError?.body_constructed ?? "no disponible"}`,
-      `Ultimo error sync conteos pendientes: ${syncError?.pending_counts ? JSON.stringify(syncError.pending_counts) : "no disponible"}`,
-      `Ultimo error sync token local disponible: ${syncError?.local_security?.token_available ?? "no disponible"}`,
-      `Ultimo error sync token local agregado: ${syncError?.local_security?.token_header_added ?? "no disponible"}`,
-      `Ultimo error sync owner local agregado: ${syncError?.local_security?.owner_header_added ?? "no disponible"}`,
-      `Ultimo intento sync fase: ${syncAttempt?.phase || "no disponible"}`,
-      `Ultimo intento sync endpoint: ${syncAttempt?.endpoint || "no disponible"}`,
-      `Ultimo intento sync metodo: ${syncAttempt?.method || "no disponible"}`,
-      `Ultimo intento sync status code: ${syncAttempt?.status_code ?? "no disponible"}`,
-      `Ultimo intento sync body construido: ${syncAttempt?.body_constructed ?? "no disponible"}`,
-      `Ultimo intento sync payload bytes aproximados: ${syncAttempt?.payload_bytes ?? "no disponible"}`,
-      `Ultimo intento sync mensaje tecnico: ${syncAttempt?.technical_message || "no disponible"}`,
-      `Fecha: ${new Date().toISOString()}`,
-    ].join("\n");
-  }
-
-  async function handleCopyDiagnostics() {
-    await copyText(buildDiagnosticText(), "Diagnostico copiado.");
-  }
-
   const activeSession = getActiveCloudSession();
   const activeOwner = getActiveOwnerId();
   const currentMode = activeOwner === "local" ? "Modo local" : "Cuenta cloud";
@@ -482,7 +375,7 @@ export default function ConfiguracionPage() {
   const backendLabel = info?.backend_ok || diagnostics?.ok ? "Conectado" : diagnostics?.initializing ? "Preparando" : "Error";
   const databaseLabel = diagnostics?.database_ready || info?.db_exists ? "Lista" : diagnostics?.initializing ? "Inicializando" : "Error";
   const backendVersion = diagnostics?.version || info?.version || "no disponible";
-  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.0.2");
+  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.0.1");
   const syncLabel = activeOwner === "local"
     ? "Modo local"
     : autoSyncEnabled
@@ -502,12 +395,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
             <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
-            <p className="text-sm text-slate-400">Version 3.0.2</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Apariencia</p>
-            <p className="mt-2 text-lg font-semibold">Modo oscuro fijo</p>
-            <p className="text-sm text-slate-400">No depende del tema del sistema.</p>
+            <p className="text-sm text-slate-400">Version 3.0.1</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado</p>
@@ -634,7 +522,76 @@ export default function ConfiguracionPage() {
     );
   }
 
+  function renderDataSecuritySection() {
+    const integrityLabel = localIntegrity?.status === "healthy"
+      ? "Correcto"
+      : localIntegrity?.status === "warning"
+        ? "Necesita revision"
+        : localIntegrity?.status === "critical"
+          ? "Requiere reparacion"
+          : "Sin revisar";
+    const integrityTone = localIntegrity?.status === "healthy" ? "text-emerald-300" : localIntegrity ? "text-amber-300" : "text-slate-300";
+    const syncState = localIntegrity?.status === "critical"
+      ? "Necesita atencion"
+      : syncOverview?.has_pending
+        ? "Cambios pendientes"
+        : "Sincronizado";
+
+    return (
+      <div className="space-y-5">
+        <div>
+          <h3 className="text-2xl font-black">Datos y seguridad</h3>
+          <p className="mt-1 text-sm text-slate-400">ScisoNomics revisa tus datos locales para evitar problemas al sincronizar. Antes de reparar, siempre se crea una copia de seguridad.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado de datos locales</p>
+            <p className={`mt-2 text-lg font-semibold ${integrityTone}`}>{integrityLabel}</p>
+            <p className="mt-1 text-sm text-slate-400">{localIntegrity?.safe_summary?.[0] || "Todavia no revisamos tus datos locales."}</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sincronizacion</p>
+            <p className="mt-2 text-lg font-semibold">{syncState}</p>
+            <p className="mt-1 text-sm text-slate-400">Ultima sincronizacion: {lastSyncLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Ultimo backup</p>
+            <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavia no creaste un backup"}</p>
+            <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente.</p>
+          </div>
+        </div>
+        {localIntegrity?.status === "critical" ? (
+          <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.
+          </p>
+        ) : null}
+        {localIntegrity?.status === "warning" ? (
+          <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+            Encontramos detalles reparables en tus datos locales. Podes crear un backup y ejecutar la reparacion automatica.
+          </p>
+        ) : null}
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <button className="btn" type="button" onClick={handleReviewLocalData} disabled={checkingLocalIntegrity}>
+            {checkingLocalIntegrity ? "Revisando..." : "Revisar datos locales"}
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleCreateLocalBackup} disabled={creatingLocalBackup}>
+            {creatingLocalBackup ? "Creando backup..." : "Crear backup"}
+          </button>
+          {localIntegrity && localIntegrity.status !== "healthy" ? (
+            <button className="btn-secondary" type="button" onClick={handleRepairLocalData} disabled={repairingLocalDb}>
+              {repairingLocalDb ? "Reparando..." : "Reparar datos locales"}
+            </button>
+          ) : null}
+          <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
+          <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
+        </div>
+      </div>
+    );
+  }
+
   function renderDiagnosticoSection() {
+    return null;
+    /*
     return (
       <div className="space-y-5">
         <div>
@@ -723,7 +680,7 @@ export default function ConfiguracionPage() {
               {localProtectedTest?.endpoint ? <p className="mt-1 text-sm text-slate-300">Endpoint: {localProtectedTest.endpoint}</p> : null}
               {localProtectedTest ? (
                 <p className="mt-1 text-xs text-slate-500">
-                  Token disponible: {localProtectedTest.security.token_available ? "si" : "no"} · Header token: {localProtectedTest.security.token_header_added ? "si" : "no"} · Header owner: {localProtectedTest.security.owner_header_added ? "si" : "no"}
+                  Token disponible: {localProtectedTest.security.token_available ? "si" : "no"} | Header token: {localProtectedTest.security.token_header_added ? "si" : "no"} | Header owner: {localProtectedTest.security.owner_header_added ? "si" : "no"}
                 </p>
               ) : null}
               {localProtectedTest && !localProtectedTest.ok ? <p className="mt-2 text-sm text-amber-300">{localProtectedTest.user_message}</p> : null}
@@ -731,6 +688,28 @@ export default function ConfiguracionPage() {
             </div>
             <button className="btn-secondary" type="button" onClick={handleTestLocalProtected} disabled={testingLocalProtected}>
               {testingLocalProtected ? "Probando..." : "Probar servicio local protegido"}
+            </button>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">POST apply remoto local</p>
+              <p className="mt-2 text-sm text-slate-300">
+                Estado: {localApplyRemoteTest ? (localApplyRemoteTest.ok ? "OK" : "Error") : "No probado"}
+                {localApplyRemoteTest?.status_code ? ` - HTTP ${localApplyRemoteTest.status_code}` : ""}
+              </p>
+              {localApplyRemoteTest?.endpoint ? <p className="mt-1 text-sm text-slate-300">Endpoint: {localApplyRemoteTest.endpoint}</p> : null}
+              {localApplyRemoteTest ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Token: {localApplyRemoteTest.security.token_header_added ? "si" : "no"} | Owner: {localApplyRemoteTest.security.owner_header_added ? "si" : "no"} | Body: {localApplyRemoteTest.body_constructed ? "si" : "no"} | Parseado: {String(localApplyRemoteTest.body_parsed ?? "no disponible")} | Payload: {localApplyRemoteTest.payload_bytes} bytes
+                </p>
+              ) : null}
+              {localApplyRemoteTest && !localApplyRemoteTest.ok ? <p className="mt-2 text-sm text-amber-300">{localApplyRemoteTest.user_message}</p> : null}
+              {localApplyRemoteTest?.technical_message ? <p className="mt-1 text-xs text-slate-500">Detalle seguro: {localApplyRemoteTest.technical_message}</p> : null}
+            </div>
+            <button className="btn-secondary" type="button" onClick={handleTestLocalApplyRemote} disabled={testingLocalApplyRemote}>
+              {testingLocalApplyRemote ? "Probando..." : "Probar apply remoto local"}
             </button>
           </div>
         </div>
@@ -785,11 +764,15 @@ export default function ConfiguracionPage() {
           <button className="btn-secondary" type="button" onClick={handleTestLocalProtected} disabled={testingLocalProtected}>
             {testingLocalProtected ? "Probando..." : "Probar servicio local protegido"}
           </button>
+          <button className="btn-secondary" type="button" onClick={handleTestLocalApplyRemote} disabled={testingLocalApplyRemote}>
+            {testingLocalApplyRemote ? "Probando..." : "Probar apply remoto local"}
+          </button>
           <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
           <button className="btn-secondary" type="button" onClick={load}>Actualizar estado</button>
         </div>
       </div>
     );
+    */
   }
 
   function renderActualizacionesSection() {
@@ -801,7 +784,7 @@ export default function ConfiguracionPage() {
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Version instalada</p>
-          <p className="mt-2 text-3xl font-black text-cyan-100">3.0.2</p>
+          <p className="mt-2 text-3xl font-black text-cyan-100">3.0.1</p>
           <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta version. ScisoNomics no descarga ni reemplaza ejecutables automaticamente.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -824,9 +807,8 @@ export default function ConfiguracionPage() {
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Aplicacion</p>
             <div className="mt-3 space-y-1 text-slate-300">
               <p><strong className="text-white">ScisoNomics</strong></p>
-              <p>Version instalada: 3.0.2</p>
+              <p>Version instalada: 3.0.1</p>
               <p>Tipo: Local-first</p>
-              <p>Apariencia: modo oscuro fijo</p>
               <p>Stack: Next.js - Tauri - FastAPI - SQLite</p>
             </div>
           </div>
@@ -841,7 +823,7 @@ export default function ConfiguracionPage() {
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Novedades de v3.0.2</p>
+          <p className="font-semibold">Novedades de v3.0.1</p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
             <li>Sync endurecida con snapshot de owner por corrida.</li>
             <li>API local protegida con token de sidecar en app instalada.</li>
@@ -859,7 +841,7 @@ export default function ConfiguracionPage() {
     if (activeSection === "cuenta") return renderCuentaSection();
     if (activeSection === "sync") return renderSyncSection();
     if (activeSection === "datos") return renderDatosSection();
-    if (activeSection === "diagnostico") return renderDiagnosticoSection();
+    if (activeSection === "diagnostico") return renderDataSecuritySection();
     if (activeSection === "actualizaciones") return renderActualizacionesSection();
     if (activeSection === "acerca") return renderAcercaSection();
     return renderGeneralSection();
@@ -949,7 +931,7 @@ export default function ConfiguracionPage() {
         </div>
       </Modal>
 
-      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.0.2" onClose={() => setReleaseNotesOpen(false)}>
+      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.0.1" onClose={() => setReleaseNotesOpen(false)}>
         <div className="mt-2 space-y-2 text-sm text-slate-300">
           <p>Esta version se enfoca en estabilizacion, seguridad y hardening de sincronizacion.</p>
           <ul className="list-disc space-y-1 pl-5">

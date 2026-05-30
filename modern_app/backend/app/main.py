@@ -42,7 +42,7 @@ from .deps import ensure_app_data_initialized, get_database_readiness, get_last_
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="3.0.2")
+app = FastAPI(title="Registro Finanzas API", version="3.0.1")
 _LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token"
 _LOCAL_TOKEN = os.getenv("SCISONOMICS_LOCAL_TOKEN", "").strip()
 _DEV_MODE_WITHOUT_LOCAL_TOKEN = not _LOCAL_TOKEN and not bool(getattr(sys, "frozen", False))
@@ -91,7 +91,10 @@ app.add_middleware(
 @app.middleware("http")
 async def owner_context_middleware(request: Request, call_next):
     if request.method != "OPTIONS" and not _is_public_path(request.url.path):
-        _require_local_token(request)
+        try:
+            _require_local_token(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     token = set_current_owner_id(request.headers.get("X-Scisonomics-Owner-Id"))
     try:
         return await call_next(request)
@@ -253,7 +256,6 @@ def app_diagnostics():
     return {
         "ok": bool(status.get("database_ready", False)),
         "version": app.version,
-        "appearance": "modo oscuro fijo",
         "database_ready": bool(status.get("database_ready", False)),
         "initializing": bool(status.get("initializing", False)),
         "database_error": status.get("database_error"),
@@ -1410,6 +1412,196 @@ def _remote_meta_values(item: dict[str, Any]) -> tuple[Any, Any, Any]:
 
 SYNC_TABLES = ("categorias", "movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
 CLAIMABLE_LOCAL_DATA_TABLES = ("movimientos", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos")
+EXPECTED_LOCAL_COLUMNS: dict[str, set[str]] = {
+    "categorias": {"id", "nombre", "tipo", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "movimientos": {"id", "fecha", "tipo", "categoria_id", "monto", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "metas_ahorro": {"id", "nombre", "monto_objetivo", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "gastos_programados": {"id", "descripcion", "categoria_id", "monto_estimado", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "gastos_fijos": {"id", "categoria_id", "monto", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+    "presupuestos": {"id", "categoria_id", "mes", "anio", "monto", "owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"},
+}
+
+
+def _db_integrity_issue(code: str, severity: str, table: str | None, count: int, repairable: bool) -> dict[str, Any]:
+    return {"code": code, "severity": severity, "table": table, "count": count, "repairable": repairable}
+
+
+def _open_local_db(read_only: bool = False) -> sqlite3.Connection:
+    if read_only:
+        conn = sqlite3.connect(f"{WEB_DB_PATH.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+    else:
+        conn = sqlite3.connect(WEB_DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _local_db_integrity_report() -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    if not WEB_DB_PATH.exists():
+        issues.append(_db_integrity_issue("database_missing", "critical", None, 1, False))
+        return _build_local_db_integrity_response(issues)
+
+    try:
+        with _open_local_db(read_only=True) as conn:
+            table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            existing_tables = {str(row["name"]) for row in table_rows}
+            for table, required_columns in EXPECTED_LOCAL_COLUMNS.items():
+                if table not in existing_tables:
+                    issues.append(_db_integrity_issue("missing_table", "critical", table, 1, False))
+                    continue
+                columns = _table_columns(conn, table)
+                for column in sorted(required_columns - columns):
+                    issues.append(_db_integrity_issue(f"missing_column_{column}", "critical", table, 1, False))
+
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                issues.append(_db_integrity_issue("foreign_key_violation", "critical", None, len(fk_issues), False))
+
+            integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+            if not integrity_row or str(integrity_row[0]).lower() != "ok":
+                issues.append(_db_integrity_issue("sqlite_integrity_check_failed", "critical", None, 1, False))
+
+            for table in SYNC_TABLES:
+                if table not in existing_tables:
+                    continue
+                columns = _table_columns(conn, table)
+                if "owner_user_id" in columns:
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''").fetchone()[0] or 0)
+                    if count:
+                        issues.append(_db_integrity_issue("missing_owner_user_id", "critical", table, count, False))
+                for column in ("created_at", "updated_at"):
+                    if column not in columns:
+                        continue
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IS NULL OR trim({column}) = '' OR datetime({column}) IS NULL").fetchone()[0] or 0)
+                    if count:
+                        issues.append(_db_integrity_issue(f"invalid_{column}", "warning", table, count, True))
+                if "deleted_at" in columns:
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NOT NULL AND trim(deleted_at) <> '' AND datetime(deleted_at) IS NULL").fetchone()[0] or 0)
+                    if count:
+                        issues.append(_db_integrity_issue("invalid_deleted_at", "warning", table, count, False))
+                if "sync_status" in columns:
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')").fetchone()[0] or 0)
+                    if count:
+                        issues.append(_db_integrity_issue("invalid_sync_status", "warning", table, count, True))
+                if "sync_id" in columns:
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchone()[0] or 0)
+                    if count:
+                        issues.append(_db_integrity_issue("missing_sync_id", "warning", table, count, True))
+                    duplicates = conn.execute(
+                        f"SELECT COUNT(*) FROM (SELECT sync_id FROM {table} WHERE sync_id IS NOT NULL AND trim(sync_id) <> '' GROUP BY sync_id HAVING COUNT(*) > 1)"
+                    ).fetchone()
+                    duplicate_count = int(duplicates[0] or 0)
+                    if duplicate_count:
+                        issues.append(_db_integrity_issue("duplicate_sync_id", "critical", table, duplicate_count, False))
+    except sqlite3.Error as exc:
+        _logger.exception("Fallo chequeo de integridad local. error_type=%s", type(exc).__name__)
+        issues.append(_db_integrity_issue("database_unreadable", "critical", None, 1, False))
+
+    return _build_local_db_integrity_response(issues)
+
+
+def _build_local_db_integrity_response(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    critical_count = sum(int(issue["count"]) for issue in issues if issue["severity"] == "critical")
+    warning_count = sum(int(issue["count"]) for issue in issues if issue["severity"] == "warning")
+    repairable_count = sum(int(issue["count"]) for issue in issues if issue["repairable"])
+    status = "critical" if critical_count else "warning" if warning_count else "healthy"
+    summary = ["No se encontraron problemas."] if status == "healthy" else [
+        "Encontramos datos locales que necesitan una revision." if status == "warning" else "Encontramos problemas locales que requieren reparacion antes de sincronizar."
+    ]
+    return {
+        "ok": status != "critical",
+        "status": status,
+        "issues_count": critical_count + warning_count,
+        "warnings_count": warning_count,
+        "repairable_count": repairable_count,
+        "backup_recommended": status != "healthy",
+        "safe_summary": summary,
+        "issues": issues,
+    }
+
+
+def _create_local_backup() -> Path:
+    if not WEB_DB_PATH.exists():
+        raise HTTPException(status_code=404, detail="No existe una base de datos local para respaldar.")
+    backup_dir = get_backup_dir()
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = backup_dir / f"finanzas_backup_{stamp}.db"
+    if target.exists():
+        target = backup_dir / f"finanzas_backup_{stamp}_{uuid4().hex[:8]}.db"
+    with _open_local_db(read_only=True) as source, sqlite3.connect(target) as destination:
+        source.backup(destination)
+    return target
+
+
+@app.get("/local/db-integrity")
+def local_db_integrity():
+    report = _local_db_integrity_report()
+    _logger.info("[db-integrity] status=%s issue_codes=%s", report["status"], [issue["code"] for issue in report["issues"]])
+    return report
+
+
+@app.post("/local/backup")
+def local_backup():
+    created = _create_local_backup()
+    _logger.info("[db-backup] created=%s", created.name)
+    return {"ok": True, "backup_path": str(created), "created_at": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.post("/local/db-repair")
+def local_db_repair():
+    backup = _create_local_backup()
+    before = _local_db_integrity_report()
+    _logger.info("[db-repair] start issue_codes=%s", [issue["code"] for issue in before["issues"]])
+    if any(issue["severity"] == "critical" for issue in before["issues"]):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "backup_created": True,
+                "repaired_count": 0,
+                "unresolved_count": before["issues_count"],
+                "safe_summary": ["Se creo un backup antes de revisar.", "Encontramos problemas que requieren revision manual.", "Tus datos no fueron modificados."],
+            },
+        )
+
+    repaired_count = 0
+    now = datetime.now().isoformat(timespec="seconds")
+    with _open_local_db() as conn:
+        for table in SYNC_TABLES:
+            columns = _table_columns(conn, table)
+            if "created_at" in columns:
+                cursor = conn.execute(f"UPDATE {table} SET created_at = ? WHERE created_at IS NULL OR trim(created_at) = '' OR datetime(created_at) IS NULL", (now,))
+                repaired_count += max(cursor.rowcount, 0)
+            if "updated_at" in columns:
+                cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
+                repaired_count += max(cursor.rowcount, 0)
+            if "sync_status" in columns:
+                cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')")
+                repaired_count += max(cursor.rowcount, 0)
+            if "sync_id" in columns:
+                rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
+                for row in rows:
+                    conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
+                repaired_count += len(rows)
+
+    after = _local_db_integrity_report()
+    unresolved_count = int(after["issues_count"])
+    _logger.info("[db-repair] finish repaired=%s unresolved=%s issue_codes=%s", repaired_count, unresolved_count, [issue["code"] for issue in after["issues"]])
+    return {
+        "ok": after["status"] != "critical",
+        "backup_created": True,
+        "backup_path": str(backup),
+        "repaired_count": repaired_count,
+        "unresolved_count": unresolved_count,
+        "safe_summary": ["Se creo un backup antes de reparar.", "No se eliminaron datos financieros."] + list(after["safe_summary"]),
+    }
 
 
 def _local_category_ids_for_claim(conn: sqlite3.Connection) -> list[int]:
@@ -1608,10 +1800,47 @@ async def sync_mark_synced(request: Request, service: FinanceService = Depends(g
     return {"ok": True, "marked": {table: len(values) for table, values in accepted.items()}}
 
 
-@app.post("/sync/apply-remote")
-async def sync_apply_remote(request: Request, service: FinanceService = Depends(get_service)):
+async def _parse_remote_payload(request: Request) -> tuple[dict[str, Any], int, dict[str, int]]:
+    if "application/json" not in request.headers.get("content-type", "").lower():
+        raise HTTPException(status_code=415, detail="El Content-Type debe ser application/json.")
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="El body JSON para aplicar datos remotos no es valido.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="El body para aplicar datos remotos debe ser un objeto JSON.")
+    counts: dict[str, int] = {}
+    for table in SYNC_TABLES:
+        items = payload.get(table, [])
+        if items is None:
+            items = []
+        if not isinstance(items, list):
+            raise HTTPException(status_code=422, detail=f"El campo {table} debe ser una lista.")
+        payload[table] = items
+        counts[table] = len(items)
+    return payload, len(raw_body), counts
+
+
+@app.post("/sync/apply-remote/check")
+async def sync_apply_remote_check(request: Request):
     owner = _require_cloud_owner()
-    payload = await request.json()
+    _, body_size_bytes, counts = await _parse_remote_payload(request)
+    return {
+        "ok": True,
+        "token_present": bool(request.headers.get(_LOCAL_TOKEN_HEADER)),
+        "owner_present": bool(owner),
+        "body_size_bytes": body_size_bytes,
+        "body_parsed": True,
+        "remote_total": sum(counts.values()),
+        "counts_by_entity": counts,
+        "message": "El POST local protegido y el body JSON son validos.",
+    }
+
+
+async def _sync_apply_remote_impl(request: Request, service: FinanceService):
+    owner = _require_cloud_owner()
+    payload, _, _ = await _parse_remote_payload(request)
     now = datetime.now().isoformat(timespec="seconds")
     result: dict[str, Any] = {
         f"{table}_{suffix}": 0
@@ -1804,6 +2033,17 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
         "applied_remote_total": int(result.get("applied_remote_total", 0)),
         "kept_local_total": int(result.get("kept_local_total", 0)),
     }
+
+
+@app.post("/sync/apply-remote")
+async def sync_apply_remote(request: Request, service: FinanceService = Depends(get_service)):
+    try:
+        return await _sync_apply_remote_impl(request, service)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.exception("Error aplicando datos remotos. owner=%s error_type=%s", _current_owner(), type(exc).__name__)
+        raise HTTPException(status_code=500, detail="No se pudieron aplicar los datos remotos en el servicio local.") from exc
 
 
 @app.post("/backup/export")

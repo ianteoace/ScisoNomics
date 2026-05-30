@@ -79,4 +79,4 @@ Desde v2.8.0 el cliente desktop puede guardar varias cuentas cloud en el mismo d
 
 Desde v2.9.0 Google Login esta disponible como metodo opcional. El backend cloud genera `login_request_id`, redirige a Google con `state`, recibe el callback, vincula por `google_sub` o email existente y emite el mismo JWT propio de ScisoNomics. Si faltan variables `SCISONOMICS_GOOGLE_CLIENT_ID`, `SCISONOMICS_GOOGLE_CLIENT_SECRET` o `SCISONOMICS_GOOGLE_REDIRECT_URI`, `/auth/google/start` devuelve error controlado. No guardar secretos de Google en frontend/Tauri.
 
-Desde v3.0.2 se mantiene Google Login, email/password y sync por JWT, con hardening de polling Google one-time-use, CORS mas explicito y logs con menos PII.
+Desde v3.0.1 se mantiene Google Login, email/password y sync por JWT, con hardening de polling Google one-time-use, CORS mas explicito y logs con menos PII.

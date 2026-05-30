@@ -17,9 +17,6 @@ export function Topbar() {
       <div className="flex-1 text-center">
         <p className="text-xl font-extrabold tracking-tight" style={{ color: "rgb(var(--warn))" }}>ScisoNomics</p>
       </div>
-      <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-400">
-        Modo oscuro fijo
-      </div>
     </header>
   );
 }

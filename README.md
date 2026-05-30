@@ -8,18 +8,18 @@ Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, 
 
 ## Descarga
 
-Versión estable actual: **v3.0.2**
+Versión estable actual: **v3.0.1**
 
-[Descargar ScisoNomics v3.0.2](../../releases/tag/v3.0.2)
+[Descargar ScisoNomics v3.0.1](../../releases/tag/v3.0.1)
 
 ### Actualizar manualmente
 
 - Cerra ScisoNomics antes de instalar una version nueva.
-- El instalador de v3.0.2 mantiene el cierre del sidecar y suma hardening de seguridad local/sync.
+- El instalador de v3.0.1 mantiene el cierre del sidecar y suma hardening de seguridad local/sync.
 - Si Windows informa que hay archivos en uso, cancela la instalacion y cerra los procesos desde el Administrador de tareas.
 - No uses "Omitir" en archivos de ScisoNomics durante el instalador; podria quedar una app nueva con backend viejo.
 - Actualizar la app no borra la base local, backups ni logs.
-- Instalador esperado en Windows: `ScisoNomics_3.0.2_x64-setup.exe`.
+- Instalador esperado en Windows: `ScisoNomics_3.0.1_x64-setup.exe`.
 - Procesos esperados a cerrar si hace falta:
   - `ScisoNomics.exe`
   - `scisonomics-backend.exe`
@@ -27,7 +27,7 @@ Versión estable actual: **v3.0.2**
 
 ---
 
-## Novedades de v3.0.2
+## Novedades de v3.0.1
 
 - Hardening de sync para evitar mezcla de cuentas si cambia el owner durante una sincronizacion.
 - Token local por sesion para proteger la API del sidecar en app instalada.

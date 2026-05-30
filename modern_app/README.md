@@ -11,7 +11,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 - Si no existe ninguna, la API responde error claro: `No se encontro la base de datos.`
 - Desde v2.8.0 el cliente soporta varias cuentas cloud guardadas en el mismo dispositivo. El modo sin cuenta usa el owner `local`; cada cuenta cloud usa su `user_id`, y solo una cuenta queda activa a la vez.
 - Desde v2.9.0 se puede agregar una cuenta cloud con Google Login. El OAuth lo maneja el backend cloud; el frontend solo abre el navegador externo y nunca guarda secretos de Google.
-- Desde v3.0.2 la app mantiene modo oscuro fijo y suma hardening de sync, auth cloud y API local del sidecar.
+- Desde v3.0.1 la app suma hardening de sync, auth cloud y API local del sidecar.
 
 ## Estructura
 
@@ -86,12 +86,12 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health` o `/debug/db-path`, y al cerrar la app termina el proceso backend.
 
-En v3.0.2 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
+En v3.0.1 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
 - `ScisoNomics.exe`
 - `scisonomics-backend.exe`
 - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
 
-No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.0.2_x64-setup.exe`.
+No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.0.1_x64-setup.exe`.
 
 ### Desarrollo
 
@@ -138,7 +138,7 @@ npm run tauri:build
 - En v2.5 se agrega metadata de origen por dispositivo, deteccion basica de conflictos, registro local `sync_conflicts` y vista de dispositivos vinculados. La resolucion sigue siendo last-write-wins.
 - En v2.6 la sincronizacion automatica tambien consulta cambios remotos aunque no haya pendientes locales. Se ejecuta al iniciar, por intervalo, al recuperar foco y despues de cambios locales. Tambien se mejora visualmente el dashboard.
 - En v3.0.0 se fija el modo oscuro, se elimina el selector claro/oscuro, se expone diagnostico seguro desde Configuracion > Acerca de ScisoNomics y las actualizaciones se realizan manualmente desde GitHub Releases.
-- En v3.0.2 se agrega estabilizacion de sync/auth: snapshot de owner por corrida, token local para el sidecar en app instalada y Google Login one-time-use.
+- En v3.0.1 se agrega estabilizacion de sync/auth: snapshot de owner por corrida, token local para el sidecar en app instalada y Google Login one-time-use.
 
 ## Rutas locales principales
 

@@ -10,6 +10,7 @@ const LAST_CLOUD_SESSION_TEST_KEY = "scisonomics_last_cloud_session_test";
 const LAST_CLOUD_SYNC_TEST_KEY = "scisonomics_last_cloud_sync_test";
 const LAST_SYNC_ATTEMPT_KEY = "scisonomics_last_sync_attempt";
 const LAST_LOCAL_PROTECTED_TEST_KEY = "scisonomics_last_local_protected_test";
+const LAST_LOCAL_APPLY_CHECK_KEY = "scisonomics_last_local_apply_check";
 const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
 const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
@@ -133,6 +134,7 @@ export type SyncDiagnosticPhase =
   | "cloud_pull"
   | "local_apply_remote"
   | "local_mark_synced"
+  | "local_integrity"
   | "health"
   | "session"
   | "sync_health"
@@ -179,6 +181,33 @@ export type LocalProtectedTestResult = {
   technical_message: string;
   timestamp: string;
   security: LocalRequestSecurity;
+};
+
+export type LocalApplyRemoteCheckResult = {
+  ok: boolean;
+  endpoint: string;
+  method: "POST";
+  status_code: number | null;
+  user_message: string;
+  technical_message: string;
+  timestamp: string;
+  security: LocalRequestSecurity;
+  body_constructed: boolean;
+  payload_bytes: number;
+  body_parsed: boolean | null;
+  remote_total: number;
+  counts_by_entity: Record<SyncTable, number>;
+};
+
+export type LocalDbIntegrityResult = {
+  ok: boolean;
+  status: "healthy" | "warning" | "critical";
+  issues_count: number;
+  warnings_count: number;
+  repairable_count: number;
+  backup_recommended: boolean;
+  safe_summary: string[];
+  issues: Array<{ code: string; severity: "warning" | "critical"; table: string | null; count: number; repairable: boolean }>;
 };
 
 type SyncRunSnapshot = {
@@ -410,16 +439,33 @@ async function localGet<T>(path: string, ownerId?: string, phase?: SyncDiagnosti
 async function localPost<T>(path: string, payload: unknown, ownerId?: string, phase?: SyncDiagnosticPhase): Promise<T> {
   const endpoint = `${API_URL}${path}`;
   let security: LocalRequestSecurity | null = null;
+  let body: string | null = null;
+  let payloadBytes: number | null = null;
+  const entityCounts = phase === "local_apply_remote" && typeof payload === "object" && payload !== null
+    ? countByTable(payload as Partial<Record<SyncTable, unknown[]>>)
+    : null;
   try {
+    body = JSON.stringify(payload);
+    payloadBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(body).byteLength : body.length;
     const request = await getLocalRequestSecurity({ "Content-Type": "application/json" }, ownerId, Boolean(phase));
     security = request.security;
     const response = await fetch(endpoint, {
       method: "POST",
       cache: "no-store",
       headers: request.headers,
-      body: JSON.stringify(payload),
+      body,
     });
-    return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.", { cloud: Boolean(phase), method: "POST", phase, ownerUsed: ownerId, localSecurity: security });
+    return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.", {
+      cloud: Boolean(phase),
+      method: "POST",
+      phase,
+      ownerUsed: ownerId,
+      localSecurity: security,
+      bodyConstructed: true,
+      payloadBytes,
+      itemsTotal: entityCounts ? totalCount(entityCounts) : null,
+      pendingCounts: entityCounts,
+    });
   } catch (error) {
     if (!phase) throw error;
     if (error instanceof CloudSyncError) {
@@ -438,6 +484,10 @@ async function localPost<T>(path: string, payload: unknown, ownerId?: string, ph
       phase,
       ownerUsed: ownerId,
       localSecurity: security,
+      bodyConstructed: body !== null,
+      payloadBytes,
+      itemsTotal: entityCounts ? totalCount(entityCounts) : null,
+      pendingCounts: entityCounts,
       userMessage: type === "network" && phase === "local_apply_remote"
         ? "La sincronizacion cloud funciono, pero fallo la comunicacion con el servicio local al aplicar datos remotos. Puede ser token local, CORS local o backend local no disponible."
         : undefined,
@@ -836,6 +886,16 @@ export function getLastLocalProtectedTestResult(): LocalProtectedTestResult | nu
   }
 }
 
+export function getLastLocalApplyRemoteCheckResult(): LocalApplyRemoteCheckResult | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_LOCAL_APPLY_CHECK_KEY);
+    return raw ? (JSON.parse(raw) as LocalApplyRemoteCheckResult) : null;
+  } catch {
+    return null;
+  }
+}
+
 function setLastCloudSessionTestResult(value: CloudSessionTestResult) {
   if (typeof window === "undefined") return;
   try {
@@ -944,6 +1004,16 @@ function setLastLocalProtectedTestResult(value: LocalProtectedTestResult) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(LAST_LOCAL_PROTECTED_TEST_KEY, JSON.stringify(value));
+  } catch {
+    // El diagnostico local no debe bloquear la app.
+  }
+  emitSyncStateChanged();
+}
+
+function setLastLocalApplyRemoteCheckResult(value: LocalApplyRemoteCheckResult) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_LOCAL_APPLY_CHECK_KEY, JSON.stringify(value));
   } catch {
     // El diagnostico local no debe bloquear la app.
   }
@@ -1172,6 +1242,61 @@ export async function testLocalProtectedService(): Promise<LocalProtectedTestRes
   }
 }
 
+export async function testLocalApplyRemote(): Promise<LocalApplyRemoteCheckResult> {
+  const timestamp = nowIso();
+  const endpoint = `${API_URL}/sync/apply-remote/check`;
+  const ownerId = getActiveOwnerId();
+  const counts = Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) as Record<SyncTable, number>;
+  const payload = Object.fromEntries(SYNC_TABLES.map((table) => [table, []])) as unknown as Record<SyncTable, unknown[]>;
+  const body = JSON.stringify(payload);
+  const payloadBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(body).byteLength : body.length;
+  let security = getLocalRequestSecuritySnapshot(ownerId);
+  try {
+    const request = await getLocalRequestSecurity({ "Content-Type": "application/json" }, ownerId, true);
+    security = request.security;
+    const response = await fetch(endpoint, { method: "POST", cache: "no-store", headers: request.headers, body });
+    const responseBody = await response.json().catch(() => null);
+    const result: LocalApplyRemoteCheckResult = {
+      ok: response.ok && Boolean(responseBody?.ok),
+      endpoint,
+      method: "POST",
+      status_code: response.status,
+      user_message: response.ok ? "Apply remoto local protegido OK." : response.status === 401 || response.status === 403
+        ? "No se pudo autenticar contra el servicio local."
+        : "El servicio local no pudo validar el POST de apply remoto.",
+      technical_message: response.ok ? safeTechnicalMessage(responseBody?.message || "Local apply remote check OK.") : safeTechnicalMessage(responseBody?.detail || `HTTP ${response.status}`),
+      timestamp,
+      security,
+      body_constructed: true,
+      payload_bytes: payloadBytes,
+      body_parsed: typeof responseBody?.body_parsed === "boolean" ? responseBody.body_parsed : null,
+      remote_total: Number(responseBody?.remote_total || 0),
+      counts_by_entity: (responseBody?.counts_by_entity || counts) as Record<SyncTable, number>,
+    };
+    setLastLocalApplyRemoteCheckResult(result);
+    return result;
+  } catch (error) {
+    security = getLocalRequestSecuritySnapshot(ownerId);
+    const result: LocalApplyRemoteCheckResult = {
+      ok: false,
+      endpoint,
+      method: "POST",
+      status_code: null,
+      user_message: "No pudimos completar el POST local de apply remoto. Puede ser CORS local, token local o backend local no disponible.",
+      technical_message: safeTechnicalMessage(error),
+      timestamp,
+      security,
+      body_constructed: true,
+      payload_bytes: payloadBytes,
+      body_parsed: null,
+      remote_total: 0,
+      counts_by_entity: counts,
+    };
+    setLastLocalApplyRemoteCheckResult(result);
+    return result;
+  }
+}
+
 export async function getLocalPending() {
   return localGet<SyncPayload>("/sync/pending");
 }
@@ -1270,9 +1395,15 @@ function makeSyncId() {
 }
 
 function friendlySyncError(error: unknown) {
-  if (error instanceof CloudSyncError) return error.details.user_message;
+  if (error instanceof CloudSyncError) {
+    if (error.details.phase === "local_apply_remote") {
+      return "No pudimos completar la sincronizacion porque encontramos un problema con los datos locales. Tus datos siguen guardados en este dispositivo. Proba reparar los datos locales y sincroniza nuevamente.";
+    }
+    return error.details.user_message;
+  }
   const message = error instanceof Error ? error.message : String(error || "");
   const normalized = message.toLowerCase();
+  if (normalized.includes("datos locales necesitan una revision")) return message;
   if (
     normalized.includes("failed to fetch") ||
     normalized.includes("networkerror") ||
@@ -1299,8 +1430,27 @@ function emptyPayloadFromPending(pending: SyncPayload) {
   return Object.fromEntries(SYNC_TABLES.map((table) => [table, pending[table] || []])) as Record<SyncTable, unknown[]>;
 }
 
+function normalizedSyncPayload(payload: Partial<Record<SyncTable, unknown[]>>): SyncPayload {
+  return {
+    ok: true,
+    ...Object.fromEntries(SYNC_TABLES.map((table) => [table, Array.isArray(payload[table]) ? payload[table] : []])),
+  } as SyncPayload;
+}
+
 export function isSyncInFlight() {
   return syncInFlight;
+}
+
+export async function getLocalDbIntegrity(ownerId?: string) {
+  return localGet<LocalDbIntegrityResult>("/local/db-integrity", ownerId, "local_integrity");
+}
+
+export async function createLocalBackup() {
+  return localPost<{ ok: boolean; backup_path: string; created_at: string }>("/local/backup", {});
+}
+
+export async function repairLocalDb() {
+  return localPost<{ ok: boolean; backup_created: boolean; backup_path?: string; repaired_count: number; unresolved_count: number; safe_summary: string[] }>("/local/db-repair", {});
 }
 
 export async function runSync(token: string, userEmail?: string, mode: SyncMode = "manual") {
@@ -1338,18 +1488,26 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   console.info(`${LOG_PREFIX} start`, {
     cloudApiUrl: snapshot.cloudApiUrl,
     hasToken: Boolean(token),
-    user: userEmail || "usuario autenticado",
+    hasUser: Boolean(userEmail),
     mode,
     reason,
     ownerId: snapshot.ownerId,
   });
 
   try {
+    const integrity = await getLocalDbIntegrity(snapshot.ownerId);
+    if (integrity.status === "critical") {
+      console.warn(`${LOG_PREFIX} blocked: local integrity critical`, { issueCodes: integrity.issues.map((issue) => issue.code) });
+      throw new Error("No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.");
+    }
+    if (integrity.status === "warning") {
+      console.warn(`${LOG_PREFIX} local integrity warning`, { issueCodes: integrity.issues.map((issue) => issue.code) });
+    }
     deviceInfo = await localGet<DeviceInfo>("/device/info", snapshot.ownerId, "local_device_info");
     const pending = await localGet<SyncPayload>("/sync/pending", snapshot.ownerId, "local_pending");
     pendingCounts = countByTable(pending);
     deletedCounts = countDeletedByTable(pending);
-    console.info(`${LOG_PREFIX} pending`, { user: userEmail || "usuario autenticado", mode, reason, device: deviceInfo.device_id, ...pendingCounts });
+    console.info(`${LOG_PREFIX} pending`, { hasUser: Boolean(userEmail), mode, reason, device: deviceInfo.device_id, ...pendingCounts });
 
     const pushResult = await cloudPost<{
       ok: boolean;
@@ -1372,7 +1530,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     const counts = pushResult.counts || {};
     const acceptedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, accepted[table].length])) as Record<SyncTable, number>;
     console.info(`${LOG_PREFIX} push result`, {
-      user: userEmail || "usuario autenticado",
+      hasUser: Boolean(userEmail),
       mode,
       counts,
       acceptedCounts,
@@ -1399,13 +1557,14 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
     }
 
-    const remote = await cloudGet<SyncPayload>("/sync/pull", token, {
+    const remoteResponse = await cloudGet<SyncPayload>("/sync/pull", token, {
       phase: "cloud_pull",
       itemsTotal: 0,
       ownerUsed: snapshot.ownerId,
       reason,
       pendingCounts,
     });
+    const remote = normalizedSyncPayload(remoteResponse);
     const pulledCounts = countByTable(remote);
     console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
     type ApplyRemoteResult = {
