@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -98,6 +98,47 @@ fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
 
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
 
+#[cfg(target_os = "windows")]
+fn backend_process_is_running(pid: u32) -> bool {
+  use std::ffi::c_void;
+
+  const SYNCHRONIZE: u32 = 0x0010_0000;
+  const WAIT_TIMEOUT: u32 = 258;
+
+  #[link(name = "kernel32")]
+  extern "system" {
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> *mut c_void;
+    fn WaitForSingleObject(handle: *mut c_void, milliseconds: u32) -> u32;
+    fn CloseHandle(handle: *mut c_void) -> i32;
+  }
+
+  unsafe {
+    let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+    if handle.is_null() {
+      return false;
+    }
+    let result = WaitForSingleObject(handle, 0);
+    CloseHandle(handle);
+    result == WAIT_TIMEOUT
+  }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn backend_process_is_running(_pid: u32) -> bool {
+  false
+}
+
+fn wait_for_backend_exit(pid: u32) {
+  let deadline = Instant::now() + Duration::from_secs(3);
+  while backend_process_is_running(pid) {
+    if Instant::now() >= deadline {
+      log::warn!("El sidecar backend PID {pid} no termino dentro del timeout de cierre.");
+      return;
+    }
+    std::thread::sleep(Duration::from_millis(100));
+  }
+}
+
 fn stop_backend_sidecar(backend_child: &BackendChild) {
   let child = match backend_child.lock() {
     Ok(mut guard) => guard.take(),
@@ -110,7 +151,10 @@ fn stop_backend_sidecar(backend_child: &BackendChild) {
   if let Some(child) = child {
     let pid = child.pid();
     match child.kill() {
-      Ok(()) => log::info!("Sidecar backend cerrado correctamente. PID: {pid}"),
+      Ok(()) => {
+        wait_for_backend_exit(pid);
+        log::info!("Sidecar backend cerrado correctamente. PID: {pid}");
+      }
       Err(error) => log::error!("No se pudo cerrar el sidecar backend PID {pid}: {error}"),
     }
   }
