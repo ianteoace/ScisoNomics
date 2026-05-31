@@ -35,8 +35,9 @@ Endpoints utilitarios:
 - `GET /ready`
 - `GET /app/paths`
 - `GET /app/diagnostics`
-- `GET /debug/db-path`
 - `GET /meta`
+
+`GET /debug/db-path` queda deshabilitado por defecto. Para habilitarlo temporalmente en un entorno controlado, definir `SCISONOMICS_ENABLE_DEBUG_ENDPOINTS=true`.
 
 Docs Swagger:
 - `http://127.0.0.1:8000/docs`
@@ -87,7 +88,7 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 ## 4) Desktop (Tauri, Windows)
 
-Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health` o `/debug/db-path`, y al cerrar la app termina el proceso backend.
+Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health`, y al cerrar la app termina el proceso backend.
 
 En v3.0.1 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
 - `ScisoNomics.exe`

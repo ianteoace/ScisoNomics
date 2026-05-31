@@ -14,7 +14,7 @@ from pathlib import Path
 from contextlib import closing
 from contextvars import ContextVar
 
-from .db import Database
+from .db import CURRENT_SCHEMA_VERSION, Database
 
 _logger = logging.getLogger("scisonomics.backup")
 
@@ -140,6 +140,9 @@ class FinanceService:
             self._require_owned_record(conn, "tags", tag_id, "Una etiqueta seleccionada")
 
     def _soft_delete(self, conn: sqlite3.Connection, table: str, row_id: int) -> int:
+        # Validar ownership antes del soft-delete evita responder exito silencioso
+        # cuando un ID pertenece a otra cuenta o ya no esta activo.
+        self._require_owned_record(conn, table, row_id, "El registro seleccionado")
         result = conn.execute(
             f"""
             UPDATE {table}
@@ -191,6 +194,7 @@ class FinanceService:
             raise ValueError("El tipo de categoria es obligatorio.")
         try:
             with self.db.connect() as conn:
+                self._require_owned_record(conn, "categorias", categoria_id, "La categoria seleccionada")
                 conn.execute(
                     "UPDATE categorias SET nombre = ?, tipo = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                     (nombre, tipo, categoria_id, self._owner_id()),
@@ -447,6 +451,7 @@ class FinanceService:
         if not nombre:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
+            self._require_owned_record(conn, "tags", tag_id, "La etiqueta seleccionada")
             conn.execute(
                 "UPDATE tags SET nombre = ?, color = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                 (nombre, data.color, tag_id, self._owner_id()),
@@ -454,6 +459,7 @@ class FinanceService:
 
     def delete_tag(self, tag_id: int) -> None:
         with self.db.connect() as conn:
+            self._require_owned_record(conn, "tags", tag_id, "La etiqueta seleccionada")
             conn.execute(
                 "UPDATE tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                 (tag_id, self._owner_id()),
@@ -507,6 +513,7 @@ class FinanceService:
 
     def update_meta_ahorro(self, meta_id: int, data: MetaAhorroInput) -> None:
         with self.db.connect() as conn:
+            self._require_owned_record(conn, "metas_ahorro", meta_id, "La meta seleccionada")
             conn.execute(
                 """
                 UPDATE metas_ahorro
@@ -519,6 +526,7 @@ class FinanceService:
 
     def delete_meta_ahorro(self, meta_id: int) -> None:
         with self.db.connect() as conn:
+            self._require_owned_record(conn, "metas_ahorro", meta_id, "La meta seleccionada")
             conn.execute(
                 "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ? AND owner_user_id = ?",
                 (meta_id, self._owner_id()),
@@ -670,14 +678,25 @@ class FinanceService:
         raise RuntimeError("No se pudo crear una copia de seguridad previa.")
 
     def _validate_scisonomics_db(self, path: Path) -> None:
+        sync_columns = {"owner_user_id", "sync_id", "created_at", "updated_at", "deleted_at", "sync_status"}
         required_columns = {
-            "categorias": {"id", "nombre", "tipo", "owner_user_id"},
-            "movimientos": {"id", "fecha", "tipo", "categoria_id", "monto", "owner_user_id"},
-            "gastos_fijos": {"id", "categoria_id", "monto", "owner_user_id"},
-            "gastos_programados": {"id", "categoria_id", "monto_estimado", "owner_user_id"},
-            "presupuestos": {"id", "categoria_id", "mes", "anio", "monto", "owner_user_id"},
-            "metas_ahorro": {"id", "nombre", "monto_objetivo", "owner_user_id"},
+            # Restore debe aceptar solo el esquema sincronizable actual. Permitir
+            # una DB parcial reintroduciria inconsistencias que ya fueron migradas.
+            "categorias": {"id", "nombre", "tipo", *sync_columns},
+            "movimientos": {"id", "fecha", "tipo", "categoria_id", "monto", *sync_columns},
+            "gastos_fijos": {"id", "categoria_id", "monto", *sync_columns},
+            "gastos_programados": {"id", "categoria_id", "monto_estimado", *sync_columns},
+            "presupuestos": {"id", "categoria_id", "mes", "anio", "monto", *sync_columns},
+            "metas_ahorro": {"id", "nombre", "monto_objetivo", *sync_columns},
+            "tags": {"id", "nombre", *sync_columns},
+            "movimiento_tags": {"movimiento_id", "tag_id", *sync_columns},
+            "app_config": {"key", "value", "updated_at"},
         }
+        expected_unique_indexes = (
+            ("categorias", ("owner_user_id", "nombre", "tipo")),
+            ("tags", ("owner_user_id", "nombre")),
+            ("presupuestos", ("owner_user_id", "categoria_id", "mes", "anio")),
+        )
         try:
             uri = f"{path.resolve().as_uri()}?mode=ro"
             with closing(sqlite3.connect(uri, uri=True, timeout=30)) as conn:
@@ -697,8 +716,24 @@ class FinanceService:
                     columns = {str(row[1]).lower() for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
                     if expected - columns:
                         raise ValueError("La copia seleccionada no tiene una estructura compatible.")
+                schema_version = conn.execute("SELECT value FROM app_config WHERE key = 'schema_version'").fetchone()
+                if not schema_version or str(schema_version[0] or "").strip() != CURRENT_SCHEMA_VERSION:
+                    raise ValueError("La copia seleccionada pertenece a una version de datos incompatible.")
+                for table, expected_columns in expected_unique_indexes:
+                    if not self._has_unique_index(conn, table, expected_columns):
+                        raise ValueError("La copia seleccionada no conserva el aislamiento por cuenta.")
         except sqlite3.Error as exc:
             raise ValueError("La copia seleccionada no es una base SQLite valida.") from exc
+
+    @staticmethod
+    def _has_unique_index(conn: sqlite3.Connection, table: str, expected_columns: tuple[str, ...]) -> bool:
+        for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
+            if not bool(index[2]):
+                continue
+            columns = tuple(str(row[2]).lower() for row in conn.execute(f"PRAGMA index_info({index[1]})").fetchall())
+            if columns == expected_columns:
+                return True
+        return False
 
     def validate_restore_source(self, source_path: Path) -> None:
         if not source_path.exists():

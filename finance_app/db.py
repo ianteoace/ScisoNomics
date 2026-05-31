@@ -12,6 +12,16 @@ DB_PATH = get_db_path()
 CURRENT_SCHEMA_VERSION = "3"
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        # sqlite3 confirma o revierte la transaccion en __exit__, pero no cierra
+        # el handle. Cerrar despues evita locks residuales en restore e instalacion.
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Database:
     def __init__(self, db_path: Path | None = None) -> None:
         ensure_app_data_layout()
@@ -19,7 +29,7 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=ClosingConnection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA foreign_keys = ON")

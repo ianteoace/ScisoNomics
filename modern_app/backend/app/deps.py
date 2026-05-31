@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import threading
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from finance_app.db import Database
 from finance_app.paths import ensure_app_data_layout, get_backup_dir, get_data_dir, get_logs_dir
 from finance_app.services import FinanceService
 
-from .settings import MAIN_DATA_DIR, ORIGINAL_DB_PATH, WEB_DB_PATH
+from .settings import WEB_DB_PATH
 
 _LAST_INIT_STATUS: dict[str, object] = {}
 _DB_INSTANCE: Database | None = None
@@ -39,15 +38,8 @@ def ensure_app_data_initialized() -> Database:
             _LOGGER.info("[db] initialization start")
             ensure_app_data_layout()
             created_now = not WEB_DB_PATH.exists()
-            if not WEB_DB_PATH.exists():
-                try:
-                    if ORIGINAL_DB_PATH.exists():
-                        MAIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(ORIGINAL_DB_PATH, WEB_DB_PATH)
-                except OSError:
-                    # Si copiar fallback falla, continuamos con DB limpia.
-                    pass
-            MAIN_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            # La migracion legacy vive en paths.py. No continuar con una DB vacia
+            # si una copia alternativa falla: ocultaria datos existentes al usuario.
             db = Database(db_path=WEB_DB_PATH)
             _LOGGER.info("[db] file: %s", Path(db.db_path).name)
             db.init_db()
@@ -81,6 +73,17 @@ def get_last_init_status() -> dict[str, object]:
 
 def get_database_readiness() -> dict[str, object]:
     return get_last_init_status()
+
+
+def invalidate_app_data_initialized() -> None:
+    global _DB_INSTANCE, _DB_INIT_DONE, _DB_INIT_ERROR, _DB_INITIALIZING
+    # Restore reemplaza el archivo de forma atomica. Invalidar el singleton obliga a que
+    # el siguiente request abra e inicialice la DB restaurada, no el estado anterior.
+    with _DB_INIT_LOCK:
+        _DB_INSTANCE = None
+        _DB_INIT_DONE = False
+        _DB_INIT_ERROR = None
+        _DB_INITIALIZING = False
 
 
 def get_service() -> FinanceService:

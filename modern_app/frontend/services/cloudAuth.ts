@@ -134,6 +134,8 @@ function saveSplitState(state: StoredAuthState) {
   const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
   const sessionAccounts = state.accounts.filter((account) => account.storage === "session");
   try {
+    // Las cuentas recordadas persisten JWT en localStorage por decision funcional.
+    // Migrar a secure storage nativo queda pendiente para v3.1.0.
     if (persistentAccounts.length || state.activeOwnerId !== LOCAL_OWNER_ID) {
       writeJsonState(window.localStorage, AUTH_STATE_KEY, { activeOwnerId: state.activeOwnerId, accounts: persistentAccounts });
     } else {
@@ -179,7 +181,8 @@ function maskEmail(value: string) {
   const email = normalizeEmail(value);
   const [localPart, domain = ""] = email.split("@");
   if (!localPart || !domain) return "***";
-  return `${localPart.slice(0, 2)}***@${domain}`;
+  // Los logs de soporte necesitan reconocer la cuenta sin exponer el email.
+  return `${localPart.slice(0, 3)}***@${domain}`;
 }
 
 function shortUserId(value: string) {
@@ -396,7 +399,8 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
       headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     });
   } catch (error) {
-    console.error("Cloud auth request failed", { path, error });
+    // No volcar objetos HTTP completos: algunos runtimes adjuntan metadata sensible.
+    console.error("Cloud auth request failed", { path, errorType: error instanceof Error ? error.name : typeof error });
     const isTimeout = error instanceof DOMException && error.name === "AbortError";
     throw new CloudAuthRequestError(
       isTimeout
@@ -430,7 +434,7 @@ export const cloudAuth = {
   logout: async (token: string | null) => {
     if (token && isCloudAuthConfigured()) {
       await cloudRequest<{ ok: boolean }>("/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch((error) => {
-        console.error("Cloud auth logout failed", error);
+        console.error("Cloud auth logout failed", { errorType: error instanceof Error ? error.name : typeof error });
       });
     }
   },
@@ -455,7 +459,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
     console.info("[auth] verify success", { userId: shortUserId(user.id), email: maskEmail(user.email) });
     return { ...session, user };
   } catch (error) {
-    console.warn("[auth] verify failed", error);
+    console.warn("[auth] verify failed", { errorType: error instanceof Error ? error.name : typeof error });
     if (error instanceof CloudAuthRequestError && error.kind === "auth") {
       removeAccount(session.user.id);
     }

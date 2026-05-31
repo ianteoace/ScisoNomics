@@ -13,13 +13,14 @@ import logging
 import os
 import socket
 import sys
+import time
 from uuid import uuid4
 
-import shutil
 import sqlite3
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 
 from finance_app.exporter import export_date_range_report, export_filtered_movimientos, export_monthly_report, export_yearly_report
 from finance_app.db import CURRENT_SCHEMA_VERSION
@@ -40,16 +41,25 @@ from finance_app.services import (
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
 from openpyxl import load_workbook
 
-from .deps import ensure_app_data_initialized, get_database_readiness, get_last_init_status, get_service
+from .deps import ensure_app_data_initialized, get_database_readiness, get_last_init_status, get_service, invalidate_app_data_initialized
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
-app = FastAPI(title="Registro Finanzas API", version="3.0.1")
+_IS_FROZEN = bool(getattr(sys, "frozen", False))
+# La documentacion interactiva ayuda en desarrollo, pero en la app instalada
+# expondria superficie interna innecesaria aunque los endpoints tengan token.
+app = FastAPI(
+    title="Registro Finanzas API",
+    version="3.0.1",
+    docs_url=None if _IS_FROZEN else "/docs",
+    redoc_url=None if _IS_FROZEN else "/redoc",
+    openapi_url=None if _IS_FROZEN else "/openapi.json",
+)
 _LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token"
 _LOCAL_TOKEN = os.getenv("SCISONOMICS_LOCAL_TOKEN", "").strip()
-_DEV_MODE_WITHOUT_LOCAL_TOKEN = not _LOCAL_TOKEN and not bool(getattr(sys, "frozen", False))
-_PUBLIC_PATHS = {"/health", "/ready", "/openapi.json"}
-_PUBLIC_PREFIXES = ("/docs", "/redoc")
+_DEV_MODE_WITHOUT_LOCAL_TOKEN = not _LOCAL_TOKEN and not _IS_FROZEN
+_PUBLIC_PATHS = {"/health", "/ready"} | (set() if _IS_FROZEN else {"/openapi.json"})
+_PUBLIC_PREFIXES = () if _IS_FROZEN else ("/docs", "/redoc")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -118,8 +128,56 @@ def _require_local_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="No se pudo validar la conexión local de ScisoNomics.")
 
 
+def _require_debug_endpoints_enabled() -> None:
+    enabled = os.getenv("SCISONOMICS_ENABLE_DEBUG_ENDPOINTS", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 def _current_owner() -> str:
     return get_current_owner_id()
+
+
+def _safe_owner_for_log(owner: str) -> str:
+    # El owner completo no es necesario para soporte y puede identificar una cuenta.
+    return LOCAL_OWNER_ID if owner == LOCAL_OWNER_ID else f"{owner[:6]}..."
+
+
+def _service_value_error(exc: ValueError, resource_label: str = "El recurso") -> HTTPException:
+    # Un ID ajeno y un ID inexistente deben verse igual desde la API: responder
+    # 404 evita filtrar existencia de datos pertenecientes a otra cuenta.
+    if "no existe o no pertenece a la cuenta activa" in str(exc).lower():
+        return HTTPException(status_code=404, detail=f"{resource_label} no se encontro o no pertenece a la cuenta activa.")
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _cleanup_temp_snapshot(path: Path) -> None:
+    # Los exports usan carpetas temporales dedicadas. Limpiarlas luego de enviar
+    # el archivo evita acumular snapshots sin tocar backups persistentes.
+    try:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    except OSError:
+        _logger.warning("No se pudo limpiar snapshot temporal. file=%s", path.name)
+
+
+def _cleanup_stale_temp_snapshots(max_age_seconds: int = 600) -> None:
+    # BackgroundTask no corre si el streaming se aborta. Recolectar solo
+    # carpetas temporales propias y antiguas cubre ese caso sin tocar backups.
+    temp_root = Path(gettempdir()).resolve()
+    cutoff = time.time() - max_age_seconds
+    for prefix in ("finanzas_backup_", "finanzas_download_"):
+        for candidate in temp_root.glob(f"{prefix}*"):
+            try:
+                folder = candidate.resolve()
+                if folder.parent != temp_root or not folder.is_dir() or folder.stat().st_mtime > cutoff:
+                    continue
+                for child in folder.iterdir():
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                folder.rmdir()
+            except OSError:
+                _logger.warning("No se pudo limpiar snapshot temporal antiguo. folder=%s", candidate.name)
 
 
 def _require_cloud_owner() -> str:
@@ -142,6 +200,7 @@ async def file_not_found_handler(_: Request, exc: FileNotFoundError):
 @app.on_event("startup")
 def log_db_path() -> None:
     try:
+        _cleanup_stale_temp_snapshots()
         ensure_app_data_initialized()
         exists = WEB_DB_PATH.exists()
         size_bytes = WEB_DB_PATH.stat().st_size if exists else 0
@@ -244,8 +303,9 @@ def meta(service: FinanceService = Depends(get_service)):
     }
 
 
-@app.get("/debug/db-path")
+@app.get("/debug/db-path", dependencies=[Depends(_require_debug_endpoints_enabled)])
 def debug_db_path(service: FinanceService = Depends(get_service)):
+    _require_debug_endpoints_enabled()
     db_path = Path(service.db.db_path).resolve()
     exists = db_path.exists()
     size_bytes = db_path.stat().st_size if exists else 0
@@ -319,6 +379,8 @@ def create_movimiento(payload: MovimientoIn, service: FinanceService = Depends(g
     try:
         service.create_movimiento(MovimientoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El movimiento") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -328,6 +390,8 @@ def update_movimiento(movimiento_id: int, payload: MovimientoIn, service: Financ
     try:
         service.update_movimiento(movimiento_id, MovimientoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El movimiento") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -337,6 +401,8 @@ def delete_movimiento(movimiento_id: int, service: FinanceService = Depends(get_
     try:
         service.delete_movimiento(movimiento_id)
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El movimiento") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -360,6 +426,8 @@ def update_categoria(categoria_id: int, payload: CategoriaIn, service: FinanceSe
     try:
         service.update_categoria(categoria_id, payload.nombre, payload.tipo)
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La categoria") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -371,6 +439,8 @@ def delete_categoria(categoria_id: int, service: FinanceService = Depends(get_se
         return {"ok": True}
     except ValueError as exc:
         message = str(exc)
+        if "no existe o no pertenece a la cuenta activa" in message.lower():
+            raise _service_value_error(exc, "La categoria") from exc
         if "movimientos asociados" in message.lower():
             raise HTTPException(status_code=409, detail="No se puede eliminar esta categoría porque tiene movimientos asociados.") from exc
         if "no se encontro la categoria" in message.lower() or "no se encontró la categoria" in message.lower():
@@ -390,6 +460,8 @@ def create_gasto_fijo(payload: GastoFijoIn, service: FinanceService = Depends(ge
     try:
         service.create_gasto_fijo(GastoFijoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto fijo") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -399,6 +471,8 @@ def update_gasto_fijo(gasto_id: int, payload: GastoFijoIn, service: FinanceServi
     try:
         service.update_gasto_fijo(gasto_id, GastoFijoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto fijo") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -408,6 +482,8 @@ def delete_gasto_fijo(gasto_id: int, service: FinanceService = Depends(get_servi
     try:
         service.delete_gasto_fijo(gasto_id)
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto fijo") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -428,6 +504,8 @@ def create_gasto_programado(payload: GastoProgramadoIn, service: FinanceService 
     try:
         service.create_gasto_programado(GastoProgramadoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto programado") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -437,6 +515,8 @@ def update_gasto_programado(gasto_id: int, payload: GastoProgramadoIn, service: 
     try:
         service.update_gasto_programado(gasto_id, GastoProgramadoInput(**payload.model_dump()))
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto programado") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -446,6 +526,8 @@ def delete_gasto_programado(gasto_id: int, service: FinanceService = Depends(get
     try:
         service.delete_gasto_programado(gasto_id)
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El gasto programado") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -612,6 +694,8 @@ def delete_presupuesto(presupuesto_id: int, service: FinanceService = Depends(ge
     try:
         service.delete_presupuesto(presupuesto_id)
         return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "El presupuesto") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -979,6 +1063,11 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
     owner = normalize_owner_id(str(payload.get("target_owner_user_id") or payload.get("owner_user_id") or _current_owner()))
     if not owner or owner == LOCAL_OWNER_ID:
         raise HTTPException(status_code=400, detail="Inicia sesion para asociar datos locales a una cuenta.")
+    active_cloud_owner = _require_cloud_owner()
+    # El destino no puede venir libremente del body: debe coincidir con el owner
+    # activo del request para impedir asociaciones accidentales entre cuentas.
+    if owner != active_cloud_owner:
+        raise HTTPException(status_code=403, detail="La cuenta destino no coincide con la cuenta activa.")
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
         summary: dict[str, int] = {table: 0 for table in SYNC_TABLES}
@@ -1647,6 +1736,30 @@ def _local_db_integrity_report() -> dict[str, Any]:
                 if table in existing_tables and not _has_index_with_columns(conn, table, columns, unique=True):
                     issues.append(_db_integrity_issue("missing_owner_unique_constraint", "critical", table, 1, False))
 
+            # Estos CHECK forman parte de la semantica financiera minima. Detectar
+            # su ausencia evita operar sobre DBs parcialmente reconstruidas.
+            critical_sql_fragments = {
+                "categorias": ("check(tipo in ('ingreso', 'gasto', 'ahorro', 'inversion'))",),
+                "movimientos": ("check(tipo in ('ingreso', 'gasto', 'ahorro', 'inversion'))", "check(monto >= 0)"),
+                "presupuestos": ("check(mes between 1 and 12)", "check(monto > 0)"),
+            }
+            for table, fragments in critical_sql_fragments.items():
+                if table not in existing_tables:
+                    continue
+                create_sql_row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+                normalized_sql = "".join(str(create_sql_row["sql"] or "").lower().split()) if create_sql_row else ""
+                for fragment in fragments:
+                    if "".join(fragment.split()) not in normalized_sql:
+                        issues.append(_db_integrity_issue("missing_critical_constraint", "critical", table, 1, False))
+
+            if "app_config" in existing_tables:
+                invalid_cursors = conn.execute(
+                    "SELECT key, value FROM app_config WHERE key LIKE 'sync_pull_cursor:%'"
+                ).fetchall()
+                invalid_cursor_count = sum(1 for row in invalid_cursors if _parse_sync_datetime(row["value"]) is None)
+                if invalid_cursor_count:
+                    issues.append(_db_integrity_issue("invalid_sync_cursor", "warning", "app_config", invalid_cursor_count, True))
+
             date_checks = [
                 ("movimientos", "fecha"),
                 ("gastos_programados", "fecha_vencimiento"),
@@ -1778,6 +1891,15 @@ def local_db_repair():
                     for row in rows:
                         conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
                     repaired_count += len(rows)
+            # Borrar un cursor corrupto es seguro: la proxima sync realiza un
+            # full-pull y reconstruye el cursor sin eliminar datos financieros.
+            existing_tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+            if "app_config" in existing_tables:
+                cursor_rows = conn.execute("SELECT key, value FROM app_config WHERE key LIKE 'sync_pull_cursor:%'").fetchall()
+                for row in cursor_rows:
+                    if _parse_sync_datetime(row["value"]) is None:
+                        conn.execute("DELETE FROM app_config WHERE key = ?", (row["key"],))
+                        repaired_count += 1
 
     after = _local_db_integrity_report()
     unresolved_count = int(after["issues_count"])
@@ -2376,7 +2498,7 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
     except HTTPException:
         raise
     except Exception as exc:
-        _logger.exception("Error aplicando datos remotos. owner=%s error_type=%s", _current_owner(), type(exc).__name__)
+        _logger.exception("Error aplicando datos remotos. owner=%s error_type=%s", _safe_owner_for_log(_current_owner()), type(exc).__name__)
         raise HTTPException(status_code=500, detail="No se pudieron aplicar los datos remotos en el servicio local.") from exc
 
 
@@ -2385,9 +2507,17 @@ def export_backup(service: FinanceService = Depends(get_service)):
     source = Path(service.db.db_path)
     if not source.exists():
         raise HTTPException(status_code=404, detail="No existe la base de datos.")
-    output = Path(mkdtemp(prefix="finanzas_backup_")) / f"backup_finanzas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-    shutil.copy2(source, output)
-    return FileResponse(path=output, filename=output.name, media_type="application/octet-stream")
+    # SQLite Backup API genera una copia consistente incluso si hay escrituras
+    # concurrentes; copy2 sobre una DB viva podia producir exports incompletos.
+    output = service.backup_database(Path(mkdtemp(prefix="finanzas_backup_")))
+    # Cleanup best-effort tras streaming; startup recolecta temporales antiguos
+    # si una descarga interrumpida impide ejecutar BackgroundTask.
+    return FileResponse(
+        path=output,
+        filename=output.name,
+        media_type="application/octet-stream",
+        background=BackgroundTask(_cleanup_temp_snapshot, output),
+    )
 
 
 @app.post("/backup/restore")
@@ -2397,7 +2527,7 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
         try:
             payload = await request.json()
         except Exception as exc:
-            _logger.exception("Body invalido en restauracion de copia: %s", exc)
+            _logger.exception("Body invalido en restauracion de copia. error_type=%s", type(exc).__name__)
             raise HTTPException(status_code=400, detail="Solicitud invalida para restaurar copia de seguridad.") from exc
 
         _logger.info("Payload recibido en /backup/restore: keys=%s", list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
@@ -2411,15 +2541,17 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
         source = Path(source_path_value).expanduser()
         pre_restore_backups = get_data_dir() / "backups"
         safety = service.restore_database_from_path(source, pre_restore_backups)
+        invalidate_app_data_initialized()
         _logger.info("Restaurar copia OK. source=%s backup_pre_restore=%s", source.name, safety.name)
         return {"ok": True, "safety_backup": str(safety)}
     except HTTPException:
         raise
     except (FileNotFoundError, ValueError) as exc:
-        _logger.exception("Error restaurando copia de seguridad: %s", exc)
+        # No registrar paths completos provenientes del request de restore.
+        _logger.exception("Error restaurando copia de seguridad. error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        _logger.exception("Error restaurando copia de seguridad: %s", exc)
+        _logger.exception("Error restaurando copia de seguridad. error_type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=500,
             detail="No se pudo restaurar la copia de seguridad.",
@@ -2443,16 +2575,22 @@ def download_backup(service: FinanceService = Depends(get_service)):
             raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.")
 
         filename = f"ScisoNomics_copia_seguridad_{datetime.now().strftime('%Y-%m-%d')}.db"
+        # Servir un snapshot consistente: entregar la DB viva podia omitir
+        # paginas en escritura mientras el usuario descargaba la copia.
+        snapshot = service.backup_database(Path(mkdtemp(prefix="finanzas_download_")))
+        # Cleanup best-effort tras streaming; startup recolecta temporales antiguos
+        # si una descarga interrumpida impide ejecutar BackgroundTask.
         return FileResponse(
-            path=source,
+            path=snapshot,
             filename=filename,
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            background=BackgroundTask(_cleanup_temp_snapshot, snapshot),
         )
     except HTTPException:
         raise
     except Exception as exc:
-        _logger.exception("Error generando copia de seguridad: %s", exc)
+        _logger.exception("Error generando copia de seguridad. error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.") from exc
 
 
@@ -2486,7 +2624,7 @@ def export_excel(
     except HTTPException:
         raise
     except Exception as exc:
-        _logger.exception("Error exportando Excel (month=%s year=%s): %s", resolved_month, resolved_year, exc)
+        _logger.exception("Error exportando Excel. month=%s year=%s error_type=%s", resolved_month, resolved_year, type(exc).__name__)
         raise HTTPException(status_code=500, detail="No se pudo generar el archivo Excel.") from exc
     return FileResponse(
         path=output,
@@ -2564,6 +2702,7 @@ def restore_backup_from_name(payload: BackupRestoreIn, service: FinanceService =
         raise HTTPException(status_code=400, detail="Nombre de backup invalido.")
     backup_file = _backup_dir() / payload.file_name
     safety = service.restore_database(backup_file, _backup_dir())
+    invalidate_app_data_initialized()
     return {"ok": True, "safety_backup": str(safety)}
 
 
@@ -2580,20 +2719,29 @@ def list_metas(service: FinanceService = Depends(get_service)):
 
 @app.post("/metas")
 def create_meta(payload: MetaAhorroIn, service: FinanceService = Depends(get_service)):
-    service.create_meta_ahorro(MetaAhorroInput(**payload.model_dump()))
-    return {"ok": True}
+    try:
+        service.create_meta_ahorro(MetaAhorroInput(**payload.model_dump()))
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La meta") from exc
 
 
 @app.put("/metas/{meta_id}")
 def update_meta(meta_id: int, payload: MetaAhorroIn, service: FinanceService = Depends(get_service)):
-    service.update_meta_ahorro(meta_id, MetaAhorroInput(**payload.model_dump()))
-    return {"ok": True}
+    try:
+        service.update_meta_ahorro(meta_id, MetaAhorroInput(**payload.model_dump()))
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La meta") from exc
 
 
 @app.delete("/metas/{meta_id}")
 def delete_meta(meta_id: int, service: FinanceService = Depends(get_service)):
-    service.delete_meta_ahorro(meta_id)
-    return {"ok": True}
+    try:
+        service.delete_meta_ahorro(meta_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La meta") from exc
 
 
 @app.get("/tags")
@@ -2603,20 +2751,29 @@ def list_tags(service: FinanceService = Depends(get_service)):
 
 @app.post("/tags")
 def create_tag(payload: TagIn, service: FinanceService = Depends(get_service)):
-    service.create_tag(TagInput(**payload.model_dump()))
-    return {"ok": True}
+    try:
+        service.create_tag(TagInput(**payload.model_dump()))
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La etiqueta") from exc
 
 
 @app.put("/tags/{tag_id}")
 def update_tag(tag_id: int, payload: TagIn, service: FinanceService = Depends(get_service)):
-    service.update_tag(tag_id, TagInput(**payload.model_dump()))
-    return {"ok": True}
+    try:
+        service.update_tag(tag_id, TagInput(**payload.model_dump()))
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La etiqueta") from exc
 
 
 @app.delete("/tags/{tag_id}")
 def delete_tag(tag_id: int, service: FinanceService = Depends(get_service)):
-    service.delete_tag(tag_id)
-    return {"ok": True}
+    try:
+        service.delete_tag(tag_id)
+        return {"ok": True}
+    except ValueError as exc:
+        raise _service_value_error(exc, "La etiqueta") from exc
 
 
 @app.get("/calendario")

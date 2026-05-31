@@ -54,8 +54,9 @@ La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso cen
 - `GET /sync/health`
 - `POST /sync/push`
 - `GET /sync/pull`
-- `GET /sync/debug-counts`
 - `GET /sync/devices`
+
+`GET /sync/debug-counts` queda deshabilitado por defecto. Para habilitarlo temporalmente en un entorno controlado, definir `SCISONOMICS_ENABLE_DEBUG_ENDPOINTS=true`.
 
 ## Variables
 
@@ -68,6 +69,7 @@ La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso cen
 - `SCISONOMICS_GOOGLE_CLIENT_ID`
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`
 - `SCISONOMICS_GOOGLE_REDIRECT_URI`
+- `SCISONOMICS_ENABLE_DEBUG_ENDPOINTS` (opcional; usar solo temporalmente en soporte controlado)
 
 La sincronizacion manual y automatica opcional acepta categorias, tags, relaciones movimiento-tag, movimientos, metas de ahorro, gastos programados, gastos fijos y presupuestos del usuario autenticado. No recibe archivos `.db`, reportes, copias de seguridad ni datos fuera de ese alcance.
 

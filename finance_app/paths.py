@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import shutil
@@ -81,11 +81,25 @@ def _migrate_best_legacy_db(new_db_path: Path, candidates: list[Path]) -> None:
 
     best_source = _pick_db_with_more_movements(existing_candidates)
     if best_source is None:
-        _append_layout_log("legacy_db_migration_skipped reason=no_valid_candidate")
-        return
+        # Si existen DBs anteriores pero ninguna puede leerse, no crear una DB
+        # vacia: ocultaria datos recuperables y haria parecer que se perdieron.
+        found = ", ".join(f"{path.parent.name}/{path.name}" for path in existing_candidates)
+        _append_layout_log(f"legacy_db_migration_failed reason=no_readable_candidate files={found}")
+        raise RuntimeError(
+            "Encontramos bases de datos anteriores pero no pudimos leerlas "
+            f"({found}). No se creo una base nueva. Revisa esos archivos o restaura una copia de seguridad."
+        )
 
     new_db_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best_source, new_db_path)
+    try:
+        shutil.copy2(best_source, new_db_path)
+    except OSError as exc:
+        # Fallar de forma explicita evita continuar con una DB nueva cuando la
+        # copia legacy existe pero Windows no permite migrarla.
+        raise RuntimeError(
+            "Encontramos una base de datos anterior pero no pudimos copiarla "
+            f"({best_source.parent.name}/{best_source.name}). Cerra ScisoNomics y volve a intentar."
+        ) from exc
     _append_layout_log(f"legacy_db_migrated source_file={best_source.name} source_parent={best_source.parent.name}")
 
 

@@ -35,6 +35,7 @@ modern_app/cloud_backend/*.sqlite3
 *.db-shm
 finanzas.db
 finanzas_backup*.db
+data/config.json
 
 # Local env files
 .env

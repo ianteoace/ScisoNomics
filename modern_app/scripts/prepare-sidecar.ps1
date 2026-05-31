@@ -28,7 +28,10 @@ if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
 $packageVersion = (Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json).version
 $tauriVersion = (Get-Content -LiteralPath $tauriConfigPath -Raw | ConvertFrom-Json).version
 $backendSource = Get-Content -LiteralPath $localBackendPath -Raw
-$backendMatch = [regex]::Match($backendSource, 'FastAPI\(title="Registro Finanzas API", version="([^"]+)"\)')
+# FastAPI se formatea en varias lineas para configurar docs de produccion.
+# Capturar version solo antes del cierre del constructor evita tomar otro
+# argumento version= que aparezca mas adelante en el archivo.
+$backendMatch = [regex]::Match($backendSource, 'FastAPI\([^)]*?\bversion\s*=\s*"([^"]+)"')
 if (-not $backendMatch.Success) {
     throw "No se pudo detectar la version del backend local."
 }

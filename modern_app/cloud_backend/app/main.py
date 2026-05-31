@@ -71,7 +71,8 @@ def mask_email(email: str) -> str:
     local, domain = normalized.split("@", 1)
     if not local:
         return f"***@{domain}"
-    return f"{local[0]}***@{domain}"
+    # Conservar contexto minimo para soporte sin registrar el email completo.
+    return f"{local[:3]}***@{domain}"
 
 
 def short_identifier(value: str) -> str:
@@ -88,6 +89,12 @@ def validate_credentials(email: str, password: str) -> str:
     if len(password) < 8:
         raise HTTPException(status_code=422, detail="La contrasena debe tener al menos 8 caracteres.")
     return normalized_email
+
+
+def _require_debug_endpoints_enabled() -> None:
+    enabled = os.getenv("SCISONOMICS_ENABLE_DEBUG_ENDPOINTS", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
 
 
 def row_to_user(row) -> UserOut:
@@ -597,8 +604,9 @@ def sync_pull(since: str | None = Query(default=None), user: UserOut = Depends(g
     return {"ok": True, "cursor": cursor, "incremental": bool(since), **payload}
 
 
-@app.get("/sync/debug-counts")
+@app.get("/sync/debug-counts", dependencies=[Depends(_require_debug_endpoints_enabled)])
 def sync_debug_counts(user: UserOut = Depends(get_current_user)):
+    _require_debug_endpoints_enabled()
     init_db()
     with connect() as conn:
         counts: dict[str, int] = {}
