@@ -24,6 +24,17 @@ def _ensure_project_on_path() -> None:
 def _parent_is_alive(parent_pid: int) -> bool:
     if psutil is not None:
         return psutil.pid_exists(parent_pid)
+    if sys.platform == "win32":
+        # En Windows os.kill(pid, 0) no es un probe POSIX seguro: usar una
+        # consulta nativa evita terminar accidentalmente el proceso padre.
+        import ctypes
+
+        synchronize = 0x00100000
+        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
     try:
         os.kill(parent_pid, 0)
         return True
