@@ -13,6 +13,7 @@ hiddenimports = [
     'openpyxl.styles',
     'openpyxl.workbook',
     'openpyxl.writer.excel',
+    'psutil',
 ]
 hiddenimports += collect_submodules('finance_app')
 hiddenimports += collect_submodules('openpyxl')
