@@ -4,6 +4,8 @@ Backend FastAPI independiente para cuentas opcionales de ScisoNomics.
 
 Esta API usa SQLite en desarrollo local y PostgreSQL en produccion Railway.
 
+Desde v3.1.0 el frontend intenta sincronizar al abrir y cerrar la app cuando hay una cuenta cloud activa. El backend conserva los mismos contratos JWT y de sync.
+
 ## Desarrollo
 
 ```powershell

@@ -1,7 +1,7 @@
 {
   "name": "registro-finanzas-web",
   "private": true,
-  "version": "3.0.1",
+  "version": "3.1.0",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
@@ -14,6 +14,7 @@
     "nextBundledPostcss": "next@16.2.6 empaqueta postcss@8.4.31 con una vulnerabilidad moderada conocida. npm no ofrece un override efectivo; actualizar cuando Next publique el fix upstream."
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-opener": "^2.4.1",
     "framer-motion": "^11.3.19",

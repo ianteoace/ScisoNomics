@@ -461,9 +461,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     const labels: Record<string, string> = {
       manual: "Manual",
       startup: "Inicio",
+      app_start: "Apertura de app",
+      app_close: "Cierre de app",
       interval: "Consulta remota",
       focus: "Foco",
       auto_local_change: "Cambio local",
+      data_change: "Cambio local",
       auto_remote_pull: "Consulta remota",
     };
     return labels[reason] || (item.mode === "auto" ? "Automatica" : "Manual");
@@ -678,8 +681,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                 </div>
                 <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-800 px-3 py-2 text-sm">
                   <span>
-                    <span className="block font-medium">Sincronizar automaticamente</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">Opcional. Nunca reemplaza el modo local.</span>
+                    <span className="block font-medium">Sincronizacion automatica mientras usas la app</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">La apertura y el cierre intentan sincronizar siempre. Esta opcion controla el background.</span>
                   </span>
                   <input
                     type="checkbox"

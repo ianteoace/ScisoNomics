@@ -51,9 +51,9 @@ export const api = {
   deleteMeta: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/metas/${id}`, "DELETE")),
 
   tags: () => getJSON<Tag[]>("/tags"),
-  createTag: (payload: unknown) => sendJSON<{ ok: boolean }>("/tags", "POST", payload),
-  updateTag: (id: number, payload: unknown) => sendJSON<{ ok: boolean }>(`/tags/${id}`, "PUT", payload),
-  deleteTag: (id: number) => sendJSON<{ ok: boolean }>(`/tags/${id}`, "DELETE"),
+  createTag: (payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>("/tags", "POST", payload)),
+  updateTag: (id: number, payload: unknown) => syncMutation(sendJSON<{ ok: boolean }>(`/tags/${id}`, "PUT", payload)),
+  deleteTag: (id: number) => syncMutation(sendJSON<{ ok: boolean }>(`/tags/${id}`, "DELETE")),
 
   calendario: (month: number, year: number) => getJSON<any[]>(`/calendario?month=${month}&year=${year}`),
   reporteMensual: (month: number, year: number) => getJSON<any>(`/reporte-mensual?month=${month}&year=${year}`),

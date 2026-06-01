@@ -16,12 +16,14 @@ import {
   getLastAutoSyncAt,
   getLastManualSyncAt,
   getLastSyncError,
+  getAutoSyncIntervalMs,
   getLocalDbIntegrity,
   createLocalBackup,
   repairLocalDb,
   isAutoSyncEnabled,
   runManualSync,
   setAutoSyncEnabled,
+  setAutoSyncIntervalMs,
   type SyncOverview,
   type LocalDbIntegrityResult,
 } from "../../../services/cloudSync";
@@ -93,6 +95,7 @@ export default function ConfiguracionPage() {
   const [restoring, setRestoring] = useState(false);
   const [syncingNow, setSyncingNow] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(false);
+  const [autoSyncIntervalMs, setAutoSyncIntervalMsState] = useState(15 * 60 * 1000);
   const [selectedRestorePath, setSelectedRestorePath] = useState<string | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [diagnosticText, setDiagnosticText] = useState<string | null>(null);
@@ -130,6 +133,7 @@ export default function ConfiguracionPage() {
       setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
       setBackupState(backupsResult);
       setAutoSyncEnabledState(isAutoSyncEnabled());
+      setAutoSyncIntervalMsState(getAutoSyncIntervalMs());
       setLoadError("");
     } catch (e: any) {
       setLoadError(e?.message || "No se pudo cargar la configuracion.");
@@ -312,6 +316,12 @@ export default function ConfiguracionPage() {
     showSuccess(enabled ? "Sincronizacion automatica activada." : "Sincronizacion automatica desactivada.");
   }
 
+  function handleAutoSyncIntervalChange(intervalMs: number) {
+    setAutoSyncIntervalMs(intervalMs);
+    setAutoSyncIntervalMsState(intervalMs);
+    showSuccess("Intervalo de sincronizacion actualizado.");
+  }
+
   const selectedRestoreName = selectedRestorePath ? selectedRestorePath.split(/[/\\]/).pop() || selectedRestorePath : null;
 
   function handleReopenOnboarding() {
@@ -375,12 +385,12 @@ export default function ConfiguracionPage() {
   const backendLabel = info?.backend_ok || diagnostics?.ok ? "Conectado" : diagnostics?.initializing ? "Preparando" : "Error";
   const databaseLabel = diagnostics?.database_ready || info?.db_exists ? "Lista" : diagnostics?.initializing ? "Inicializando" : "Error";
   const backendVersion = diagnostics?.version || info?.version || "no disponible";
-  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.0.1");
+  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.1.0");
   const syncLabel = activeOwner === "local"
     ? "Modo local"
     : autoSyncEnabled
-      ? "Sync automatica activada"
-      : "Sync manual";
+      ? "Sync durante el uso activada"
+      : "Sync al abrir y cerrar";
   const lastSyncLabel = syncOverview?.last_success?.finished_at || getLastAutoSyncAt() || getLastManualSyncAt() || "Sin sincronizaciones registradas";
   const selectedSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) || SETTINGS_SECTIONS[0];
 
@@ -395,7 +405,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
             <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
-            <p className="text-sm text-slate-400">Version 3.0.1</p>
+            <p className="text-sm text-slate-400">Version 3.1.0</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado</p>
@@ -460,9 +470,9 @@ export default function ConfiguracionPage() {
         </div>
         <label className={`flex items-center justify-between gap-4 rounded-2xl border border-line bg-slate-950/30 px-4 py-3 text-sm ${activeOwner === "local" ? "opacity-60" : ""}`}>
           <span>
-            <span className="block font-semibold">Sincronizar automaticamente</span>
+            <span className="block font-semibold">Sincronizacion automatica mientras usas la app</span>
             <span className="text-xs text-slate-400">
-              Opcional. Solo corre para la cuenta activa; en modo local no se sincroniza con cloud.
+              ScisoNomics siempre intenta sincronizar al abrir y cerrar. Esta opcion controla cambios, intervalo y background mientras usas la aplicacion.
             </span>
           </span>
           <input
@@ -472,6 +482,22 @@ export default function ConfiguracionPage() {
             onChange={(event) => handleAutoSyncToggle(event.target.checked)}
             disabled={activeOwner === "local" || syncingNow}
           />
+        </label>
+        <label className={`flex items-center justify-between gap-4 rounded-2xl border border-line bg-slate-950/30 px-4 py-3 text-sm ${activeOwner === "local" || !autoSyncEnabled ? "opacity-60" : ""}`}>
+          <span>
+            <span className="block font-semibold">Intervalo en background</span>
+            <span className="text-xs text-slate-400">Se aplica solo a la cuenta cloud activa cuando la sincronizacion durante el uso esta habilitada.</span>
+          </span>
+          <select
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            value={autoSyncIntervalMs}
+            onChange={(event) => handleAutoSyncIntervalChange(Number(event.target.value))}
+            disabled={activeOwner === "local" || !autoSyncEnabled || syncingNow}
+          >
+            <option value={10 * 60 * 1000}>Cada 10 minutos</option>
+            <option value={15 * 60 * 1000}>Cada 15 minutos</option>
+            <option value={30 * 60 * 1000}>Cada 30 minutos</option>
+          </select>
         </label>
         {autoSyncEnabled ? (
           <p className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100">
@@ -598,7 +624,7 @@ export default function ConfiguracionPage() {
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Version instalada</p>
-          <p className="mt-2 text-3xl font-black text-cyan-100">3.0.1</p>
+          <p className="mt-2 text-3xl font-black text-cyan-100">3.1.0</p>
           <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta version. ScisoNomics no descarga ni reemplaza ejecutables automaticamente.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -621,7 +647,7 @@ export default function ConfiguracionPage() {
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Aplicacion</p>
             <div className="mt-3 space-y-1 text-slate-300">
               <p><strong className="text-white">ScisoNomics</strong></p>
-              <p>Version instalada: 3.0.1</p>
+              <p>Version instalada: 3.1.0</p>
               <p>Tipo: Local-first</p>
               <p>Stack: Next.js - Tauri - FastAPI - SQLite</p>
             </div>
@@ -637,8 +663,10 @@ export default function ConfiguracionPage() {
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Novedades de v3.0.1</p>
+          <p className="font-semibold">Novedades de v3.1.0</p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
+            <li>Sync confiable al abrir y cerrar la aplicacion.</li>
+            <li>Sync durante el uso configurable por cuenta e intervalo.</li>
             <li>Sync endurecida con snapshot de owner por corrida.</li>
             <li>API local protegida con token de sidecar en app instalada.</li>
             <li>Google Login consume el resultado de polling una sola vez.</li>
@@ -745,10 +773,12 @@ export default function ConfiguracionPage() {
         </div>
       </Modal>
 
-      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.0.1" onClose={() => setReleaseNotesOpen(false)}>
+      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.1.0" onClose={() => setReleaseNotesOpen(false)}>
         <div className="mt-2 space-y-2 text-sm text-slate-300">
           <p>Esta version se enfoca en estabilizacion, seguridad y hardening de sincronizacion.</p>
           <ul className="list-disc space-y-1 pl-5">
+            <li>La app intenta sincronizar siempre al abrir y cerrar si hay una cuenta cloud activa.</li>
+            <li>La sincronizacion durante el uso permite elegir un intervalo por cuenta.</li>
             <li>La sincronizacion usa owner/token congelados durante toda la corrida.</li>
             <li>La app no elimina cuentas guardadas por fallas temporales de conexion.</li>
             <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>

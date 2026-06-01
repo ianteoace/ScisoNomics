@@ -1,6 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+  atomic::{AtomicBool, Ordering},
+  Arc, Condvar, Mutex,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
@@ -9,9 +12,15 @@ use std::process::Command;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+use tauri::Emitter;
 
 #[derive(Clone)]
 struct LocalApiToken(String);
+
+#[derive(Clone)]
+struct AppCloseSyncSignal(Arc<(Mutex<bool>, Condvar)>);
+
+const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
 
 #[cfg(target_os = "windows")]
 fn fill_random_bytes(bytes: &mut [u8]) -> bool {
@@ -101,7 +110,34 @@ fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
   token.0.clone()
 }
 
+#[tauri::command]
+fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>) {
+  let (lock, condition) = &*signal.0;
+  if let Ok(mut completed) = lock.lock() {
+    *completed = true;
+    condition.notify_all();
+  }
+}
+
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
+
+fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
+  let (lock, _) = &*signal.0;
+  if let Ok(mut completed) = lock.lock() {
+    *completed = false;
+  }
+}
+
+fn wait_for_app_close_sync(signal: &AppCloseSyncSignal, timeout: Duration) -> bool {
+  let (lock, condition) = &*signal.0;
+  let Ok(completed) = lock.lock() else {
+    return false;
+  };
+  condition
+    .wait_timeout_while(completed, timeout, |completed| !*completed)
+    .map(|(completed, _)| *completed)
+    .unwrap_or(false)
+}
 
 fn local_backend_address() -> SocketAddr {
   "127.0.0.1:8000".parse().expect("valid local backend address")
@@ -304,10 +340,14 @@ fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let backend_child: BackendChild = Arc::new(Mutex::new(None));
+  let app_close_sync_signal = AppCloseSyncSignal(Arc::new((Mutex::new(false), Condvar::new())));
+  let close_in_progress = Arc::new(AtomicBool::new(false));
   let local_api_token = generate_local_api_token();
   let setup_backend_child = Arc::clone(&backend_child);
   let close_backend_child = Arc::clone(&backend_child);
   let exit_backend_child = Arc::clone(&backend_child);
+  let close_app_sync_signal = app_close_sync_signal.clone();
+  let close_in_progress_for_window = Arc::clone(&close_in_progress);
   let close_local_api_token = local_api_token.clone();
   let exit_local_api_token = local_api_token.clone();
 
@@ -316,7 +356,8 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
     .manage(LocalApiToken(local_api_token.clone()))
-    .invoke_handler(tauri::generate_handler![save_binary_file, get_local_api_token])
+    .manage(app_close_sync_signal)
+    .invoke_handler(tauri::generate_handler![save_binary_file, get_local_api_token, complete_app_close_sync])
     .setup(move |app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -391,9 +432,29 @@ pub fn run() {
 
       Ok(())
     })
-    .on_window_event(move |_window, event| {
-      if let tauri::WindowEvent::CloseRequested { .. } = event {
-        stop_backend_sidecar(&close_backend_child, &close_local_api_token);
+    .on_window_event(move |window, event| {
+      if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        if close_in_progress_for_window.swap(true, Ordering::SeqCst) {
+          return;
+        }
+        api.prevent_close();
+        reset_app_close_sync(&close_app_sync_signal);
+        let sync_signal = close_app_sync_signal.clone();
+        let backend_child = Arc::clone(&close_backend_child);
+        let local_api_token = close_local_api_token.clone();
+        let window = window.clone();
+        if let Err(error) = window.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ()) {
+          log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
+        }
+        std::thread::spawn(move || {
+          if !wait_for_app_close_sync(&sync_signal, Duration::from_secs(6)) {
+            log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
+          }
+          stop_backend_sidecar(&backend_child, &local_api_token);
+          if let Err(error) = window.close() {
+            log::error!("No se pudo cerrar la ventana despues del shutdown seguro: {error}");
+          }
+        });
       }
     })
     .build(tauri::generate_context!())

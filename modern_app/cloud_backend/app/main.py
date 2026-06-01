@@ -20,7 +20,7 @@ from .db import connect, get_database_engine, init_db
 from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 
-app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.0.1")
+app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.1.0")
 _logger = logging.getLogger("scisonomics.cloud")
 
 

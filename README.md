@@ -4,26 +4,38 @@ ScisoNomics es una aplicación de escritorio para gestión de finanzas personale
 
 Permite registrar ingresos, gastos, inversiones, presupuestos, metas de ahorro, gastos fijos, gastos programados, reportes, estadísticas y copias de seguridad. Los datos principales se guardan localmente en SQLite, y la sincronización cloud es opcional.
 
+Desde v3.1.0, una cuenta cloud activa intenta sincronizar al abrir y cerrar la app. La opcion de sincronizacion automatica controla solo el background durante el uso: cambios locales, foco e intervalo configurable por cuenta.
+
 ---
 
 ## Descarga
 
-Versión estable actual: **v3.0.1**
+Versión estable actual: **v3.1.0**
 
-[Descargar ScisoNomics v3.0.1](../../releases/tag/v3.0.1)
+[Descargar ScisoNomics v3.1.0](../../releases/tag/v3.1.0)
 
 ### Actualizar manualmente
 
 - Cerra ScisoNomics antes de instalar una version nueva.
-- El instalador de v3.0.1 mantiene el cierre del sidecar y suma hardening de seguridad local/sync.
+- El instalador de v3.1.0 mantiene el cierre robusto del sidecar y suma sync confiable al abrir y cerrar.
 - Si Windows informa que hay archivos en uso, cancela la instalacion y cerra los procesos desde el Administrador de tareas.
 - No uses "Omitir" en archivos de ScisoNomics durante el instalador; podria quedar una app nueva con backend viejo.
 - Actualizar la app no borra la base local, backups ni logs.
-- Instalador esperado en Windows: `ScisoNomics_3.0.1_x64-setup.exe`.
+- Instalador esperado en Windows: `ScisoNomics_3.1.0_x64-setup.exe`.
 - Procesos esperados a cerrar si hace falta:
   - `ScisoNomics.exe`
   - `scisonomics-backend.exe`
   - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
+
+---
+
+## Novedades de v3.1.0
+
+- Sync automática confiable al abrir y cerrar la app cuando hay una cuenta cloud activa.
+- El toggle de sync automática controla solo el background durante el uso: cambios locales, foco e intervalo.
+- Intervalo configurable por cuenta activa.
+- Cierre Tauri coordinado: intenta `app_close` antes de apagar el backend local y mantiene timeout seguro.
+- El sidecar conserva watchdog y fallbacks Windows para evitar dejar el puerto `8000` bloqueado.
 
 ---
 

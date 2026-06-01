@@ -12,6 +12,7 @@ Esta carpeta contiene una nueva version web/desktop de la app, separada de Tkint
 - Desde v2.8.0 el cliente soporta varias cuentas cloud guardadas en el mismo dispositivo. El modo sin cuenta usa el owner `local`; cada cuenta cloud usa su `user_id`, y solo una cuenta queda activa a la vez.
 - Desde v2.9.0 se puede agregar una cuenta cloud con Google Login. El OAuth lo maneja el backend cloud; el frontend solo abre el navegador externo y nunca guarda secretos de Google.
 - Desde v3.0.1 la app suma hardening de sync, auth cloud y API local del sidecar.
+- Desde v3.1.0 una cuenta cloud activa intenta sync al abrir y cerrar la app. El toggle de auto-sync controla solamente cambios, foco e intervalo configurable durante el uso.
 
 ## Estructura
 
@@ -90,12 +91,12 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health`, y al cerrar la app termina el proceso backend.
 
-En v3.0.1 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
+En v3.1.0 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics antes de copiar archivos:
 - `ScisoNomics.exe`
 - `scisonomics-backend.exe`
 - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
 
-No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.0.1_x64-setup.exe`.
+No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.1.0_x64-setup.exe`.
 
 ### Desarrollo
 
@@ -130,6 +131,17 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
+### Checklist manual de sync v3.1.0
+
+- Abrir con cuenta cloud activa: registra una corrida `app_start`.
+- Cerrar con cuenta cloud activa: intenta `app_close` antes de apagar el sidecar.
+- Desactivar sync durante el uso: apertura y cierre siguen intentando sincronizar.
+- Crear o editar datos con sync durante el uso desactivada: deja pendientes sin disparar corrida inmediata.
+- Activar sync durante el uso y crear datos: dispara `data_change` con debounce.
+- Cambiar intervalo: actualiza el timer de background para la cuenta activa.
+- Cambiar A/B/local durante una corrida: conserva snapshot fijo y no mezcla estados.
+- Abrir y cerrar varias veces: no deja ocupado `127.0.0.1:8000`.
+
 ## Notas tecnicas
 
 - Se reutiliza la logica existente de `finance_app/services.py` para mantener:
@@ -145,7 +157,7 @@ npm run tauri:build
 - En v2.6 la sincronizacion automatica tambien consulta cambios remotos aunque no haya pendientes locales. Se ejecuta al iniciar, por intervalo, al recuperar foco y despues de cambios locales. Tambien se mejora visualmente el dashboard.
 - En v3.0.0 se fija el modo oscuro, se elimina el selector claro/oscuro, se expone diagnostico seguro desde Configuracion > Acerca de ScisoNomics y las actualizaciones se realizan manualmente desde GitHub Releases.
 - En v3.0.1 se agrega estabilizacion de sync/auth: snapshot de owner por corrida, token local para el sidecar en app instalada y Google Login one-time-use.
-- Antes de v3.1.0 se incorporan tags y relaciones movimiento-tag a sync, cursor incremental por owner y `schema_version` local formal.
+- En v3.1.0 una cuenta cloud activa intenta sincronizar al abrir y cerrar la app. El toggle controla solo el background durante el uso y el intervalo configurable por owner.
 - El CSP desktop restringe conexiones al sidecar local, localhost de desarrollo y Railway. `script-src 'unsafe-inline'` se conserva porque el export estatico de Next lo necesita para hidratacion.
 - `shell:allow-spawn` se mantiene como permiso minimo necesario para iniciar `app.shell().sidecar("scisonomics-backend")`; no se amplio `plugins.shell.scope`.
 - Los JWT siguen centralizados en el servicio de auth. La expiracion cloud por defecto baja a 240 minutos. Migrar a secure storage nativo requiere incorporar un plugin del sistema operativo y se deja como tarea separada para no romper sesiones multicuentas existentes.

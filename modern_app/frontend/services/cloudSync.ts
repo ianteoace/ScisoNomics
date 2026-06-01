@@ -13,6 +13,8 @@ const LAST_LOCAL_PROTECTED_TEST_KEY = "scisonomics_last_local_protected_test";
 const LAST_LOCAL_APPLY_CHECK_KEY = "scisonomics_last_local_apply_check";
 const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
 const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
+const AUTO_SYNC_INTERVAL_BY_OWNER_KEY = "scisonomics_auto_sync_interval_by_owner_v1";
+const DEFAULT_AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
 const CLOUD_SYNC_TIMEOUT_MS = 15000;
@@ -23,7 +25,7 @@ type SyncTable = (typeof SYNC_TABLES)[number];
 type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
 type AcceptedPayload = Record<SyncTable, string[]>;
 type SyncMode = "manual" | "auto";
-type SyncReason = "manual" | "auto_local_change" | "auto_remote_pull" | "startup" | "focus" | "interval";
+export type SyncReason = "manual" | "app_start" | "app_close" | "data_change" | "auto_remote_pull" | "focus" | "interval";
 export type SyncErrorType = "network" | "timeout" | "unauthorized" | "forbidden" | "server_error" | "invalid_response" | "unknown";
 
 export type SyncErrorDetails = {
@@ -803,9 +805,13 @@ export function clearAutoSyncPreference(ownerId: string) {
   if (typeof window === "undefined" || !ownerId || ownerId === "local") return;
   try {
     const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
-    delete parsed[ownerId];
-    window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+      const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      delete parsed[ownerId];
+      window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+      const rawIntervals = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
+      const intervals = rawIntervals ? (JSON.parse(rawIntervals) as Record<string, number>) : {};
+      delete intervals[ownerId];
+      window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(intervals));
   } catch {
     // La preferencia no debe bloquear el modo local.
   }
@@ -908,6 +914,35 @@ function setLastCloudSessionTestResult(value: CloudSessionTestResult) {
     window.localStorage.setItem(LAST_CLOUD_SESSION_TEST_KEY, JSON.stringify(value));
   } catch {
     // El diagnostico cloud no debe bloquear la app.
+  }
+  emitSyncStateChanged();
+}
+
+export function getAutoSyncIntervalMs() {
+  if (typeof window === "undefined") return DEFAULT_AUTO_SYNC_INTERVAL_MS;
+  try {
+    const owner = getActiveOwnerId();
+    if (owner === "local") return DEFAULT_AUTO_SYNC_INTERVAL_MS;
+    const raw = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const value = Number(parsed[owner]);
+    return Number.isFinite(value) && value >= 60_000 ? value : DEFAULT_AUTO_SYNC_INTERVAL_MS;
+  } catch {
+    return DEFAULT_AUTO_SYNC_INTERVAL_MS;
+  }
+}
+
+export function setAutoSyncIntervalMs(intervalMs: number) {
+  if (typeof window === "undefined" || !Number.isFinite(intervalMs) || intervalMs < 60_000) return;
+  try {
+    const owner = getActiveOwnerId();
+    if (owner === "local") return;
+    const raw = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    parsed[owner] = intervalMs;
+    window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(parsed));
+  } catch {
+    // La preferencia no debe bloquear el modo local.
   }
   emitSyncStateChanged();
 }
@@ -1445,6 +1480,14 @@ function normalizedSyncPayload(payload: Partial<Record<SyncTable, unknown[]>>): 
 
 export function isSyncInFlight() {
   return syncInFlight;
+}
+
+export async function waitForSyncIdle(timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (syncInFlight && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return !syncInFlight;
 }
 
 export async function getLocalDbIntegrity(ownerId?: string) {

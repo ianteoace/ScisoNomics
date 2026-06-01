@@ -135,7 +135,7 @@ function saveSplitState(state: StoredAuthState) {
   const sessionAccounts = state.accounts.filter((account) => account.storage === "session");
   try {
     // Las cuentas recordadas persisten JWT en localStorage por decision funcional.
-    // Migrar a secure storage nativo queda pendiente para v3.1.0.
+    // Migrar a secure storage nativo queda pendiente para una version posterior.
     if (persistentAccounts.length || state.activeOwnerId !== LOCAL_OWNER_ID) {
       writeJsonState(window.localStorage, AUTH_STATE_KEY, { activeOwnerId: state.activeOwnerId, accounts: persistentAccounts });
     } else {
