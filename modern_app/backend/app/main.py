@@ -13,6 +13,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 import time
 from uuid import uuid4
 
@@ -180,6 +181,13 @@ def _cleanup_stale_temp_snapshots(max_age_seconds: int = 600) -> None:
                 _logger.warning("No se pudo limpiar snapshot temporal antiguo. folder=%s", candidate.name)
 
 
+def _exit_process_after_response() -> None:
+    # El endpoint responde antes de terminar el proceso. os._exit es deliberado:
+    # también cierra el runtime frozen si Windows no entrega SIGTERM a uvicorn.
+    time.sleep(0.15)
+    os._exit(0)
+
+
 def _require_cloud_owner() -> str:
     owner = _current_owner()
     if not owner or owner == LOCAL_OWNER_ID:
@@ -243,6 +251,16 @@ def ready():
             "version": app.version,
         },
     )
+
+
+@app.post("/internal/shutdown")
+def shutdown_backend(request: Request):
+    # El middleware ya protege rutas privadas; validar de nuevo deja explícito
+    # que este endpoint nunca puede usarse sin el token local efímero de Tauri.
+    _require_local_token(request)
+    _logger.info("Shutdown solicitado para backend local.")
+    threading.Thread(target=_exit_process_after_response, daemon=True).start()
+    return {"ok": True}
 
 
 def _safe_app_paths() -> dict[str, str]:

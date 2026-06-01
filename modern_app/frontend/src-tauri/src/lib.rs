@@ -1,5 +1,10 @@
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(target_os = "windows")]
+use std::process::Command;
 
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -98,6 +103,47 @@ fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
 
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
 
+fn local_backend_address() -> SocketAddr {
+  "127.0.0.1:8000".parse().expect("valid local backend address")
+}
+
+fn local_port_is_open() -> bool {
+  TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(150)).is_ok()
+}
+
+fn wait_for_local_port_release(timeout: Duration) -> bool {
+  let deadline = Instant::now() + timeout;
+  while local_port_is_open() {
+    if Instant::now() >= deadline {
+      return false;
+    }
+    std::thread::sleep(Duration::from_millis(100));
+  }
+  true
+}
+
+fn request_cooperative_backend_shutdown(local_api_token: &str) -> bool {
+  let Ok(mut stream) = TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(250)) else {
+    return false;
+  };
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+  let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+  let request = format!(
+    "POST /internal/shutdown HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nX-Scisonomics-Local-Token: {local_api_token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+  );
+  if stream.write_all(request.as_bytes()).is_err() {
+    return false;
+  }
+  let mut response = [0u8; 256];
+  match stream.read(&mut response) {
+    Ok(size) if size > 0 => {
+      let status_line = String::from_utf8_lossy(&response[..size]);
+      status_line.starts_with("HTTP/1.1 200") || status_line.starts_with("HTTP/1.0 200")
+    }
+    _ => false,
+  }
+}
+
 #[cfg(target_os = "windows")]
 fn backend_process_is_running(pid: u32) -> bool {
   use std::ffi::c_void;
@@ -139,7 +185,83 @@ fn wait_for_backend_exit(pid: u32) {
   }
 }
 
-fn stop_backend_sidecar(backend_child: &BackendChild) {
+#[cfg(target_os = "windows")]
+fn safe_stale_sidecar_pids() -> Vec<u32> {
+  let app_root = std::env::current_exe()
+    .ok()
+    .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+    .unwrap_or_default();
+  let script = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$names = @('scisonomics-backend.exe', 'scisonomics-backend-x86_64-pc-windows-msvc.exe')
+$root = [Environment]::GetEnvironmentVariable('SCISONOMICS_APP_ROOT')
+$listenerPids = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 8000 -State Listen | Select-Object -ExpandProperty OwningProcess)
+Get-CimInstance Win32_Process | Where-Object { $names -contains $_.Name } | ForEach-Object {
+  $path = [string]$_.ExecutablePath
+  $underRoot = $path -and $root -and $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+  $ownsPort = $listenerPids -contains [uint32]$_.ProcessId
+  if ($underRoot -or $ownsPort) { [Console]::WriteLine($_.ProcessId) }
+}
+"#;
+  let Ok(output) = Command::new("powershell.exe")
+    .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    .env("SCISONOMICS_APP_ROOT", app_root)
+    .output()
+  else {
+    return Vec::new();
+  };
+  String::from_utf8_lossy(&output.stdout)
+    .lines()
+    .filter_map(|line| line.trim().parse::<u32>().ok())
+    .filter(|pid| *pid != std::process::id())
+    .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_stale_sidecars() -> usize {
+  let mut terminated = 0;
+  for pid in safe_stale_sidecar_pids() {
+    match Command::new("taskkill.exe")
+      .args(["/F", "/T", "/PID", &pid.to_string()])
+      .output()
+    {
+      Ok(output) if output.status.success() => {
+        terminated += 1;
+        log::warn!("Se cerro un sidecar local anterior de ScisoNomics. PID: {pid}");
+      }
+      Ok(_) => log::warn!("No se pudo cerrar el sidecar local anterior de ScisoNomics. PID: {pid}"),
+      Err(error) => log::warn!("No se pudo ejecutar taskkill para el sidecar PID {pid}: {error}"),
+    }
+  }
+  terminated
+}
+
+#[cfg(not(target_os = "windows"))]
+fn terminate_stale_sidecars() -> usize {
+  0
+}
+
+fn prepare_local_port_for_sidecar() -> bool {
+  if !local_port_is_open() {
+    return true;
+  }
+  log::warn!("El puerto local 8000 ya estaba ocupado antes de iniciar el sidecar.");
+  if terminate_stale_sidecars() > 0 && wait_for_local_port_release(Duration::from_secs(1)) {
+    return true;
+  }
+  log::error!("El puerto local de ScisoNomics esta ocupado por otro proceso.");
+  false
+}
+
+fn fallback_close_stale_sidecars() {
+  log::warn!("Aplicando fallback seguro para cerrar sidecars locales anteriores.");
+  terminate_stale_sidecars();
+  if !wait_for_local_port_release(Duration::from_secs(3)) {
+    log::error!("El puerto local 8000 sigue ocupado despues del cierre del sidecar.");
+  }
+}
+
+fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   let child = match backend_child.lock() {
     Ok(mut guard) => guard.take(),
     Err(error) => {
@@ -150,12 +272,31 @@ fn stop_backend_sidecar(backend_child: &BackendChild) {
 
   if let Some(child) = child {
     let pid = child.pid();
+    if request_cooperative_backend_shutdown(local_api_token) {
+      log::info!("Shutdown cooperativo solicitado al backend local. PID: {pid}");
+    }
+    if wait_for_local_port_release(Duration::from_secs(1)) {
+      wait_for_backend_exit(pid);
+      log::info!("Sidecar backend cerrado cooperativamente. PID: {pid}");
+      return;
+    }
+    log::warn!("El sidecar backend no respondio al cierre cooperativo. Aplicando kill. PID: {pid}");
     match child.kill() {
       Ok(()) => {
         wait_for_backend_exit(pid);
         log::info!("Sidecar backend cerrado correctamente. PID: {pid}");
       }
       Err(error) => log::error!("No se pudo cerrar el sidecar backend PID {pid}: {error}"),
+    }
+    if !wait_for_local_port_release(Duration::from_millis(500)) {
+      log::warn!("El puerto 8000 sigue ocupado tras child.kill(). Aplicando fallback Windows seguro.");
+      fallback_close_stale_sidecars();
+    }
+  } else if local_port_is_open() {
+    log::warn!("No hay handle del sidecar, pero el puerto local sigue ocupado.");
+    request_cooperative_backend_shutdown(local_api_token);
+    if !wait_for_local_port_release(Duration::from_secs(1)) {
+      fallback_close_stale_sidecars();
     }
   }
 }
@@ -167,6 +308,8 @@ pub fn run() {
   let setup_backend_child = Arc::clone(&backend_child);
   let close_backend_child = Arc::clone(&backend_child);
   let exit_backend_child = Arc::clone(&backend_child);
+  let close_local_api_token = local_api_token.clone();
+  let exit_local_api_token = local_api_token.clone();
 
   tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
@@ -183,6 +326,15 @@ pub fn run() {
         )?;
       }
 
+      if !prepare_local_port_for_sidecar() {
+        app
+          .dialog()
+          .message("El puerto local de ScisoNomics esta ocupado por otro proceso. Cerra otras instancias de ScisoNomics o el servicio que usa el puerto 8000 y volve a abrir la app.")
+          .title("No se pudo iniciar ScisoNomics")
+          .blocking_show();
+        return Ok(());
+      }
+
       log::info!("Intentando iniciar sidecar backend: scisonomics-backend");
       let sidecar_command = match app.shell().sidecar("scisonomics-backend") {
         Ok(command) => command,
@@ -192,7 +344,10 @@ pub fn run() {
         }
       };
 
-      match sidecar_command.env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone()).spawn() {
+      match sidecar_command
+        .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
+        .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
+        .spawn() {
         Ok((mut rx, child)) => {
           log::info!("Sidecar backend iniciado. PID: {}", child.pid());
           match setup_backend_child.lock() {
@@ -238,14 +393,14 @@ pub fn run() {
     })
     .on_window_event(move |_window, event| {
       if let tauri::WindowEvent::CloseRequested { .. } = event {
-        stop_backend_sidecar(&close_backend_child);
+        stop_backend_sidecar(&close_backend_child, &close_local_api_token);
       }
     })
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
     .run(move |_app_handle, event| {
       if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-        stop_backend_sidecar(&exit_backend_child);
+        stop_backend_sidecar(&exit_backend_child, &exit_local_api_token);
       }
     });
 }

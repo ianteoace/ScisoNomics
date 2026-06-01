@@ -5,6 +5,7 @@ import signal
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
@@ -13,6 +14,8 @@ try:
     import psutil
 except ImportError:
     psutil = None
+
+_WATCHDOG_MARKER = "watchdog-entrypoint-v1"
 
 
 def _ensure_project_on_path() -> None:
@@ -42,16 +45,33 @@ def _parent_is_alive(parent_pid: int) -> bool:
         return False
 
 
+def _watchdog_log(message: str) -> None:
+    try:
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        logs_dir = (
+            Path(local_appdata) / "ScisoNomics" / "logs"
+            if local_appdata
+            else Path.home() / "AppData" / "Local" / "ScisoNomics" / "logs"
+        )
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with (logs_dir / "watchdog.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message}\n")
+    except OSError:
+        pass
+
+
 def _watch_parent(parent_pid: int) -> None:
     while True:
         time.sleep(3)
         if not _parent_is_alive(parent_pid):
-            print("El proceso principal termino; cerrando backend local.", file=sys.stderr)
-            os.kill(os.getpid(), signal.SIGTERM)
+            _watchdog_log(f"parent_missing monitored_pid={parent_pid} backend_pid={os.getpid()} action=os._exit")
+            os._exit(0)
             return
 
 
 def _shutdown_on_signal(_signum: int, _frame: object) -> None:
+    _watchdog_log(f"signal_shutdown backend_pid={os.getpid()}")
     sys.exit(0)
 
 
@@ -63,7 +83,18 @@ def _install_signal_handlers() -> None:
 
 
 def _start_parent_watchdog() -> None:
-    parent_pid = os.getppid()
+    env_pid = os.environ.get("SCISONOMICS_PARENT_PID", "").strip()
+    try:
+        parent_pid = int(env_pid) if env_pid else 0
+    except ValueError:
+        parent_pid = 0
+    if not parent_pid:
+        parent_pid = os.getppid()
+    _watchdog_log(
+        f"startup marker={_WATCHDOG_MARKER} frozen={bool(getattr(sys, 'frozen', False))} "
+        f"executable={sys.executable} backend_pid={os.getpid()} os_ppid={os.getppid()} "
+        f"parent_env_present={bool(env_pid)} monitored_pid={parent_pid}"
+    )
     threading.Thread(target=_watch_parent, args=(parent_pid,), daemon=True).start()
 
 
