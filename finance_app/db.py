@@ -555,8 +555,21 @@ class Database:
             if table not in existing_tables:
                 continue
             columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            tags_backup_created = False
+            if table == "tags" and "owner_user_id" not in columns:
+                if conn.in_transaction:
+                    conn.commit()
+                self._create_required_migration_backup("tags_owner_column")
+                tags_backup_created = True
             if "owner_user_id" not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT")
+                columns.add("owner_user_id")
+            if table == "tags" and self._tags_have_effective_owner_duplicates(conn):
+                if conn.in_transaction:
+                    conn.commit()
+                if not tags_backup_created:
+                    self._create_required_migration_backup("tags_owner_normalization")
+                self._rename_duplicate_tags(conn, use_effective_owner=True)
             conn.execute(
                 f"UPDATE {table} SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''"
             )
@@ -807,35 +820,62 @@ class Database:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_presupuestos_owner_user_id ON presupuestos(owner_user_id)")
         self._append_startup_log("Migracion unique owner presupuestos finalizada correctamente.")
 
-    def _rename_duplicate_tags(self, conn: sqlite3.Connection) -> None:
-        duplicates = conn.execute(
+    def _tags_have_effective_owner_duplicates(self, conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
             """
-            SELECT owner_user_id, nombre, COUNT(*) AS total
+            SELECT 1
             FROM tags
-            GROUP BY owner_user_id, nombre
+            GROUP BY COALESCE(NULLIF(trim(owner_user_id), ''), 'local'), nombre
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        ).fetchone()
+        return row is not None
+
+    def _rename_duplicate_tags(self, conn: sqlite3.Connection, *, use_effective_owner: bool = False) -> None:
+        owner_expression = "COALESCE(NULLIF(trim(owner_user_id), ''), 'local')" if use_effective_owner else "owner_user_id"
+        duplicates = conn.execute(
+            f"""
+            SELECT {owner_expression} AS effective_owner_user_id, nombre, COUNT(*) AS total
+            FROM tags
+            GROUP BY {owner_expression}, nombre
             HAVING COUNT(*) > 1
             """
         ).fetchall()
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tags)").fetchall()}
         for duplicate in duplicates:
             rows = conn.execute(
-                """
+                f"""
                 SELECT id
                 FROM tags
-                WHERE owner_user_id = ? AND nombre = ?
+                WHERE {owner_expression} = ? AND nombre = ?
                 ORDER BY id
                 """,
-                (duplicate["owner_user_id"], duplicate["nombre"]),
+                (duplicate["effective_owner_user_id"], duplicate["nombre"]),
             ).fetchall()
             for row in rows[1:]:
+                suffix = 1
+                candidate = f"{duplicate['nombre']} (duplicado {row['id']})"
+                while conn.execute(
+                    f"SELECT 1 FROM tags WHERE {owner_expression} = ? AND nombre = ? AND id <> ? LIMIT 1",
+                    (duplicate["effective_owner_user_id"], candidate, row["id"]),
+                ).fetchone():
+                    suffix += 1
+                    candidate = f"{duplicate['nombre']} (duplicado {row['id']}-{suffix})"
+                assignments = ["nombre = ?"]
+                params: list[object] = [candidate]
+                if "updated_at" in columns:
+                    assignments.append("updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP)")
+                if "sync_status" in columns:
+                    assignments.append("sync_status = 'pending'")
+                params.append(row["id"])
                 conn.execute(
-                    """
+                    f"""
                     UPDATE tags
-                    SET nombre = nombre || ' (duplicado ' || id || ')',
-                        updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP),
-                        sync_status = 'pending'
+                    SET {", ".join(assignments)}
                     WHERE id = ?
                     """,
-                    (row["id"],),
+                    tuple(params),
                 )
         if duplicates:
             self._append_startup_log(f"Tags duplicados renombrados de forma conservadora. groups={len(duplicates)}")
