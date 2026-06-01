@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 from finance_app.exporter import export_date_range_report, export_filtered_movimientos, export_monthly_report, export_yearly_report
-from finance_app.db import CURRENT_SCHEMA_VERSION
+from finance_app.db import CURRENT_SCHEMA_VERSION, Database
 from finance_app.services import (
     LOCAL_OWNER_ID,
     FinanceService,
@@ -1555,8 +1555,15 @@ EXPECTED_LOCAL_COLUMNS: dict[str, set[str]] = {
 }
 
 
-def _db_integrity_issue(code: str, severity: str, table: str | None, count: int, repairable: bool) -> dict[str, Any]:
-    return {"code": code, "severity": severity, "table": table, "count": count, "repairable": repairable}
+def _db_integrity_issue(
+    code: str,
+    severity: str,
+    table: str | None,
+    count: int,
+    repairable: bool,
+    **details: Any,
+) -> dict[str, Any]:
+    return {"code": code, "severity": severity, "table": table, "count": count, "repairable": repairable, **details}
 
 
 def _open_local_db(read_only: bool = False) -> sqlite3.Connection:
@@ -1600,6 +1607,22 @@ def _has_index_with_columns(conn: sqlite3.Connection, table: str, expected: tupl
         if columns == expected:
             return True
     return False
+
+
+def _table_indexes_summary(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    indexes: list[dict[str, Any]] = []
+    for index in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        indexes.append(
+            {
+                "name": str(index["name"]),
+                "unique": bool(index["unique"]),
+                "columns": [
+                    str(row["name"])
+                    for row in conn.execute(f"PRAGMA index_info({index['name']})").fetchall()
+                ],
+            }
+        )
+    return indexes
 
 
 def _tables_have_columns(conn: sqlite3.Connection, requirements: dict[str, set[str]], existing_tables: set[str]) -> bool:
@@ -1715,12 +1738,12 @@ def _local_db_integrity_report() -> dict[str, Any]:
                     _append_count_issue(issues, conn, code, "critical", table, query)
 
             logical_uniques = [
-                ("duplicate_owner_category", "categorias", ("owner_user_id", "nombre", "tipo")),
-                ("duplicate_owner_tag", "tags", ("owner_user_id", "nombre")),
-                ("duplicate_owner_budget", "presupuestos", ("owner_user_id", "categoria_id", "mes", "anio")),
-                ("duplicate_owner_movement_tag", "movimiento_tags", ("owner_user_id", "movimiento_id", "tag_id")),
+                ("duplicate_owner_category", "categorias", ("owner_user_id", "nombre", "tipo"), True),
+                ("duplicate_owner_tag", "tags", ("owner_user_id", "nombre"), True),
+                ("duplicate_owner_budget", "presupuestos", ("owner_user_id", "categoria_id", "mes", "anio"), False),
+                ("duplicate_owner_movement_tag", "movimiento_tags", ("owner_user_id", "movimiento_id", "tag_id"), False),
             ]
-            for code, table, columns in logical_uniques:
+            for code, table, columns, repairable in logical_uniques:
                 if table not in existing_tables or not set(columns).issubset(_table_columns(conn, table)):
                     continue
                 grouped = ", ".join(columns)
@@ -1731,6 +1754,7 @@ def _local_db_integrity_report() -> dict[str, Any]:
                     "critical",
                     table,
                     f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} GROUP BY {grouped} HAVING COUNT(*) > 1)",
+                    repairable,
                 )
 
             owner_index_tables = (*INTEGRITY_SYNC_TABLES, "sync_history", "sync_conflicts")
@@ -1746,13 +1770,29 @@ def _local_db_integrity_report() -> dict[str, Any]:
                         issues.append(_db_integrity_issue("missing_owner_index", "warning", table, 1, False))
 
             expected_unique_indexes = [
-                ("categorias", ("owner_user_id", "nombre", "tipo")),
-                ("tags", ("owner_user_id", "nombre")),
-                ("presupuestos", ("owner_user_id", "categoria_id", "mes", "anio")),
+                ("categorias", "idx_categorias_owner_nombre_tipo", ("owner_user_id", "nombre", "tipo")),
+                ("tags", "idx_tags_owner_nombre", ("owner_user_id", "nombre")),
+                ("presupuestos", "idx_presupuestos_owner_categoria_periodo", ("owner_user_id", "categoria_id", "mes", "anio")),
             ]
-            for table, columns in expected_unique_indexes:
+            for table, expected_index, columns in expected_unique_indexes:
                 if table in existing_tables and not _has_index_with_columns(conn, table, columns, unique=True):
-                    issues.append(_db_integrity_issue("missing_owner_unique_constraint", "critical", table, 1, False))
+                    duplicate_count = _count_rows(
+                        conn,
+                        f"SELECT COUNT(*) FROM (SELECT 1 FROM {table} GROUP BY {', '.join(columns)} HAVING COUNT(*) > 1)",
+                    )
+                    repairable = table in {"categorias", "tags"} or duplicate_count == 0
+                    issues.append(
+                        _db_integrity_issue(
+                            "missing_owner_unique_constraint",
+                            "critical",
+                            table,
+                            1,
+                            repairable,
+                            expected_index=expected_index,
+                            expected_unique_columns=list(columns),
+                            current_indexes=_table_indexes_summary(conn, table),
+                        )
+                    )
 
             # Estos CHECK forman parte de la semantica financiera minima. Detectar
             # su ausencia evita operar sobre DBs parcialmente reconstruidas.
@@ -1877,7 +1917,12 @@ def local_db_repair():
     backup = _create_local_backup()
     before = _local_db_integrity_report()
     _logger.info("[db-repair] start issue_codes=%s", [issue["code"] for issue in before["issues"]])
-    if any(issue["severity"] == "critical" for issue in before["issues"]):
+    blocking_critical = [
+        issue
+        for issue in before["issues"]
+        if issue["severity"] == "critical" and not bool(issue["repairable"])
+    ]
+    if blocking_critical:
         return JSONResponse(
             status_code=409,
             content={
@@ -1890,6 +1935,38 @@ def local_db_repair():
         )
 
     repaired_count = 0
+    owner_unique_issues = [
+        issue
+        for issue in before["issues"]
+        if issue["code"] in {"missing_owner_unique_constraint", "duplicate_owner_category", "duplicate_owner_tag"}
+    ]
+    if owner_unique_issues:
+        # init_db contiene migraciones idempotentes y con backup propio para los
+        # UNIQUE owner-aware. El endpoint ya creo ademas un backup general antes
+        # de llegar aca.
+        Database(db_path=WEB_DB_PATH).init_db()
+        repaired_count += len(owner_unique_issues)
+        schema_after = _local_db_integrity_report()
+        if any(issue["severity"] == "critical" for issue in schema_after["issues"]):
+            _logger.warning(
+                "[db-repair] owner unique repair unresolved issue_codes=%s",
+                [issue["code"] for issue in schema_after["issues"]],
+            )
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "backup_created": True,
+                    "repaired_count": repaired_count,
+                    "unresolved_count": schema_after["issues_count"],
+                    "safe_summary": [
+                        "Se creo un backup antes de reparar.",
+                        "Encontramos problemas que requieren revision manual.",
+                        "Tus datos financieros no fueron eliminados.",
+                    ],
+                },
+            )
+
     now = datetime.now().isoformat(timespec="seconds")
     with closing(_open_local_db()) as conn:
         with conn:

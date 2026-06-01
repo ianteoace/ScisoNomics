@@ -197,12 +197,16 @@ class Database:
                 self._migrate_sync_columns(conn)
                 self._migrate_owner_columns(conn)
                 self._migrate_categorias_owner_unique(conn)
+                self._migrate_tags_owner_unique(conn)
+                self._migrate_presupuestos_owner_unique(conn)
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
                 self._seed_default_tags(conn)
                 self._migrate_sync_columns(conn)
                 self._migrate_owner_columns(conn)
                 self._migrate_categorias_owner_unique(conn)
+                self._migrate_tags_owner_unique(conn)
+                self._migrate_presupuestos_owner_unique(conn)
                 self._set_schema_version(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
@@ -570,6 +574,8 @@ class Database:
             self._ensure_categorias_owner_indexes(conn)
             return
 
+        if conn.in_transaction:
+            conn.commit()
         self._create_required_migration_backup("categorias_owner_unique")
         self._append_startup_log("Iniciando migracion de categorias a UNIQUE(owner_user_id, nombre, tipo).")
 
@@ -641,16 +647,7 @@ class Database:
         self._append_startup_log("Migracion unique owner categorias finalizada correctamente.")
 
     def _categorias_has_global_unique(self, conn: sqlite3.Connection) -> bool:
-        for index in conn.execute("PRAGMA index_list(categorias)").fetchall():
-            if int(index["unique"] or 0) != 1:
-                continue
-            columns = [
-                str(row["name"])
-                for row in conn.execute(f"PRAGMA index_info({self._quote_identifier(str(index['name']))})").fetchall()
-            ]
-            if columns == ["nombre", "tipo"]:
-                return True
-        return False
+        return self._has_unique_index(conn, "categorias", ("nombre", "tipo"))
 
     def _categoria_column_definition(self, row: sqlite3.Row) -> str:
         name = str(row["name"])
@@ -701,13 +698,12 @@ class Database:
         return '"' + value.replace('"', '""') + '"'
 
     def _ensure_categorias_owner_indexes(self, conn: sqlite3.Connection) -> None:
-        # No reconstruimos categorias porque movimientos y otras tablas referencian su id.
-        # El UNIQUE global historico queda para una migracion futura mas profunda.
+        # El indice fisico incluye tambien soft-deleted; normalizar todos los
+        # duplicados evita fallos al crearlo sin borrar ni reasignar IDs.
         duplicates = conn.execute(
             """
             SELECT owner_user_id, nombre, tipo, COUNT(*) AS total
             FROM categorias
-            WHERE deleted_at IS NULL OR deleted_at = ''
             GROUP BY owner_user_id, nombre, tipo
             HAVING COUNT(*) > 1
             """
@@ -740,6 +736,196 @@ class Database:
         except sqlite3.IntegrityError as exc:
             self._append_startup_log(f"No se pudo crear idx_categorias_owner_nombre_tipo: {exc}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_categorias_owner_user_id ON categorias(owner_user_id)")
+
+    def _migrate_tags_owner_unique(self, conn: sqlite3.Connection) -> None:
+        if self._has_unique_index(conn, "tags", ("owner_user_id", "nombre")):
+            return
+
+        if conn.in_transaction:
+            conn.commit()
+        self._create_required_migration_backup("tags_owner_unique")
+        self._append_startup_log("Iniciando migracion de tags a UNIQUE(owner_user_id, nombre).")
+        if self._has_unique_index(conn, "tags", ("nombre",)):
+            self._rebuild_owner_unique_table(
+                conn,
+                table="tags",
+                unique_columns=("owner_user_id", "nombre"),
+            )
+        else:
+            self._rename_duplicate_tags(conn)
+            conn.execute("CREATE UNIQUE INDEX idx_tags_owner_nombre ON tags(owner_user_id, nombre)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_owner_user_id ON tags(owner_user_id)")
+        self._append_startup_log("Migracion unique owner tags finalizada correctamente.")
+
+    def _migrate_presupuestos_owner_unique(self, conn: sqlite3.Connection) -> None:
+        owner_columns = ("owner_user_id", "categoria_id", "mes", "anio")
+        if self._has_unique_index(conn, "presupuestos", owner_columns):
+            return
+
+        duplicate_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT 1
+                    FROM presupuestos
+                    GROUP BY owner_user_id, categoria_id, mes, anio
+                    HAVING COUNT(*) > 1
+                )
+                """
+            ).fetchone()[0]
+            or 0
+        )
+        if duplicate_count:
+            self._append_startup_log(
+                f"No se migro unique owner presupuestos: duplicate_groups={duplicate_count}. Requiere revision manual."
+            )
+            return
+
+        if conn.in_transaction:
+            conn.commit()
+        self._create_required_migration_backup("presupuestos_owner_unique")
+        self._append_startup_log(
+            "Iniciando migracion de presupuestos a UNIQUE(owner_user_id, categoria_id, mes, anio)."
+        )
+        if self._has_unique_index(conn, "presupuestos", ("categoria_id", "mes", "anio")):
+            self._rebuild_owner_unique_table(
+                conn,
+                table="presupuestos",
+                unique_columns=owner_columns,
+                table_constraints=(
+                    "CHECK(mes BETWEEN 1 AND 12)",
+                    "CHECK(monto > 0)",
+                    "FOREIGN KEY (categoria_id) REFERENCES categorias(id)",
+                ),
+            )
+        else:
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_presupuestos_owner_categoria_periodo "
+                "ON presupuestos(owner_user_id, categoria_id, mes, anio)"
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_presupuestos_owner_user_id ON presupuestos(owner_user_id)")
+        self._append_startup_log("Migracion unique owner presupuestos finalizada correctamente.")
+
+    def _rename_duplicate_tags(self, conn: sqlite3.Connection) -> None:
+        duplicates = conn.execute(
+            """
+            SELECT owner_user_id, nombre, COUNT(*) AS total
+            FROM tags
+            GROUP BY owner_user_id, nombre
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for duplicate in duplicates:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM tags
+                WHERE owner_user_id = ? AND nombre = ?
+                ORDER BY id
+                """,
+                (duplicate["owner_user_id"], duplicate["nombre"]),
+            ).fetchall()
+            for row in rows[1:]:
+                conn.execute(
+                    """
+                    UPDATE tags
+                    SET nombre = nombre || ' (duplicado ' || id || ')',
+                        updated_at = COALESCE(NULLIF(updated_at, ''), CURRENT_TIMESTAMP),
+                        sync_status = 'pending'
+                    WHERE id = ?
+                    """,
+                    (row["id"],),
+                )
+        if duplicates:
+            self._append_startup_log(f"Tags duplicados renombrados de forma conservadora. groups={len(duplicates)}")
+
+    def _rebuild_owner_unique_table(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        unique_columns: tuple[str, ...],
+        table_constraints: tuple[str, ...] = (),
+    ) -> None:
+        table_info = conn.execute(f"PRAGMA table_info({self._quote_identifier(table)})").fetchall()
+        existing_columns = [str(row["name"]) for row in table_info]
+        index_rows = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+            (table,),
+        ).fetchall()
+        if table == "tags":
+            self._rename_duplicate_tags(conn)
+
+        col_defs = [self._generic_column_definition(row) for row in table_info]
+        col_defs.extend(table_constraints)
+        col_defs.append(f"UNIQUE({', '.join(unique_columns)})")
+        quoted_cols = ", ".join(self._quote_identifier(column) for column in existing_columns)
+        new_table = f"{table}_owner_new"
+
+        if conn.in_transaction:
+            conn.commit()
+        old_foreign_keys = int(conn.execute("PRAGMA foreign_keys").fetchone()[0] or 0)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute("BEGIN")
+            conn.execute(f"CREATE TABLE {self._quote_identifier(new_table)} ({', '.join(col_defs)})")
+            conn.execute(
+                f"INSERT INTO {self._quote_identifier(new_table)} ({quoted_cols}) "
+                f"SELECT {quoted_cols} FROM {self._quote_identifier(table)}"
+            )
+            conn.execute(f"DROP TABLE {self._quote_identifier(table)}")
+            conn.execute(
+                f"ALTER TABLE {self._quote_identifier(new_table)} RENAME TO {self._quote_identifier(table)}"
+            )
+            for index in index_rows:
+                sql = str(index["sql"] or "")
+                if not sql or "unique" in sql.lower():
+                    continue
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError as exc:
+                    self._append_startup_log(f"No se pudo recrear indice de {table} {index['name']}: {exc}")
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise sqlite3.IntegrityError(f"foreign_key_check detecto inconsistencias luego de migrar {table}.")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            self._append_startup_log(f"Fallo migracion unique owner {table}. Se hizo rollback.")
+            raise
+        finally:
+            conn.execute(f"PRAGMA foreign_keys = {old_foreign_keys}")
+
+    def _generic_column_definition(self, row: sqlite3.Row) -> str:
+        name = str(row["name"])
+        col_type = str(row["type"] or "TEXT")
+        default = row["dflt_value"]
+        pk = int(row["pk"] or 0)
+        definition = f"{self._quote_identifier(name)} {col_type}".strip()
+        if name == "id" and pk:
+            return "id INTEGER PRIMARY KEY AUTOINCREMENT"
+        if pk:
+            definition += " PRIMARY KEY"
+        if int(row["notnull"] or 0) == 1 and not pk:
+            definition += " NOT NULL"
+        if default is not None and not pk:
+            definition += f" DEFAULT {default}"
+        return definition
+
+    def _has_unique_index(self, conn: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> bool:
+        for index in conn.execute(f"PRAGMA index_list({self._quote_identifier(table)})").fetchall():
+            if int(index["unique"] or 0) != 1:
+                continue
+            indexed_columns = tuple(
+                str(row["name"])
+                for row in conn.execute(
+                    f"PRAGMA index_info({self._quote_identifier(str(index['name']))})"
+                ).fetchall()
+            )
+            if indexed_columns == columns:
+                return True
+        return False
 
     def _ensure_sync_columns_for_table(self, conn: sqlite3.Connection, table: str) -> None:
         columns = {
