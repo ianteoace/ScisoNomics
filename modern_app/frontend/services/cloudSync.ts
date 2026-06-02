@@ -58,6 +58,13 @@ export type CloudHealthResult = {
   timestamp: string;
   version?: string | null;
   service?: string | null;
+  capabilities?: {
+    sync_tables?: string[];
+    incremental_pull?: boolean;
+    server_revisions?: boolean;
+    tags_sync?: boolean;
+    movimiento_tags_sync?: boolean;
+  } | null;
 };
 
 export type SyncOverview = {
@@ -999,6 +1006,7 @@ export async function testCloudHealth(): Promise<CloudHealthResult> {
       timestamp,
       version: typeof body?.version === "string" ? body.version : null,
       service: typeof body?.service === "string" ? body.service : null,
+      capabilities: body?.capabilities && typeof body.capabilities === "object" ? body.capabilities : null,
     };
     setLastCloudHealthResult(result);
     return result;
@@ -1019,6 +1027,39 @@ export async function testCloudHealth(): Promise<CloudHealthResult> {
     setLastCloudHealthResult(result);
     return result;
   }
+}
+
+async function ensureCloudSyncCompatible(reason: SyncReason, ownerId: string) {
+  const health = await testCloudHealth();
+  const supportedTables = new Set(health.capabilities?.sync_tables || []);
+  const missingTables = SYNC_TABLES.filter((table) => !supportedTables.has(table));
+  const compatible =
+    health.ok &&
+    health.version === "3.1.0" &&
+    health.capabilities?.incremental_pull === true &&
+    health.capabilities?.server_revisions === true &&
+    health.capabilities?.tags_sync === true &&
+    health.capabilities?.movimiento_tags_sync === true &&
+    missingTables.length === 0;
+  if (compatible) return;
+
+  const technical = [
+    `version=${health.version || "unknown"}`,
+    `missing_tables=${missingTables.join(",") || "none"}`,
+    `incremental_pull=${String(health.capabilities?.incremental_pull)}`,
+    `server_revisions=${String(health.capabilities?.server_revisions)}`,
+  ].join(" ");
+  throw cloudSyncError({
+    type: health.ok ? "invalid_response" : (health.type === "ok" ? "unknown" : health.type),
+    endpoint: health.endpoint,
+    statusCode: health.status_code,
+    technicalMessage: technical,
+    userMessage: "El servicio cloud necesita actualizarse para esta version de ScisoNomics.",
+    method: "GET",
+    phase: "health",
+    ownerUsed: ownerId,
+    reason,
+  });
 }
 
 function setLastCloudSyncTestResult(value: CloudSyncTestResult) {
@@ -1544,6 +1585,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   });
 
   try {
+    await ensureCloudSyncCompatible(reason, snapshot.ownerId);
     const integrity = await getLocalDbIntegrity(snapshot.ownerId);
     if (integrity.status === "critical") {
       console.warn(`${LOG_PREFIX} blocked: local integrity critical`, { issueCodes: integrity.issues.map((issue) => issue.code) });

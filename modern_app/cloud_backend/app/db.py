@@ -109,6 +109,63 @@ SYNC_CLOUD_TABLES = (
     "cloud_movimiento_tags",
 )
 
+CLOUD_SYNC_COLUMN_DEFINITIONS: dict[str, dict[str, str]] = {
+    "cloud_categorias": {
+        "color": "TEXT",
+        "icono": "TEXT",
+    },
+    "cloud_movimientos": {
+        "categoria_id": "INTEGER",
+        "categoria_sync_id": "TEXT",
+    },
+    "cloud_metas_ahorro": {
+        "monto_objetivo": "DOUBLE PRECISION",
+        "monto_inicial": "DOUBLE PRECISION",
+        "fecha_objetivo": "TEXT",
+        "descripcion": "TEXT",
+        "estado": "TEXT",
+    },
+    "cloud_gastos_programados": {
+        "categoria_sync_id": "TEXT",
+        "monto_estimado": "DOUBLE PRECISION",
+        "fecha_vencimiento": "TEXT",
+        "estado": "TEXT",
+        "es_recurrente": "INTEGER",
+        "frecuencia": "TEXT",
+    },
+    "cloud_gastos_fijos": {
+        "categoria_sync_id": "TEXT",
+        "monto": "DOUBLE PRECISION",
+        "dia_vencimiento": "INTEGER",
+        "activo": "INTEGER",
+    },
+    "cloud_presupuestos": {
+        "categoria_sync_id": "TEXT",
+        "mes": "INTEGER",
+        "anio": "INTEGER",
+        "monto": "DOUBLE PRECISION",
+    },
+    "cloud_tags": {
+        "nombre": "TEXT",
+        "color": "TEXT",
+    },
+    "cloud_movimiento_tags": {
+        "movimiento_sync_id": "TEXT",
+        "tag_sync_id": "TEXT",
+    },
+}
+
+COMMON_SYNC_COLUMN_DEFINITIONS = {
+    "created_at": "TEXT",
+    "updated_at": "TEXT",
+    "deleted_at": "TEXT",
+    "sync_status": "TEXT",
+    "remote_updated_at": "TEXT",
+    "last_modified_device_id": "TEXT",
+    "last_modified_device_name": "TEXT",
+    "last_modified_at": "TEXT",
+}
+
 
 def _ensure_column(conn: CloudConnection, table: str, column: str, definition: str) -> None:
     if conn.engine == "sqlite":
@@ -134,6 +191,22 @@ def _ensure_origin_columns(conn: CloudConnection) -> None:
         _ensure_column(conn, table, "last_modified_device_id", "TEXT")
         _ensure_column(conn, table, "last_modified_device_name", "TEXT")
         _ensure_column(conn, table, "last_modified_at", "TEXT")
+
+
+def _ensure_cloud_sync_schema(conn: CloudConnection) -> None:
+    for table in SYNC_CLOUD_TABLES:
+        for column, definition in COMMON_SYNC_COLUMN_DEFINITIONS.items():
+            _ensure_column(conn, table, column, definition)
+        for column, definition in CLOUD_SYNC_COLUMN_DEFINITIONS.get(table, {}).items():
+            _ensure_column(conn, table, column, definition)
+        conn.execute(
+            f"""
+            UPDATE {table}
+            SET remote_updated_at = COALESCE(NULLIF(remote_updated_at, ''), NULLIF(updated_at, ''), NULLIF(created_at, ''), ?)
+            WHERE remote_updated_at IS NULL OR remote_updated_at = ''
+            """,
+            ("1970-01-01T00:00:00+00:00",),
+        )
 
 
 def _ensure_google_auth_columns(conn: CloudConnection) -> None:
@@ -367,7 +440,7 @@ def _init_sqlite() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
         _ensure_google_auth_columns(conn)
-        _ensure_origin_columns(conn)
+        _ensure_cloud_sync_schema(conn)
 
 
 def _init_postgres() -> None:
@@ -580,4 +653,4 @@ def _init_postgres() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
         _ensure_google_auth_columns(conn)
-        _ensure_origin_columns(conn)
+        _ensure_cloud_sync_schema(conn)

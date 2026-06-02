@@ -476,6 +476,10 @@ def _upsert_device(conn, user_id: str, device_id: Any, device_name: Any, now: st
     )
 
 
+def _payload_counts(payload: dict[str, Any]) -> dict[str, int]:
+    return {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
+
+
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -502,7 +506,19 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
 def health():
     init_db()
     database = get_database_engine()
-    return {"ok": True, "service": "scisonomics-cloud-auth", "database": database, "version": app.version}
+    return {
+        "ok": True,
+        "service": "scisonomics-cloud-auth",
+        "database": database,
+        "version": app.version,
+        "capabilities": {
+            "sync_tables": list(SYNC_TABLES),
+            "incremental_pull": True,
+            "server_revisions": True,
+            "tags_sync": True,
+            "movimiento_tags_sync": True,
+        },
+    }
 
 
 @app.post("/auth/register", response_model=AuthResponse)
@@ -568,40 +584,60 @@ def sync_health(user: UserOut = Depends(get_current_user)):
 
 @app.post("/sync/push")
 async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current_user)):
-    init_db()
-    accepted = {table: [] for table in SYNC_TABLES}
-    ignored = {table: 0 for table in SYNC_TABLES}
-    conflicts = {table: 0 for table in SYNC_TABLES}
-    received = {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
-    now = now_iso()
-    device_id = str(payload.get("device_id") or "").strip() or None
-    device_name = str(payload.get("device_name") or "").strip() or None
+    received = _payload_counts(payload)
+    try:
+        init_db()
+        accepted = {table: [] for table in SYNC_TABLES}
+        ignored = {table: 0 for table in SYNC_TABLES}
+        conflicts = {table: 0 for table in SYNC_TABLES}
+        now = now_iso()
+        device_id = str(payload.get("device_id") or "").strip() or None
+        device_name = str(payload.get("device_name") or "").strip() or None
 
-    with connect() as conn:
-        _upsert_device(conn, user.id, device_id, device_name, now)
+        with connect() as conn:
+            _upsert_device(conn, user.id, device_id, device_name, now)
+            for table in SYNC_TABLES:
+                items = payload.get(table, []) or []
+                table_accepted, table_ignored, table_conflicts = _push_table(conn, user.id, table, items, now, device_id, device_name)
+                accepted[table] = table_accepted
+                ignored[table] = table_ignored
+                conflicts[table] = table_conflicts
+
+        counts = {}
         for table in SYNC_TABLES:
-            items = payload.get(table, []) or []
-            table_accepted, table_ignored, table_conflicts = _push_table(conn, user.id, table, items, now, device_id, device_name)
-            accepted[table] = table_accepted
-            ignored[table] = table_ignored
-            conflicts[table] = table_conflicts
-
-    counts = {}
-    for table in SYNC_TABLES:
-        counts[f"{table}_received"] = received[table]
-        counts[f"{table}_saved"] = len(accepted[table])
-    if any(received[table] != len(accepted[table]) + ignored[table] for table in SYNC_TABLES):
-        raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
-    return {"ok": True, "accepted": accepted, "ignored": ignored, "conflicts": conflicts, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
+            counts[f"{table}_received"] = received[table]
+            counts[f"{table}_saved"] = len(accepted[table])
+        if any(received[table] != len(accepted[table]) + ignored[table] for table in SYNC_TABLES):
+            raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
+        return {"ok": True, "accepted": accepted, "ignored": ignored, "conflicts": conflicts, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.exception(
+            "[sync-push] failed user_id=%s counts=%s error_type=%s",
+            short_identifier(user.id),
+            received,
+            type(exc).__name__,
+        )
+        raise HTTPException(status_code=500, detail="No se pudo guardar la sincronizacion en cloud.") from exc
 
 
 @app.get("/sync/pull")
 def sync_pull(since: str | None = Query(default=None), user: UserOut = Depends(get_current_user)):
-    init_db()
-    cursor = now_iso()
-    with connect() as conn:
-        payload = {table: _pull_table(conn, user.id, table, since, cursor) for table in SYNC_TABLES}
-    return {"ok": True, "cursor": cursor, "incremental": bool(since), **payload}
+    try:
+        init_db()
+        cursor = now_iso()
+        with connect() as conn:
+            payload = {table: _pull_table(conn, user.id, table, since, cursor) for table in SYNC_TABLES}
+        return {"ok": True, "cursor": cursor, "incremental": bool(since), **payload}
+    except Exception as exc:
+        _logger.exception(
+            "[sync-pull] failed user_id=%s incremental=%s error_type=%s",
+            short_identifier(user.id),
+            bool(since),
+            type(exc).__name__,
+        )
+        raise HTTPException(status_code=500, detail="No se pudo leer la sincronizacion desde cloud.") from exc
 
 
 @app.get("/sync/debug-counts", dependencies=[Depends(_require_debug_endpoints_enabled)])
