@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import gettempdir, mkdtemp
 from typing import Any, Literal
@@ -958,6 +958,7 @@ def _sync_status_tables(conn: sqlite3.Connection, owner: str | None = None) -> d
             SELECT
               COUNT(*) AS total,
               COALESCE(SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+              COALESCE(SUM(CASE WHEN sync_status = 'sync_error' THEN 1 ELSE 0 END), 0) AS sync_error,
               COALESCE(SUM(CASE WHEN sync_status = 'pending' AND deleted_at IS NOT NULL AND deleted_at <> '' THEN 1 ELSE 0 END), 0) AS deleted_pending,
               COALESCE(SUM(CASE WHEN sync_id IS NULL OR trim(sync_id) = '' THEN 1 ELSE 0 END), 0) AS missing_sync_id
             FROM {table}
@@ -969,6 +970,7 @@ def _sync_status_tables(conn: sqlite3.Connection, owner: str | None = None) -> d
         tables[table] = {
             "total": int(row["total"] or 0),
             "pending": int(row["pending"] or 0),
+            "sync_error": int(row["sync_error"] or 0),
             "deleted_pending": int(row["deleted_pending"] or 0),
             "missing_sync_id": int(row["missing_sync_id"] or 0),
         }
@@ -1340,12 +1342,16 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
 def sync_overview(service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
     owner = _current_owner()
+    readiness = get_database_readiness(ensure_started=False)
+    integrity = _local_db_integrity_report()
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
         device = _get_or_create_device_info(conn)
         tables = _sync_status_tables(conn, owner)
         pending_total = sum(item["pending"] for item in tables.values())
+        sync_error_total = sum(item["sync_error"] for item in tables.values())
         deleted_pending_total = sum(item["deleted_pending"] for item in tables.values())
+        rejection_summary = _active_rejection_summary(conn, owner)
         return {
             "ok": True,
             "version": app.version,
@@ -1354,12 +1360,18 @@ def sync_overview(service: FinanceService = Depends(get_service)):
             **device,
             "has_pending": pending_total > 0,
             "pending_total": pending_total,
+            "sync_error_total": sync_error_total,
             "deleted_pending_total": deleted_pending_total,
             "tables": tables,
             "last_success": _latest_history(conn, "success", owner),
             "last_error": _latest_history(conn, "error", owner),
             "last_remote_change_at": _last_remote_change_at(conn, owner),
-            **_active_rejection_summary(conn, owner),
+            **rejection_summary,
+            "last_rejection_code": rejection_summary.get("latest_rejection", {}).get("code") if rejection_summary.get("latest_rejection") else None,
+            "db_integrity_status": integrity.get("status"),
+            "ready_status": readiness.get("status"),
+            "ready_code": readiness.get("code"),
+            "sync_allowed": bool(readiness.get("sync_allowed", False)),
             **_conflict_summary(conn, owner),
         }
 
@@ -1509,13 +1521,39 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def _parse_sync_datetime(value: Any) -> datetime | None:
     if not value:
         return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
-        except ValueError:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value).strip()
+        if not raw:
             return None
+        normalized = raw.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    try:
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _serialize_sync_datetime(value: Any, *, fallback: Any | None = None) -> str | None:
+    parsed = _parse_sync_datetime(value)
+    if parsed is None and fallback is not None:
+        parsed = _parse_sync_datetime(fallback)
+    if parsed is None:
+        return None
+    return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _utc_now_sync_text() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _remote_is_newer(item: dict[str, Any], local: sqlite3.Row) -> bool:
@@ -1524,7 +1562,9 @@ def _remote_is_newer(item: dict[str, Any], local: sqlite3.Row) -> bool:
     local_dt = _parse_sync_datetime(local["last_remote_updated_at"])
     if remote_dt is None:
         return False
-    if local_dt is None or remote_dt > local_dt:
+    if local_dt is None:
+        return True
+    if remote_dt > local_dt:
         return True
     if remote_dt < local_dt:
         return False
@@ -1607,7 +1647,7 @@ def _remote_meta_values(item: dict[str, Any]) -> tuple[Any, Any, Any]:
     return (
         item.get("last_modified_device_id"),
         item.get("last_modified_device_name"),
-        item.get("last_modified_at") or item.get("updated_at"),
+        _serialize_sync_datetime(item.get("last_modified_at") or item.get("updated_at")),
     )
 
 
@@ -2215,6 +2255,9 @@ def _apply_simple_remote(
 ) -> None:
     sync_id = str(item.get("sync_id") or "").strip()
     owner = _current_owner()
+    created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
+    updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
+    deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
     if not sync_id:
         result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
         return
@@ -2241,8 +2284,8 @@ def _apply_simple_remote(
                 """,
                 (
                     *values,
-                    item.get("updated_at") or now,
-                    item.get("deleted_at"),
+                    updated_at,
+                    deleted_at,
                     _sync_status_value(item),
                     now,
                     *_remote_meta_values(item),
@@ -2262,9 +2305,9 @@ def _apply_simple_remote(
             *values,
             owner,
             sync_id,
-            item.get("created_at") or now,
-            item.get("updated_at") or now,
-            item.get("deleted_at"),
+            created_at,
+            updated_at,
+            deleted_at,
             _sync_status_value(item),
             now,
             *_remote_meta_values(item),
@@ -2284,6 +2327,8 @@ def _apply_remote_tag(
     sync_id = str(item.get("sync_id") or "").strip()
     nombre = str(item.get("nombre") or "").strip()
     owner = _current_owner()
+    updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
+    deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
     if not sync_id or not nombre:
         result["tags_skipped"] += 1
         return
@@ -2301,7 +2346,7 @@ def _apply_remote_tag(
                     last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                 WHERE id = ? AND owner_user_id = ?
                 """,
-                (sync_id, item.get("color"), item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), existing["id"], owner),
+                (sync_id, item.get("color"), updated_at, deleted_at, now, *_remote_meta_values(item), existing["id"], owner),
             )
             result["tags_updated"] += 1
             result["applied_remote_total"] += 1
@@ -2312,6 +2357,9 @@ def _apply_remote_tag(
 def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], result: dict[str, Any], now: str) -> None:
     sync_id = str(item.get("sync_id") or "").strip()
     owner = _current_owner()
+    created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
+    updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
+    deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
     movimiento_id = _local_sync_id_record_id(conn, "movimientos", item.get("movimiento_sync_id"))
     tag_id = _local_sync_id_record_id(conn, "tags", item.get("tag_sync_id"))
     if not sync_id or movimiento_id is None or tag_id is None:
@@ -2327,7 +2375,7 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
                     last_synced_at = ?, last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                 WHERE sync_id = ? AND owner_user_id = ?
                 """,
-                (movimiento_id, tag_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), sync_id, owner),
+                (movimiento_id, tag_id, updated_at, deleted_at, now, *_remote_meta_values(item), sync_id, owner),
             )
             result["movimiento_tags_updated"] += 1
             result["applied_remote_total"] += 1
@@ -2345,7 +2393,7 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
                     last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                 WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?
                 """,
-                (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), movimiento_id, tag_id, owner),
+                (sync_id, updated_at, deleted_at, now, *_remote_meta_values(item), movimiento_id, tag_id, owner),
             )
             result["movimiento_tags_updated"] += 1
             result["applied_remote_total"] += 1
@@ -2358,7 +2406,7 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
         """,
-        (movimiento_id, tag_id, owner, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item)),
+        (movimiento_id, tag_id, owner, sync_id, created_at, updated_at, deleted_at, now, *_remote_meta_values(item)),
     )
     result["movimiento_tags_inserted"] += 1
     result["applied_remote_total"] += 1
@@ -2386,11 +2434,12 @@ async def sync_cursor_set(request: Request, service: FinanceService = Depends(ge
     owner = _require_cloud_owner()
     payload = await request.json()
     cursor = str(payload.get("cursor") or "").strip() if isinstance(payload, dict) else ""
-    if not cursor or _parse_sync_datetime(cursor) is None:
+    normalized_cursor = _serialize_sync_datetime(cursor)
+    if not normalized_cursor:
         raise HTTPException(status_code=422, detail="Cursor de sincronizacion invalido.")
     with service.db.connect() as conn:
-        _config_set(conn, f"sync_pull_cursor:{owner}", cursor)
-    return {"ok": True, "cursor": cursor}
+        _config_set(conn, f"sync_pull_cursor:{owner}", normalized_cursor)
+    return {"ok": True, "cursor": normalized_cursor}
 
 
 @app.get("/sync/cloud-contract-state")
@@ -2579,7 +2628,7 @@ async def sync_apply_remote_check(request: Request):
 async def _sync_apply_remote_impl(request: Request, service: FinanceService):
     owner = _require_cloud_owner()
     payload, _, _ = await _parse_remote_payload(request)
-    now = datetime.now().isoformat(timespec="seconds")
+    now = _utc_now_sync_text()
     result: dict[str, Any] = {
         f"{table}_{suffix}": 0
         for table in SYNC_TABLES
@@ -2600,6 +2649,9 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             sync_id = str(item.get("sync_id") or "").strip()
             nombre = str(item.get("nombre") or "").strip()
             tipo = str(item.get("tipo") or "").strip()
+            created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
+            updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
+            deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
             if not sync_id or not nombre or tipo not in {"ingreso", "gasto", "ahorro", "inversion"}:
                 continue
 
@@ -2621,7 +2673,7 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                             last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                         WHERE sync_id = ? AND owner_user_id = ?
                         """,
-                        (nombre, tipo, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), sync_id, owner),
+                        (nombre, tipo, updated_at, deleted_at, now, *_remote_meta_values(item), sync_id, owner),
                     )
                     result["categorias_updated"] += 1
                     result["applied_remote_total"] += 1
@@ -2636,7 +2688,7 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
                     """,
-                    (nombre, tipo, owner, sync_id, item.get("created_at") or now, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item)),
+                    (nombre, tipo, owner, sync_id, created_at, updated_at, deleted_at, now, *_remote_meta_values(item)),
                 )
                 result["categorias_inserted"] += 1
                 result["applied_remote_total"] += 1
@@ -2653,7 +2705,7 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                             last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
                         WHERE id = ? AND owner_user_id = ?
                         """,
-                        (sync_id, item.get("updated_at") or now, item.get("deleted_at"), now, *_remote_meta_values(item), existing["id"], owner),
+                        (sync_id, updated_at, deleted_at, now, *_remote_meta_values(item), existing["id"], owner),
                     )
                     result["categorias_updated"] += 1
                     result["applied_remote_total"] += 1
@@ -2692,6 +2744,9 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
         for item in payload.get("movimientos", []) or []:
             sync_id = str(item.get("sync_id") or "").strip()
             categoria_id = _local_category_id(conn, item)
+            created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
+            updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
+            deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
             if not sync_id or categoria_id is None:
                 result["movimientos_skipped"] += 1
                 continue
@@ -2703,8 +2758,8 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                 categoria_id,
                 item.get("descripcion") or "",
                 float(item.get("monto") or 0),
-                item.get("updated_at") or now,
-                item.get("deleted_at"),
+                updated_at,
+                deleted_at,
                 now,
                 sync_id,
             )
@@ -2749,9 +2804,9 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     float(item.get("monto") or 0),
                     sync_id,
                     owner,
-                    item.get("created_at") or now,
-                    item.get("updated_at") or now,
-                    item.get("deleted_at"),
+                    created_at,
+                    updated_at,
+                    deleted_at,
                     now,
                     *_remote_meta_values(item),
                 ),

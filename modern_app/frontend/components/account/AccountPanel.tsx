@@ -658,6 +658,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
                   {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Ultima sincronizacion automatica: {new Date(lastAutoSyncAt).toLocaleString()}</p> : null}
                   {lastSyncError ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Ultimo intento fallido: {lastSyncError}</p> : null}
+                  {syncOverview?.sync_error_total ? (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                      Hay {syncOverview.sync_error_total} registros con revisión pendiente.
+                      {syncOverview.last_rejection_code ? ` Último código: ${syncOverview.last_rejection_code}.` : ""}
+                    </p>
+                  ) : null}
                   <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                     ScisoNomics puede sincronizar tus datos manualmente o de forma automatica si activas esta opcion. Cuando esta activada, la app intenta sincronizar al abrirse y despues de cambios importantes.
                   </p>
@@ -674,6 +680,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     <p className="text-xs text-slate-500 dark:text-slate-400">
                       {syncOverview?.deleted_pending_total ? `${syncOverview.deleted_pending_total} borrados pendientes` : "Sin borrados pendientes"}
                     </p>
+                    {syncOverview?.sync_error_total ? (
+                      <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                        {syncOverview.sync_error_total} registros necesitan revisión
+                      </p>
+                    ) : null}
                   </div>
                   <div className="rounded-xl border border-slate-800 p-3">
                     <p className="text-xs text-slate-500 dark:text-slate-400">Ultima sync exitosa</p>
@@ -744,7 +755,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                                 <span>{data.pending} pendientes</span>
                               </div>
                               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                                Borrados: {data.deleted_pending} - Sin sync_id: {data.missing_sync_id}
+                                Borrados: {data.deleted_pending} - Con error: {data.sync_error} - Sin sync_id: {data.missing_sync_id}
                               </p>
                             </div>
                           ))
