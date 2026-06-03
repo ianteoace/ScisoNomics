@@ -22,6 +22,9 @@ from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.1.0")
 _logger = logging.getLogger("scisonomics.cloud")
+SYNC_CONTRACT_VERSION = "3.1.0"
+CLOUD_SCHEMA_VERSION = "cloud-sync-v1"
+CLOUD_SCHEMA_REVISION = 2
 
 
 def allowed_origins() -> list[str]:
@@ -335,6 +338,8 @@ SYNC_CONFIG: dict[str, dict[str, Any]] = {
     },
 }
 
+RejectedSyncItem = dict[str, str]
+
 
 def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
     sync_id = str(item.get("sync_id") or "").strip()
@@ -343,17 +348,37 @@ def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
     return all(item.get(field) not in (None, "") for field in config["required"])
 
 
-def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: str, device_id: str | None, device_name: str | None) -> tuple[list[str], int, int]:
+def _rejected_item(entity: str, sync_id: str | None, code: str, message: str) -> RejectedSyncItem:
+    return {
+        "entity": entity,
+        "sync_id": str(sync_id or "").strip(),
+        "code": code,
+        "message": message,
+    }
+
+
+def _push_table(
+    conn,
+    user_id: str,
+    key: str,
+    items: list[dict[str, Any]],
+    now: str,
+    device_id: str | None,
+    device_name: str | None,
+) -> tuple[list[str], list[RejectedSyncItem], int]:
     config = SYNC_CONFIG[key]
     table = config["table"]
     fields = list(config["fields"])
     accepted: list[str] = []
-    ignored = 0
+    rejected: list[RejectedSyncItem] = []
     conflicts = 0
 
     for item in items:
-        if not isinstance(item, dict) or not _valid_sync_item(item, config):
-            ignored += 1
+        if not isinstance(item, dict):
+            rejected.append(_rejected_item(key, None, "invalid_payload", "Registro invalido."))
+            continue
+        if not _valid_sync_item(item, config):
+            rejected.append(_rejected_item(key, item.get("sync_id"), "invalid_payload", "Registro invalido."))
             continue
         sync_id = str(item.get("sync_id") or "").strip()
         existing = conn.execute(
@@ -368,7 +393,7 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
         current_device = str(existing["last_modified_device_id"] or "").strip() if existing else ""
         if existing and baseline and baseline != current_revision and current_device != str(device_id or ""):
             conflicts += 1
-            ignored += 1
+            rejected.append(_rejected_item(key, sync_id, "conflict_remote_newer", "El registro fue actualizado por otro dispositivo."))
             continue
         last_modified_at = now
         base_columns = [
@@ -417,9 +442,9 @@ def _push_table(conn, user_id: str, key: str, items: list[dict[str, Any]], now: 
         if saved:
             accepted.append(sync_id)
         else:
-            ignored += 1
+            rejected.append(_rejected_item(key, sync_id, "save_failed", "No se pudo guardar el registro en cloud."))
 
-    return accepted, ignored, conflicts
+    return accepted, rejected, conflicts
 
 
 def _pull_table(conn, user_id: str, key: str, since: str | None = None, until: str | None = None) -> list[dict[str, Any]]:
@@ -511,12 +536,17 @@ def health():
         "service": "scisonomics-cloud-auth",
         "database": database,
         "version": app.version,
+        "schema_version": CLOUD_SCHEMA_VERSION,
+        "sync_contract_version": SYNC_CONTRACT_VERSION,
+        "cloud_schema_revision": CLOUD_SCHEMA_REVISION,
         "capabilities": {
             "sync_tables": list(SYNC_TABLES),
             "incremental_pull": True,
             "server_revisions": True,
             "tags_sync": True,
             "movimiento_tags_sync": True,
+            "tombstones": True,
+            "sync_cursor": True,
         },
     }
 
@@ -590,6 +620,7 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
         accepted = {table: [] for table in SYNC_TABLES}
         ignored = {table: 0 for table in SYNC_TABLES}
         conflicts = {table: 0 for table in SYNC_TABLES}
+        rejected: list[RejectedSyncItem] = []
         now = now_iso()
         device_id = str(payload.get("device_id") or "").strip() or None
         device_name = str(payload.get("device_name") or "").strip() or None
@@ -598,10 +629,11 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
             _upsert_device(conn, user.id, device_id, device_name, now)
             for table in SYNC_TABLES:
                 items = payload.get(table, []) or []
-                table_accepted, table_ignored, table_conflicts = _push_table(conn, user.id, table, items, now, device_id, device_name)
+                table_accepted, table_rejected, table_conflicts = _push_table(conn, user.id, table, items, now, device_id, device_name)
                 accepted[table] = table_accepted
-                ignored[table] = table_ignored
+                ignored[table] = len(table_rejected)
                 conflicts[table] = table_conflicts
+                rejected.extend(table_rejected)
 
         counts = {}
         for table in SYNC_TABLES:
@@ -609,7 +641,26 @@ async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current
             counts[f"{table}_saved"] = len(accepted[table])
         if any(received[table] != len(accepted[table]) + ignored[table] for table in SYNC_TABLES):
             raise HTTPException(status_code=500, detail="No se pudo confirmar el guardado de los datos en cloud.")
-        return {"ok": True, "accepted": accepted, "ignored": ignored, "conflicts": conflicts, "counts": counts, "device": {"device_id": device_id, "last_seen_at": now}}
+        if rejected:
+            rejected_summary: dict[str, int] = {}
+            for item in rejected:
+                key = f"{item['entity']}:{item['code']}"
+                rejected_summary[key] = rejected_summary.get(key, 0) + 1
+            _logger.warning(
+                "[sync-push] rejected user_id=%s rejected_count=%s summary=%s",
+                short_identifier(user.id),
+                len(rejected),
+                rejected_summary,
+            )
+        return {
+            "ok": True,
+            "accepted": accepted,
+            "rejected": rejected,
+            "ignored": ignored,
+            "conflicts": conflicts,
+            "counts": counts,
+            "device": {"device_id": device_id, "last_seen_at": now},
+        }
     except HTTPException:
         raise
     except Exception as exc:

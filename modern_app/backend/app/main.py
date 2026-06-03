@@ -42,7 +42,14 @@ from finance_app.services import (
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
 from openpyxl import load_workbook
 
-from .deps import ensure_app_data_initialized, get_database_readiness, get_last_init_status, get_service, invalidate_app_data_initialized
+from .deps import (
+    ensure_app_data_initialized,
+    get_database_readiness,
+    get_last_init_status,
+    get_service,
+    invalidate_app_data_initialized,
+    start_database_initialization,
+)
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
 from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
@@ -209,48 +216,53 @@ async def file_not_found_handler(_: Request, exc: FileNotFoundError):
 def log_db_path() -> None:
     try:
         _cleanup_stale_temp_snapshots()
-        ensure_app_data_initialized()
         exists = WEB_DB_PATH.exists()
         size_bytes = WEB_DB_PATH.stat().st_size if exists else 0
-        _logger.info("Startup backend OK. db_file=%s exists=%s size=%s", WEB_DB_PATH.name, exists, size_bytes)
+        started = start_database_initialization()
+        _logger.info("Startup backend OK. db_file=%s exists=%s size=%s db_check_started=%s", WEB_DB_PATH.name, exists, size_bytes, started)
     except Exception as exc:
         _logger.exception("Error inicializando backend local. error_type=%s", type(exc).__name__)
 
 
 @app.get("/health")
 def health():
-    try:
-        ensure_app_data_initialized()
-        return {"ok": True, "status": "healthy", "version": app.version}
-    except Exception as exc:
-        _logger.exception("Error en /health. error_type=%s", type(exc).__name__)
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "status": "unavailable", "version": app.version},
-        )
+    return {
+        "ok": True,
+        "service": "local-backend",
+        "status": "healthy",
+        "version": app.version,
+        "db": {"checked": False},
+        "frozen": bool(getattr(sys, "frozen", False)),
+    }
 
 
 @app.get("/ready")
 def ready():
-    status = get_database_readiness()
-    if status.get("database_ready"):
-        return {
-            "ok": True,
-            "status": "ready",
-            "database_ready": True,
-            "initializing": False,
-            "version": app.version,
-        }
-    return JSONResponse(
-        status_code=503,
-        content={
-            "ok": False,
-            "status": "initializing" if status.get("initializing", False) else "unavailable",
-            "database_ready": False,
-            "initializing": bool(status.get("initializing", False)),
-            "version": app.version,
-        },
-    )
+    status = get_database_readiness(ensure_started=True)
+    response = {
+        "ok": bool(status.get("ok", False)),
+        "service": "local-backend",
+        "status": status.get("status", "critical"),
+        "code": status.get("code", "db_migration_failed"),
+        "database_ready": bool(status.get("database_ready", False)),
+        "checked": bool(status.get("checked", False)),
+        "initializing": bool(status.get("initializing", False)),
+        "repairable": bool(status.get("repairable", False)),
+        "sync_allowed": bool(status.get("sync_allowed", False)),
+        "issue_table": status.get("issue_table"),
+        "message": status.get("message"),
+        "version": app.version,
+    }
+    if response["status"] not in {"ready", "degraded"} or (response["status"] == "degraded" and not response["initializing"]):
+        _logger.warning(
+            "[ready] status=%s code=%s table=%s error_type=%s repairable=%s",
+            response["status"],
+            response["code"],
+            response["issue_table"],
+            status.get("error_type") or status.get("database_error_type"),
+            response["repairable"],
+        )
+    return response
 
 
 @app.post("/internal/shutdown")
@@ -288,11 +300,7 @@ def app_paths():
 
 @app.get("/app/diagnostics")
 def app_diagnostics():
-    try:
-        ensure_app_data_initialized()
-    except Exception:
-        _logger.exception("Error preparando diagnostico local.")
-    status = get_last_init_status()
+    status = get_database_readiness(ensure_started=False)
     paths = _safe_app_paths()
     return {
         "ok": bool(status.get("database_ready", False)),
@@ -300,14 +308,20 @@ def app_diagnostics():
         "database_ready": bool(status.get("database_ready", False)),
         "initializing": bool(status.get("initializing", False)),
         "database_error": status.get("database_error"),
+        "db_status": status.get("status"),
+        "db_code": status.get("code"),
+        "repairable": bool(status.get("repairable", False)),
+        "sync_allowed": bool(status.get("sync_allowed", False)),
+        "message": status.get("message"),
         "db_exists": bool(Path(paths["database_path"]).exists()),
         "frozen": bool(getattr(sys, "frozen", False)),
         **paths,
     }
 
 
-@app.get("/local/auth-check")
+@app.get("/local/auth-check", dependencies=[Depends(_require_debug_endpoints_enabled)])
 def local_auth_check():
+    _require_debug_endpoints_enabled()
     return {"ok": True, "service": "local", "owner_user_id": _current_owner()}
 
 
@@ -719,18 +733,18 @@ def delete_presupuesto(presupuesto_id: int, service: FinanceService = Depends(ge
 
 
 @app.get("/settings/info")
-def settings_info(service: FinanceService = Depends(get_service)):
-    ensure_app_data_initialized()
-    status = get_last_init_status()
-    db_path = Path(str(status.get("db_path", service.db.db_path)))
+def settings_info():
+    status = get_database_readiness(ensure_started=False)
+    db_path = Path(str(status.get("db_path", WEB_DB_PATH)))
     data_dir = Path(str(status.get("data_dir", get_data_dir())))
     backups_dir = Path(str(status.get("backups_dir", get_backup_dir())))
     logs_dir = Path(str(status.get("logs_dir", get_logs_dir())))
     exists = db_path.exists()
     size_bytes = db_path.stat().st_size if exists else 0
     counts = {"movimientos": 0, "categorias": 0, "presupuestos": 0, "metas": 0}
-    if exists:
-        with service.db.connect() as conn:
+    if exists and bool(status.get("database_ready", False)):
+        db = ensure_app_data_initialized()
+        with db.connect() as conn:
             counts["movimientos"] = int(conn.execute("SELECT COUNT(*) FROM movimientos WHERE owner_user_id = ?", (_current_owner(),)).fetchone()[0])
             counts["categorias"] = int(conn.execute("SELECT COUNT(*) FROM categorias WHERE owner_user_id = ?", (_current_owner(),)).fetchone()[0])
             counts["presupuestos"] = int(conn.execute("SELECT COUNT(*) FROM presupuestos WHERE owner_user_id = ?", (_current_owner(),)).fetchone()[0])
@@ -746,8 +760,14 @@ def settings_info(service: FinanceService = Depends(get_service)):
         "logs_dir": str(logs_dir),
         "logs_exists": logs_dir.exists(),
         "app_data_dir": str(get_app_data_dir()),
-        "migrations_status": "ok",
+        "migrations_status": status.get("status", "degraded"),
         "db_initialized": bool(status.get("db_initialized", False)),
+        "database_ready": bool(status.get("database_ready", False)),
+        "db_status": status.get("status"),
+        "db_code": status.get("code"),
+        "db_message": status.get("message"),
+        "repairable": bool(status.get("repairable", False)),
+        "sync_allowed": bool(status.get("sync_allowed", False)),
         "frozen": bool(getattr(sys, "frozen", False)),
         "executable": str(sys.executable),
         "counts": counts,
@@ -862,18 +882,35 @@ def _ensure_sync_history_table(conn: sqlite3.Connection) -> None:
             resolved_at TEXT,
             details_json TEXT
         );
+        CREATE TABLE IF NOT EXISTS sync_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id TEXT DEFAULT 'local',
+            table_name TEXT NOT NULL,
+            record_sync_id TEXT NOT NULL,
+            error_code TEXT NOT NULL,
+            error_message TEXT,
+            first_detected_at TEXT NOT NULL,
+            last_detected_at TEXT NOT NULL,
+            occurrence_count INTEGER DEFAULT 1,
+            resolved_at TEXT,
+            UNIQUE(owner_user_id, table_name, record_sync_id, error_code)
+        );
         CREATE INDEX IF NOT EXISTS idx_sync_history_finished_at ON sync_history(finished_at);
         CREATE INDEX IF NOT EXISTS idx_sync_history_status ON sync_history(status);
         CREATE INDEX IF NOT EXISTS idx_sync_conflicts_detected_at ON sync_conflicts(detected_at);
         CREATE INDEX IF NOT EXISTS idx_sync_conflicts_record ON sync_conflicts(table_name, record_sync_id);
+        CREATE INDEX IF NOT EXISTS idx_sync_rejections_detected_at ON sync_rejections(last_detected_at);
+        CREATE INDEX IF NOT EXISTS idx_sync_rejections_record ON sync_rejections(table_name, record_sync_id);
         """
     )
     for column in ("conflicts_total", "remote_changes_total", "applied_remote_total", "kept_local_total"):
         _ensure_column(conn, "sync_history", column, "INTEGER DEFAULT 0")
     _ensure_column(conn, "sync_history", "owner_user_id", "TEXT DEFAULT 'local'")
     _ensure_column(conn, "sync_conflicts", "owner_user_id", "TEXT DEFAULT 'local'")
+    _ensure_column(conn, "sync_rejections", "owner_user_id", "TEXT DEFAULT 'local'")
     conn.execute("UPDATE sync_history SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''")
     conn.execute("UPDATE sync_conflicts SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''")
+    conn.execute("UPDATE sync_rejections SET owner_user_id = 'local' WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -949,6 +986,39 @@ def _last_remote_change_at(conn: sqlite3.Connection, owner: str | None = None) -
         if row and row["value"]:
             values.append(str(row["value"]))
     return max(values) if values else None
+
+
+def _active_rejection_summary(conn: sqlite3.Connection, owner: str | None = None) -> dict[str, Any]:
+    owner = normalize_owner_id(owner or _current_owner())
+    _ensure_sync_history_table(conn)
+    total = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM sync_rejections WHERE owner_user_id = ? AND resolved_at IS NULL",
+            (owner,),
+        ).fetchone()[0]
+        or 0
+    )
+    latest_row = conn.execute(
+        """
+        SELECT table_name, record_sync_id, error_code, error_message, last_detected_at, occurrence_count
+        FROM sync_rejections
+        WHERE owner_user_id = ? AND resolved_at IS NULL
+        ORDER BY last_detected_at DESC, id DESC
+        LIMIT 1
+        """,
+        (owner,),
+    ).fetchone()
+    latest = None
+    if latest_row:
+        latest = {
+            "entity": latest_row["table_name"],
+            "sync_id": latest_row["record_sync_id"],
+            "code": latest_row["error_code"],
+            "message": latest_row["error_message"],
+            "detected_at": latest_row["last_detected_at"],
+            "occurrence_count": int(latest_row["occurrence_count"] or 0),
+        }
+    return {"rejected_total": total, "latest_rejection": latest}
 
 
 def _ensure_sync_metadata_columns(conn: sqlite3.Connection) -> None:
@@ -1289,6 +1359,7 @@ def sync_overview(service: FinanceService = Depends(get_service)):
             "last_success": _latest_history(conn, "success", owner),
             "last_error": _latest_history(conn, "error", owner),
             "last_remote_change_at": _last_remote_change_at(conn, owner),
+            **_active_rejection_summary(conn, owner),
             **_conflict_summary(conn, owner),
         }
 
@@ -1675,7 +1746,7 @@ def _local_db_integrity_report() -> dict[str, Any]:
                     if count:
                         issues.append(_db_integrity_issue("invalid_deleted_at", "warning", table, count, False))
                 if "sync_status" in columns:
-                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')").fetchone()[0] or 0)
+                    count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced', 'deleted', 'sync_error')").fetchone()[0] or 0)
                     if count:
                         issues.append(_db_integrity_issue("invalid_sync_status", "warning", table, count, True))
                 if "sync_id" in columns:
@@ -1979,7 +2050,7 @@ def local_db_repair():
                     cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
                     repaired_count += max(cursor.rowcount, 0)
                 if "sync_status" in columns:
-                    cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced')")
+                    cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced', 'deleted', 'sync_error')")
                     repaired_count += max(cursor.rowcount, 0)
                 if "sync_id" in columns:
                     rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
@@ -2322,6 +2393,56 @@ async def sync_cursor_set(request: Request, service: FinanceService = Depends(ge
     return {"ok": True, "cursor": cursor}
 
 
+@app.get("/sync/cloud-contract-state")
+def sync_cloud_contract_state_get(service: FinanceService = Depends(get_service)):
+    owner = _require_cloud_owner()
+    with service.db.connect() as conn:
+        revision_raw = _config_get(conn, f"cloud_schema_revision:{owner}")
+        contract_version = _config_get(conn, f"cloud_sync_contract_version:{owner}")
+    try:
+        revision = int(revision_raw) if revision_raw not in (None, "") else None
+    except ValueError:
+        revision = None
+    return {
+        "ok": True,
+        "cloud_schema_revision": revision,
+        "sync_contract_version": contract_version or None,
+    }
+
+
+@app.post("/sync/cloud-contract-state")
+async def sync_cloud_contract_state_set(request: Request, service: FinanceService = Depends(get_service)):
+    owner = _require_cloud_owner()
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="El body para el estado cloud debe ser un objeto JSON.")
+    revision_raw = payload.get("cloud_schema_revision")
+    contract_version = str(payload.get("sync_contract_version") or "").strip()
+    if revision_raw in (None, ""):
+        revision = None
+    else:
+        try:
+            revision = int(revision_raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="cloud_schema_revision invalido.") from exc
+        if revision < 0:
+            raise HTTPException(status_code=422, detail="cloud_schema_revision invalido.")
+    with service.db.connect() as conn:
+        if revision is None:
+            conn.execute("DELETE FROM app_config WHERE key = ?", (f"cloud_schema_revision:{owner}",))
+        else:
+            _config_set(conn, f"cloud_schema_revision:{owner}", str(revision))
+        if contract_version:
+            _config_set(conn, f"cloud_sync_contract_version:{owner}", contract_version)
+        else:
+            conn.execute("DELETE FROM app_config WHERE key = ?", (f"cloud_sync_contract_version:{owner}",))
+    return {
+        "ok": True,
+        "cloud_schema_revision": revision,
+        "sync_contract_version": contract_version or None,
+    }
+
+
 @app.post("/sync/mark-synced")
 async def sync_mark_synced(request: Request, service: FinanceService = Depends(get_service)):
     owner = _require_cloud_owner()
@@ -2342,7 +2463,78 @@ async def sync_mark_synced(request: Request, service: FinanceService = Depends(g
                     """,
                     (now, sync_id, owner),
                 )
+                conn.execute(
+                    """
+                    UPDATE sync_rejections
+                    SET resolved_at = ?
+                    WHERE owner_user_id = ? AND table_name = ? AND record_sync_id = ? AND resolved_at IS NULL
+                    """,
+                    (now, owner, table, sync_id),
+                )
     return {"ok": True, "marked": {table: len(values) for table, values in accepted.items()}}
+
+
+@app.post("/sync/mark-rejected")
+async def sync_mark_rejected(request: Request, service: FinanceService = Depends(get_service)):
+    owner = _require_cloud_owner()
+    payload = await request.json()
+    rejected_items = payload.get("rejected", []) if isinstance(payload, dict) else []
+    if not isinstance(rejected_items, list):
+        raise HTTPException(status_code=422, detail="El campo rejected debe ser una lista.")
+
+    now = datetime.now().isoformat(timespec="seconds")
+    marked: dict[str, int] = {table: 0 for table in SYNC_TABLES}
+    summary: dict[str, int] = {}
+
+    with service.db.connect() as conn:
+        _ensure_sync_metadata_columns(conn)
+        _ensure_sync_history_table(conn)
+        for item in rejected_items:
+            if not isinstance(item, dict):
+                continue
+            table = str(item.get("entity") or "").strip()
+            sync_id = str(item.get("sync_id") or "").strip()
+            code = str(item.get("code") or "invalid_payload").strip() or "invalid_payload"
+            message = str(item.get("message") or "Registro invalido.").strip()[:240]
+            if table not in SYNC_TABLES or not sync_id:
+                continue
+            result = conn.execute(
+                f"""
+                UPDATE {table}
+                SET sync_status = 'sync_error',
+                    updated_at = COALESCE(NULLIF(updated_at, ''), ?)
+                WHERE sync_id = ? AND owner_user_id = ?
+                """,
+                (now, sync_id, owner),
+            )
+            if int(result.rowcount or 0) <= 0:
+                continue
+            marked[table] += int(result.rowcount or 0)
+            summary_key = f"{table}:{code}"
+            summary[summary_key] = summary.get(summary_key, 0) + 1
+            conn.execute(
+                """
+                INSERT INTO sync_rejections (
+                    owner_user_id, table_name, record_sync_id, error_code, error_message,
+                    first_detected_at, last_detected_at, occurrence_count, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL)
+                ON CONFLICT(owner_user_id, table_name, record_sync_id, error_code) DO UPDATE SET
+                    error_message = excluded.error_message,
+                    last_detected_at = excluded.last_detected_at,
+                    occurrence_count = sync_rejections.occurrence_count + 1,
+                    resolved_at = NULL
+                """,
+                (owner, table, sync_id, code, message, now, now),
+            )
+    if any(summary.values()):
+        _logger.warning(
+            "[sync-rejected] owner=%s total=%s summary=%s",
+            _safe_owner_for_log(owner),
+            sum(summary.values()),
+            summary,
+        )
+    return {"ok": True, "marked": marked, "rejected_total": sum(marked.values())}
 
 
 async def _parse_remote_payload(request: Request) -> tuple[dict[str, Any], int, dict[str, int]]:
@@ -2367,8 +2559,9 @@ async def _parse_remote_payload(request: Request) -> tuple[dict[str, Any], int, 
     return payload, len(raw_body), counts
 
 
-@app.post("/sync/apply-remote/check")
+@app.post("/sync/apply-remote/check", dependencies=[Depends(_require_debug_endpoints_enabled)])
 async def sync_apply_remote_check(request: Request):
+    _require_debug_endpoints_enabled()
     owner = _require_cloud_owner()
     _, body_size_bytes, counts = await _parse_remote_payload(request)
     return {

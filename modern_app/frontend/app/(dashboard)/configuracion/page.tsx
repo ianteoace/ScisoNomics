@@ -63,6 +63,11 @@ type AppDiagnostics = {
   database_ready: boolean;
   initializing: boolean;
   database_error?: string | null;
+  db_status?: "ready" | "degraded" | "repair_required" | "migration_failed" | "critical";
+  db_code?: string;
+  repairable?: boolean;
+  sync_allowed?: boolean;
+  message?: string | null;
   database_path: string;
   data_dir: string;
   backups_path: string;
@@ -251,9 +256,10 @@ export default function ConfiguracionPage() {
     }
     setSyncingNow(true);
     try {
-      await runManualSync(session.token, session.user.email);
+      const result = await runManualSync(session.token, session.user.email);
       await load();
-      showSuccess("Sincronizacion completada.");
+      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revision.");
+      else showSuccess("Sincronizacion completada.");
     } catch (error) {
       showError(error instanceof Error ? error.message : "No se pudo sincronizar.");
     } finally {
@@ -383,7 +389,16 @@ export default function ConfiguracionPage() {
   const backupsPath = diagnostics?.backups_path || info?.backups_dir;
   const logsPath = diagnostics?.logs_path || info?.logs_dir;
   const backendLabel = info?.backend_ok || diagnostics?.ok ? "Conectado" : diagnostics?.initializing ? "Preparando" : "Error";
-  const databaseLabel = diagnostics?.database_ready || info?.db_exists ? "Lista" : diagnostics?.initializing ? "Inicializando" : "Error";
+  const repairModeActive = diagnostics?.db_status === "repair_required" || diagnostics?.db_status === "migration_failed" || diagnostics?.db_status === "critical";
+  const databaseLabel = diagnostics?.db_status === "ready"
+    ? "Lista"
+    : diagnostics?.initializing || diagnostics?.db_status === "degraded"
+      ? "Preparando"
+      : repairModeActive
+        ? "Requiere revision"
+        : diagnostics?.database_ready || info?.db_exists
+          ? "Lista"
+          : "Error";
   const backendVersion = diagnostics?.version || info?.version || "no disponible";
   const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.1.0");
   const syncLabel = activeOwner === "local"
@@ -517,6 +532,11 @@ export default function ConfiguracionPage() {
               </div>
             )) : <p className="text-sm text-slate-400">Sin estado de sincronizacion disponible.</p>}
           </div>
+          {syncOverview?.rejected_total ? (
+            <p className="mt-3 text-sm text-amber-300">
+              Hay {syncOverview.rejected_total} registros que no pudieron sincronizarse. Ultimo codigo: {syncOverview.latest_rejection?.code || "invalid_payload"}.
+            </p>
+          ) : null}
           {getLastSyncError() ? <p className="mt-3 text-sm text-amber-300">Ultimo error: {getLastSyncError()}</p> : null}
         </div>
       </div>
@@ -555,13 +575,19 @@ export default function ConfiguracionPage() {
         ? "Necesita revision"
         : localIntegrity?.status === "critical"
           ? "Requiere reparacion"
+          : repairModeActive
+            ? "Requiere reparacion"
           : "Sin revisar";
-    const integrityTone = localIntegrity?.status === "healthy" ? "text-emerald-300" : localIntegrity ? "text-amber-300" : "text-slate-300";
-    const syncState = localIntegrity?.status === "critical"
+    const integrityTone = localIntegrity?.status === "healthy" ? "text-emerald-300" : localIntegrity || repairModeActive ? "text-amber-300" : "text-slate-300";
+    const syncState = localIntegrity?.status === "critical" || repairModeActive
       ? "Necesita atencion"
       : syncOverview?.has_pending
         ? "Cambios pendientes"
         : "Sincronizado";
+    const integritySummary = localIntegrity?.safe_summary?.[0]
+      || diagnostics?.message
+      || info?.db_message
+      || "Todavia no revisamos tus datos locales.";
 
     return (
       <div className="space-y-5">
@@ -573,7 +599,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado de datos locales</p>
             <p className={`mt-2 text-lg font-semibold ${integrityTone}`}>{integrityLabel}</p>
-            <p className="mt-1 text-sm text-slate-400">{localIntegrity?.safe_summary?.[0] || "Todavia no revisamos tus datos locales."}</p>
+            <p className="mt-1 text-sm text-slate-400">{integritySummary}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sincronizacion</p>
@@ -586,9 +612,9 @@ export default function ConfiguracionPage() {
             <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente.</p>
           </div>
         </div>
-        {localIntegrity?.status === "critical" ? (
+        {localIntegrity?.status === "critical" || repairModeActive ? (
           <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.
+            {diagnostics?.message || info?.db_message || "ScisoNomics abrio en modo reparacion porque tus datos locales necesitan una revision."}
           </p>
         ) : null}
         {localIntegrity?.status === "warning" ? (
@@ -603,7 +629,7 @@ export default function ConfiguracionPage() {
           <button className="btn-secondary" type="button" onClick={handleCreateLocalBackup} disabled={creatingLocalBackup}>
             {creatingLocalBackup ? "Creando backup..." : "Crear backup"}
           </button>
-          {localIntegrity && localIntegrity.status !== "healthy" ? (
+          {(localIntegrity && localIntegrity.status !== "healthy") || repairModeActive ? (
             <button className="btn-secondary" type="button" onClick={handleRepairLocalData} disabled={repairingLocalDb}>
               {repairingLocalDb ? "Reparando..." : "Reparar datos locales"}
             </button>

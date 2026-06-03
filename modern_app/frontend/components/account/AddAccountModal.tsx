@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
-import { addOrUpdateAccount, cloudAuth, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
+import { DEFAULT_REMEMBER_CLOUD_ACCOUNT, addOrUpdateAccount, cloudAuth, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
 import { Modal } from "../ui/Modal";
 import { PasswordInput } from "../ui/PasswordInput";
 
@@ -27,7 +27,7 @@ export function AddAccountModal({
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
   const [submitting, setSubmitting] = useState(false);
   const [googleWaiting, setGoogleWaiting] = useState(false);
   const [error, setError] = useState("");
@@ -40,7 +40,7 @@ export function AddAccountModal({
     setPassword("");
     setDisplayName("");
     setRepeatPassword("");
-    setRemember(true);
+    setRemember(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
     setGoogleWaiting(false);
     setError("");
   }
@@ -89,7 +89,7 @@ export function AddAccountModal({
         return;
       }
       if (status.status === "completed") {
-        addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember: true, makeActive: true });
+        addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember, makeActive: true });
         cancelGooglePolling();
         resetForm();
         onClose();
@@ -140,7 +140,7 @@ export function AddAccountModal({
           ? await cloudAuth.register({ email, password, display_name: displayName || null })
           : await cloudAuth.login({ email, password });
       const existed = accountsBefore.some((account) => account.user.id === response.user.id);
-      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember: mode === "register" ? true : remember, makeActive: true });
+      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
       resetForm();
       onClose();
       onAccountAdded?.();

@@ -17,7 +17,18 @@ const AUTO_SYNC_INTERVAL_BY_OWNER_KEY = "scisonomics_auto_sync_interval_by_owner
 const DEFAULT_AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
-const CLOUD_SYNC_TIMEOUT_MS = 15000;
+const CLOUD_HEALTH_TIMEOUT_MS = 8_000;
+const CLOUD_SESSION_TIMEOUT_MS = 10_000;
+const CLOUD_SYNC_TIMEOUT_MS = 30_000;
+const CLOUD_FULL_PULL_TIMEOUT_MS = 45_000;
+const REQUIRED_CLOUD_CAPABILITIES = [
+  "incremental_pull",
+  "server_revisions",
+  "tags_sync",
+  "movimiento_tags_sync",
+  "tombstones",
+  "sync_cursor",
+] as const;
 export const DATA_CHANGED_EVENT = "scisonomics:data-changed";
 export const SYNC_STATE_CHANGED_EVENT = "scisonomics:sync-state-changed";
 const SYNC_TABLES = ["categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags"] as const;
@@ -58,12 +69,17 @@ export type CloudHealthResult = {
   timestamp: string;
   version?: string | null;
   service?: string | null;
+  schema_version?: string | null;
+  sync_contract_version?: string | null;
+  cloud_schema_revision?: number | null;
   capabilities?: {
     sync_tables?: string[];
     incremental_pull?: boolean;
     server_revisions?: boolean;
     tags_sync?: boolean;
     movimiento_tags_sync?: boolean;
+    tombstones?: boolean;
+    sync_cursor?: boolean;
   } | null;
 };
 
@@ -81,6 +97,15 @@ export type SyncOverview = {
   last_success: SyncHistoryItem | null;
   last_error: SyncHistoryItem | null;
   last_remote_change_at?: string | null;
+  rejected_total?: number;
+  latest_rejection?: {
+    entity: string;
+    sync_id: string;
+    code: string;
+    message?: string | null;
+    detected_at: string;
+    occurrence_count: number;
+  } | null;
   conflicts_total: number;
   conflicts_recent: number;
   latest_conflict?: SyncConflictItem | null;
@@ -221,6 +246,33 @@ export type LocalDbIntegrityResult = {
   issues: Array<{ code: string; severity: "warning" | "critical"; table: string | null; count: number; repairable: boolean }>;
 };
 
+type LocalReadyState = {
+  ok: boolean;
+  status: "ready" | "degraded" | "repair_required" | "migration_failed" | "critical";
+  code?: string;
+  database_ready: boolean;
+  checked?: boolean;
+  initializing?: boolean;
+  repairable?: boolean;
+  sync_allowed?: boolean;
+  issue_table?: string | null;
+  message?: string | null;
+  version?: string;
+};
+
+type RejectedSyncItem = {
+  entity: SyncTable;
+  sync_id: string;
+  code: string;
+  message: string;
+};
+
+type LocalCloudContractState = {
+  ok: boolean;
+  cloud_schema_revision: number | null;
+  sync_contract_version: string | null;
+};
+
 type SyncRunSnapshot = {
   ownerId: string;
   token: string;
@@ -231,6 +283,18 @@ type SyncRunSnapshot = {
 };
 
 let syncInFlight = false;
+let currentSyncPhase: SyncDiagnosticPhase | null = null;
+let currentSyncReason: SyncReason | null = null;
+let currentSyncOwnerId: string | null = null;
+let currentSyncCriticalSection = false;
+
+export type SyncRuntimeState = {
+  inFlight: boolean;
+  phase: SyncDiagnosticPhase | null;
+  reason: SyncReason | null;
+  ownerId: string | null;
+  criticalSection: boolean;
+};
 
 class CloudSyncError extends Error {
   details: SyncErrorDetails;
@@ -250,8 +314,34 @@ function shortIdentifier(value: string) {
   return value ? `${value.slice(0, 6)}...` : "unknown";
 }
 
+function updateSyncRuntimeState(state: Partial<SyncRuntimeState>) {
+  if (typeof state.inFlight === "boolean") syncInFlight = state.inFlight;
+  if (Object.prototype.hasOwnProperty.call(state, "phase")) currentSyncPhase = state.phase ?? null;
+  if (Object.prototype.hasOwnProperty.call(state, "reason")) currentSyncReason = state.reason ?? null;
+  if (Object.prototype.hasOwnProperty.call(state, "ownerId")) currentSyncOwnerId = state.ownerId ?? null;
+  if (typeof state.criticalSection === "boolean") currentSyncCriticalSection = state.criticalSection;
+  emitSyncStateChanged();
+}
+
+function setSyncPhase(phase: SyncDiagnosticPhase, options?: { criticalSection?: boolean }) {
+  updateSyncRuntimeState({
+    phase,
+    criticalSection: Boolean(options?.criticalSection),
+  });
+}
+
 export function getCloudApiUrl() {
   return CLOUD_API_URL;
+}
+
+export function getSyncRuntimeState(): SyncRuntimeState {
+  return {
+    inFlight: syncInFlight,
+    phase: currentSyncPhase,
+    reason: currentSyncReason,
+    ownerId: currentSyncOwnerId,
+    criticalSection: currentSyncCriticalSection,
+  };
 }
 
 function cloudEndpoint(path: string) {
@@ -272,12 +362,72 @@ function classifyHttpStatus(status: number): SyncErrorType {
 
 function syncUserMessage(type: SyncErrorType) {
   if (type === "network") return "No pudimos conectar con el servicio cloud. Revisa internet, firewall o antivirus.";
-  if (type === "timeout") return "La conexion con el servicio cloud tardo demasiado.";
-  if (type === "unauthorized") return "La sesion vencio o no es valida. Volve a iniciar sesion.";
+  if (type === "timeout") return "La conexión con el servicio cloud tardó demasiado.";
+  if (type === "unauthorized") return "La sesión venció o no es válida. Volvé a iniciar sesión.";
   if (type === "forbidden") return "No tenes permisos para sincronizar esta cuenta.";
-  if (type === "server_error") return "El servicio cloud respondio con un error interno.";
-  if (type === "invalid_response") return "El servicio cloud respondio con un formato inesperado.";
+  if (type === "server_error") return "El servicio cloud respondió con un error interno.";
+  if (type === "invalid_response") return "El servicio cloud respondió con un formato inesperado.";
   return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
+}
+
+function readLocalStorageJson<T>(key: string): T | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // El saneamiento defensivo no debe bloquear la app.
+    }
+    return null;
+  }
+}
+
+function readAutoSyncEnabledByOwner(): Record<string, boolean> {
+  const parsed = readLocalStorageJson<Record<string, unknown>>(AUTO_SYNC_BY_OWNER_KEY);
+  const sanitized: Record<string, boolean> = {};
+  for (const [ownerId, value] of Object.entries(parsed || {})) {
+    if (ownerId && value === true) sanitized[ownerId] = true;
+  }
+  try {
+    if (typeof window !== "undefined" && JSON.stringify(parsed || {}) !== JSON.stringify(sanitized)) {
+      if (Object.keys(sanitized).length > 0) window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(sanitized));
+      else window.localStorage.removeItem(AUTO_SYNC_BY_OWNER_KEY);
+    }
+  } catch {
+    // El saneamiento defensivo no debe bloquear la app.
+  }
+  return sanitized;
+}
+
+function readAutoSyncIntervalsByOwner(): Record<string, number> {
+  const parsed = readLocalStorageJson<Record<string, unknown>>(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
+  const sanitized: Record<string, number> = {};
+  for (const [ownerId, value] of Object.entries(parsed || {})) {
+    const interval = Number(value);
+    if (ownerId && Number.isFinite(interval) && interval >= 60_000) sanitized[ownerId] = interval;
+  }
+  try {
+    if (typeof window !== "undefined" && JSON.stringify(parsed || {}) !== JSON.stringify(sanitized)) {
+      if (Object.keys(sanitized).length > 0) window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(sanitized));
+      else window.localStorage.removeItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
+    }
+  } catch {
+    // El saneamiento defensivo no debe bloquear la app.
+  }
+  return sanitized;
+}
+
+function getCloudTimeoutMs(path: string, metadata: {
+  phase?: SyncErrorDetails["phase"];
+}) {
+  if (metadata.phase === "health") return CLOUD_HEALTH_TIMEOUT_MS;
+  if (metadata.phase === "session" || metadata.phase === "sync_health") return CLOUD_SESSION_TIMEOUT_MS;
+  if (metadata.phase === "cloud_pull" && !path.includes("since=")) return CLOUD_FULL_PULL_TIMEOUT_MS;
+  return CLOUD_SYNC_TIMEOUT_MS;
 }
 
 function classifyFetchError(error: unknown): SyncErrorType {
@@ -504,7 +654,7 @@ async function localPost<T>(path: string, payload: unknown, ownerId?: string, ph
       itemsTotal: entityCounts ? totalCount(entityCounts) : null,
       pendingCounts: entityCounts,
       userMessage: type === "network" && phase === "local_apply_remote"
-        ? "La sincronizacion cloud funciono, pero fallo la comunicacion con el servicio local al aplicar datos remotos. Puede ser token local, CORS local o backend local no disponible."
+        ? "La sincronización cloud funcionó, pero falló la comunicación con el servicio local al aplicar datos remotos. Puede ser token local, CORS local o backend local no disponible."
         : undefined,
     });
   }
@@ -585,7 +735,7 @@ async function cloudGet<T>(
   token: string,
   metadata: CloudRequestMetadata = {},
 ): Promise<T> {
-  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacía.", userMessage: "No hay URL cloud configurada en esta instalación." });
   const response = await cloudFetch(path, {
     cache: "no-store",
     headers: { Authorization: `Bearer ${token}` },
@@ -607,7 +757,7 @@ async function cloudPost<T>(
   payload: unknown,
   metadata: CloudRequestMetadata = {},
 ): Promise<T> {
-  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: path, technicalMessage: "Cloud API URL vacía.", userMessage: "No hay URL cloud configurada en esta instalación." });
   const { body, payloadBytes } = serializeCloudPayload(path, payload, metadata);
   setLastSyncAttemptDetails({
     phase: metadata.phase || "unknown",
@@ -677,7 +827,7 @@ async function cloudFetch(
 ) {
   const endpoint = cloudEndpoint(path);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CLOUD_SYNC_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), getCloudTimeoutMs(path, metadata));
   try {
     return await fetch(endpoint, { ...options, signal: controller.signal });
   } catch (error) {
@@ -754,23 +904,11 @@ export function getLastSyncErrorDetails(): SyncErrorDetails | null {
 }
 
 export function getLastCloudHealthResult(): CloudHealthResult | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_CLOUD_HEALTH_KEY);
-    return raw ? (JSON.parse(raw) as CloudHealthResult) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<CloudHealthResult>(LAST_CLOUD_HEALTH_KEY);
 }
 
 export function getLastCloudSessionTestResult(): CloudSessionTestResult | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_CLOUD_SESSION_TEST_KEY);
-    return raw ? (JSON.parse(raw) as CloudSessionTestResult) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<CloudSessionTestResult>(LAST_CLOUD_SESSION_TEST_KEY);
 }
 
 export function isAutoSyncEnabled() {
@@ -778,12 +916,12 @@ export function isAutoSyncEnabled() {
   try {
     const owner = getActiveOwnerId();
     if (owner === "local") return false;
-    const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Record<string, boolean>;
-      return Boolean(parsed[owner]);
-    }
-    return window.localStorage.getItem(AUTO_SYNC_ENABLED_KEY) === "1";
+    const byOwner = readAutoSyncEnabledByOwner();
+    if (Object.prototype.hasOwnProperty.call(byOwner, owner)) return true;
+    const legacyValue = window.localStorage.getItem(AUTO_SYNC_ENABLED_KEY);
+    if (legacyValue === "1") return true;
+    if (legacyValue !== null && legacyValue !== "0") window.localStorage.removeItem(AUTO_SYNC_ENABLED_KEY);
+    return false;
   } catch {
     return false;
   }
@@ -794,11 +932,11 @@ export function setAutoSyncEnabled(enabled: boolean) {
   try {
     const owner = getActiveOwnerId();
     if (owner !== "local") {
-      const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
-      const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      const parsed = readAutoSyncEnabledByOwner();
       if (enabled) parsed[owner] = true;
       else delete parsed[owner];
-      window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+      if (Object.keys(parsed).length > 0) window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+      else window.localStorage.removeItem(AUTO_SYNC_BY_OWNER_KEY);
     }
     if (!enabled) window.localStorage.removeItem(AUTO_SYNC_ENABLED_KEY);
   } catch {
@@ -811,14 +949,14 @@ export function setAutoSyncEnabled(enabled: boolean) {
 export function clearAutoSyncPreference(ownerId: string) {
   if (typeof window === "undefined" || !ownerId || ownerId === "local") return;
   try {
-    const raw = window.localStorage.getItem(AUTO_SYNC_BY_OWNER_KEY);
-      const parsed = raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+      const parsed = readAutoSyncEnabledByOwner();
       delete parsed[ownerId];
-      window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
-      const rawIntervals = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
-      const intervals = rawIntervals ? (JSON.parse(rawIntervals) as Record<string, number>) : {};
+      if (Object.keys(parsed).length > 0) window.localStorage.setItem(AUTO_SYNC_BY_OWNER_KEY, JSON.stringify(parsed));
+      else window.localStorage.removeItem(AUTO_SYNC_BY_OWNER_KEY);
+      const intervals = readAutoSyncIntervalsByOwner();
       delete intervals[ownerId];
-      window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(intervals));
+      if (Object.keys(intervals).length > 0) window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(intervals));
+      else window.localStorage.removeItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
   } catch {
     // La preferencia no debe bloquear el modo local.
   }
@@ -876,43 +1014,19 @@ function setLastCloudHealthResult(value: CloudHealthResult) {
 }
 
 export function getLastCloudSyncTestResult(): CloudSyncTestResult | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_CLOUD_SYNC_TEST_KEY);
-    return raw ? (JSON.parse(raw) as CloudSyncTestResult) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<CloudSyncTestResult>(LAST_CLOUD_SYNC_TEST_KEY);
 }
 
 export function getLastSyncAttemptDetails(): SyncAttemptDetails | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_SYNC_ATTEMPT_KEY);
-    return raw ? (JSON.parse(raw) as SyncAttemptDetails) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<SyncAttemptDetails>(LAST_SYNC_ATTEMPT_KEY);
 }
 
 export function getLastLocalProtectedTestResult(): LocalProtectedTestResult | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_LOCAL_PROTECTED_TEST_KEY);
-    return raw ? (JSON.parse(raw) as LocalProtectedTestResult) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<LocalProtectedTestResult>(LAST_LOCAL_PROTECTED_TEST_KEY);
 }
 
 export function getLastLocalApplyRemoteCheckResult(): LocalApplyRemoteCheckResult | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LAST_LOCAL_APPLY_CHECK_KEY);
-    return raw ? (JSON.parse(raw) as LocalApplyRemoteCheckResult) : null;
-  } catch {
-    return null;
-  }
+  return readLocalStorageJson<LocalApplyRemoteCheckResult>(LAST_LOCAL_APPLY_CHECK_KEY);
 }
 
 function setLastCloudSessionTestResult(value: CloudSessionTestResult) {
@@ -930,8 +1044,7 @@ export function getAutoSyncIntervalMs() {
   try {
     const owner = getActiveOwnerId();
     if (owner === "local") return DEFAULT_AUTO_SYNC_INTERVAL_MS;
-    const raw = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const parsed = readAutoSyncIntervalsByOwner();
     const value = Number(parsed[owner]);
     return Number.isFinite(value) && value >= 60_000 ? value : DEFAULT_AUTO_SYNC_INTERVAL_MS;
   } catch {
@@ -944,8 +1057,7 @@ export function setAutoSyncIntervalMs(intervalMs: number) {
   try {
     const owner = getActiveOwnerId();
     if (owner === "local") return;
-    const raw = window.localStorage.getItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    const parsed = readAutoSyncIntervalsByOwner();
     parsed[owner] = intervalMs;
     window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(parsed));
   } catch {
@@ -963,8 +1075,8 @@ export async function testCloudHealth(): Promise<CloudHealthResult> {
       cloud_api_url: "no configurada",
       status_code: null,
       type: "unknown",
-      user_message: "No hay URL cloud configurada en esta instalacion.",
-      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL esta vacia.",
+      user_message: "No hay URL cloud configurada en esta instalación.",
+      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL está vacía.",
       timestamp,
     };
     setLastCloudHealthResult(result);
@@ -1001,11 +1113,14 @@ export async function testCloudHealth(): Promise<CloudHealthResult> {
       cloud_api_url: CLOUD_API_URL,
       status_code: response.status,
       type: ok ? "ok" : errorType,
-      user_message: ok ? "Conexion cloud OK." : syncUserMessage(errorType),
-      technical_message: ok ? "Cloud /health respondio correctamente." : safeTechnicalMessage(body?.detail || body?.message || text || `HTTP ${response.status}`),
+      user_message: ok ? "Conexión cloud OK." : syncUserMessage(errorType),
+      technical_message: ok ? "Cloud /health respondió correctamente." : safeTechnicalMessage(body?.detail || body?.message || text || `HTTP ${response.status}`),
       timestamp,
       version: typeof body?.version === "string" ? body.version : null,
       service: typeof body?.service === "string" ? body.service : null,
+      schema_version: typeof body?.schema_version === "string" ? body.schema_version : null,
+      sync_contract_version: typeof body?.sync_contract_version === "string" ? body.sync_contract_version : null,
+      cloud_schema_revision: typeof body?.cloud_schema_revision === "number" ? body.cloud_schema_revision : null,
       capabilities: body?.capabilities && typeof body.capabilities === "object" ? body.capabilities : null,
     };
     setLastCloudHealthResult(result);
@@ -1029,25 +1144,30 @@ export async function testCloudHealth(): Promise<CloudHealthResult> {
   }
 }
 
-async function ensureCloudSyncCompatible(reason: SyncReason, ownerId: string) {
+async function ensureCloudSyncCompatible(reason: SyncReason, ownerId: string): Promise<CloudHealthResult> {
   const health = await testCloudHealth();
   const supportedTables = new Set(health.capabilities?.sync_tables || []);
   const missingTables = SYNC_TABLES.filter((table) => !supportedTables.has(table));
-  const compatible =
-    health.ok &&
-    health.version === "3.1.0" &&
-    health.capabilities?.incremental_pull === true &&
-    health.capabilities?.server_revisions === true &&
-    health.capabilities?.tags_sync === true &&
-    health.capabilities?.movimiento_tags_sync === true &&
-    missingTables.length === 0;
-  if (compatible) return;
+  const missingCapabilities = REQUIRED_CLOUD_CAPABILITIES.filter((capability) => health.capabilities?.[capability] !== true);
+  const compatible = health.ok && missingCapabilities.length === 0 && missingTables.length === 0;
+  console.info(`${LOG_PREFIX} cloud compatibility`, {
+    endpoint: health.endpoint,
+    cloudVersion: health.version || "unknown",
+    syncContractVersion: health.sync_contract_version || "unknown",
+    schemaVersion: health.schema_version || "unknown",
+    presentCapabilities: health.capabilities || {},
+    missingCapabilities,
+    missingTables,
+  });
+  if (compatible) return health;
 
   const technical = [
-    `version=${health.version || "unknown"}`,
+    `cloud_version=${health.version || "unknown"}`,
+    `sync_contract_version=${health.sync_contract_version || "unknown"}`,
+    `schema_version=${health.schema_version || "unknown"}`,
+    `missing_capabilities=${missingCapabilities.join(",") || "none"}`,
     `missing_tables=${missingTables.join(",") || "none"}`,
-    `incremental_pull=${String(health.capabilities?.incremental_pull)}`,
-    `server_revisions=${String(health.capabilities?.server_revisions)}`,
+    `capabilities_present=${JSON.stringify(health.capabilities || {})}`,
   ].join(" ");
   throw cloudSyncError({
     type: health.ok ? "invalid_response" : (health.type === "ok" ? "unknown" : health.type),
@@ -1113,8 +1233,8 @@ export async function testCloudSession(): Promise<CloudSessionTestResult> {
       method: "GET",
       status_code: null,
       type: "unknown",
-      user_message: "No hay URL cloud configurada en esta instalacion.",
-      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL esta vacia.",
+      user_message: "No hay URL cloud configurada en esta instalación.",
+      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL está vacía.",
       timestamp,
     };
     setLastCloudSessionTestResult(result);
@@ -1165,8 +1285,8 @@ export async function testCloudSession(): Promise<CloudSessionTestResult> {
       method: "GET",
       status_code: response.status,
       type: "ok",
-      user_message: "Sesion cloud OK.",
-      technical_message: "Cloud /auth/me respondio correctamente.",
+      user_message: "Sesión cloud OK.",
+      technical_message: "Cloud /auth/me respondió correctamente.",
       timestamp,
       user_id: typeof body?.user_id === "string" ? body.user_id : typeof body?.id === "string" ? body.id : null,
       email: typeof body?.email === "string" ? body.email : null,
@@ -1203,8 +1323,8 @@ export async function testCloudSync(): Promise<CloudSyncTestResult> {
       method: "GET",
       status_code: null,
       type: "unknown",
-      user_message: "No hay URL cloud configurada en esta instalacion.",
-      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL esta vacia.",
+      user_message: "No hay URL cloud configurada en esta instalación.",
+      technical_message: "NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL está vacía.",
       timestamp,
     };
     setLastCloudSyncTestResult(result);
@@ -1256,7 +1376,7 @@ export async function testCloudSync(): Promise<CloudSyncTestResult> {
       status_code: response.status,
       type: "ok",
       user_message: "Sync cloud OK.",
-      technical_message: "Cloud /sync/health respondio correctamente.",
+      technical_message: "Cloud /sync/health respondió correctamente.",
       timestamp,
       user_id: typeof body?.user_id === "string" ? body.user_id : null,
     };
@@ -1298,8 +1418,8 @@ export async function testLocalProtectedService(): Promise<LocalProtectedTestRes
       status_code: response.status,
       user_message: response.ok ? "Servicio local protegido OK." : response.status === 401 || response.status === 403
         ? "No se pudo autenticar contra el servicio local."
-        : "El servicio local respondio con un error.",
-      technical_message: response.ok ? "Local /local/auth-check respondio correctamente." : safeTechnicalMessage(body?.detail || `HTTP ${response.status}`),
+        : "El servicio local respondió con un error.",
+      technical_message: response.ok ? "Local /local/auth-check respondió correctamente." : safeTechnicalMessage(body?.detail || `HTTP ${response.status}`),
       timestamp,
       security,
     };
@@ -1425,6 +1545,16 @@ export async function getSyncConflicts(limit = 10) {
   return localGet<{ ok: boolean; items: SyncConflictItem[] }>(`/sync/conflicts?limit=${limit}`);
 }
 
+async function markRejectedSyncItems(rejected: RejectedSyncItem[], ownerId: string) {
+  if (!rejected.length) return { ok: true, marked: {}, rejected_total: 0 };
+  return localPost<{ ok: boolean; marked: Partial<Record<SyncTable, number>>; rejected_total: number }>(
+    "/sync/mark-rejected",
+    { rejected },
+    ownerId,
+    "local_mark_synced",
+  );
+}
+
 export async function getLocalSessionContext() {
   return localGet<{
     ok: boolean;
@@ -1479,7 +1609,7 @@ function makeSyncId() {
 function friendlySyncError(error: unknown) {
   if (error instanceof CloudSyncError) {
     if (error.details.phase === "local_apply_remote") {
-      return "No pudimos completar la sincronizacion porque encontramos un problema con los datos locales. Tus datos siguen guardados en este dispositivo. Proba reparar los datos locales y sincroniza nuevamente.";
+      return "No pudimos completar la sincronización porque encontramos un problema con los datos locales. Tus datos siguen guardados en este dispositivo. Probá reparar los datos locales y sincronizá nuevamente.";
     }
     return error.details.user_message;
   }
@@ -1497,10 +1627,10 @@ function friendlySyncError(error: unknown) {
     normalized.includes("cors") ||
     normalized.includes("preflight")
   ) return syncUserMessage("network");
-  if (normalized.includes("curso")) return "Hay otra sincronizacion en curso.";
-  if (normalized.includes("sesion")) return "No hay sesion iniciada.";
-  if (normalized.includes("confirmar") || normalized.includes("nube")) return "No se pudo confirmar la sincronizacion con la nube.";
-  if (normalized.includes("configurado")) return "No hay URL cloud configurada en esta instalacion.";
+  if (normalized.includes("curso")) return "Hay otra sincronización en curso.";
+  if (normalized.includes("sesion")) return "No hay sesión iniciada.";
+  if (normalized.includes("confirmar") || normalized.includes("nube")) return "No se pudo confirmar la sincronización con la nube.";
+  if (normalized.includes("configurado")) return "No hay URL cloud configurada en esta instalación.";
   return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
 }
 
@@ -1535,6 +1665,40 @@ export async function getLocalDbIntegrity(ownerId?: string) {
   return localGet<LocalDbIntegrityResult>("/local/db-integrity", ownerId, "local_integrity");
 }
 
+async function getLocalCloudContractState(ownerId: string): Promise<LocalCloudContractState> {
+  return localGet<LocalCloudContractState>("/sync/cloud-contract-state", ownerId, "local_pending");
+}
+
+async function setLocalCloudContractState(ownerId: string, payload: { cloud_schema_revision: number | null; sync_contract_version: string | null }) {
+  return localPost<LocalCloudContractState>("/sync/cloud-contract-state", payload, ownerId, "local_mark_synced");
+}
+
+async function getLocalReadyState(ownerId?: string): Promise<LocalReadyState> {
+  const endpoint = `${API_URL}/ready`;
+  try {
+    const response = await fetch(endpoint, {
+      cache: "no-store",
+      headers: await getLocalRequestHeaders(undefined, ownerId),
+    });
+    const body = await response.json().catch(() => null);
+    return {
+      ok: Boolean(body?.ok),
+      status: body?.status || "critical",
+      code: body?.code,
+      database_ready: Boolean(body?.database_ready),
+      checked: Boolean(body?.checked),
+      initializing: Boolean(body?.initializing),
+      repairable: Boolean(body?.repairable),
+      sync_allowed: Boolean(body?.sync_allowed),
+      issue_table: typeof body?.issue_table === "string" ? body.issue_table : null,
+      message: typeof body?.message === "string" ? body.message : null,
+      version: typeof body?.version === "string" ? body.version : undefined,
+    };
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "No se pudo consultar el estado local.");
+  }
+}
+
 export async function createLocalBackup() {
   return localPost<{ ok: boolean; backup_path: string; created_at: string }>("/local/backup", {});
 }
@@ -1552,7 +1716,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   const session = getActiveCloudSession();
   if (!session?.token || !session.user?.id) {
     console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
-    throw new Error("Inicia sesion para sincronizar.");
+    throw new Error("Iniciá sesión para sincronizar.");
   }
   const snapshot: SyncRunSnapshot = {
     ownerId: session.user.id,
@@ -1564,11 +1728,16 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   };
   token = snapshot.token;
   userEmail = snapshot.userEmail;
-  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: "/sync", technicalMessage: "Cloud API URL vacia.", userMessage: "No hay URL cloud configurada en esta instalacion." });
-  if (syncInFlight) throw new Error("Ya hay una sincronizacion en curso.");
+  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: "/sync", technicalMessage: "Cloud API URL vacía.", userMessage: "No hay URL cloud configurada en esta instalación." });
+  if (syncInFlight) throw new Error("Ya hay una sincronización en curso.");
 
-  syncInFlight = true;
-  emitSyncStateChanged();
+  updateSyncRuntimeState({
+    inFlight: true,
+    phase: "sync",
+    reason,
+    ownerId: snapshot.ownerId,
+    criticalSection: false,
+  });
   const historySyncId = makeSyncId();
   const startedAt = new Date();
   let deviceInfo: DeviceInfo | null = null;
@@ -1585,7 +1754,14 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   });
 
   try {
-    await ensureCloudSyncCompatible(reason, snapshot.ownerId);
+    const localReady = await getLocalReadyState(snapshot.ownerId);
+    if (localReady.status === "repair_required" || localReady.status === "migration_failed" || localReady.status === "critical") {
+      throw new Error(localReady.message || "No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.");
+    }
+    if (!localReady.database_ready) {
+      throw new Error(localReady.message || "Estamos preparando tus datos locales. Intenta sincronizar nuevamente en unos segundos.");
+    }
+    const health = await ensureCloudSyncCompatible(reason, snapshot.ownerId);
     const integrity = await getLocalDbIntegrity(snapshot.ownerId);
     if (integrity.status === "critical") {
       console.warn(`${LOG_PREFIX} blocked: local integrity critical`, { issueCodes: integrity.issues.map((issue) => issue.code) });
@@ -1594,15 +1770,19 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     if (integrity.status === "warning") {
       console.warn(`${LOG_PREFIX} local integrity warning`, { issueCodes: integrity.issues.map((issue) => issue.code) });
     }
+    setSyncPhase("local_device_info");
     deviceInfo = await localGet<DeviceInfo>("/device/info", snapshot.ownerId, "local_device_info");
+    setSyncPhase("local_pending");
     const pending = await localGet<SyncPayload>("/sync/pending", snapshot.ownerId, "local_pending");
     pendingCounts = countByTable(pending);
     deletedCounts = countDeletedByTable(pending);
     console.info(`${LOG_PREFIX} pending`, { hasUser: Boolean(userEmail), mode, reason, device: shortIdentifier(deviceInfo.device_id), ...pendingCounts });
 
+    setSyncPhase("cloud_push");
     const pushResult = await cloudPost<{
       ok: boolean;
       accepted: Partial<Record<SyncTable, unknown>>;
+      rejected?: RejectedSyncItem[];
       ignored: Record<SyncTable, number>;
       conflicts?: Record<SyncTable, number>;
       counts?: Record<string, number>;
@@ -1619,22 +1799,35 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     });
 
     const accepted = acceptedByTable(pushResult.accepted || {});
+    const rejected = Array.isArray(pushResult.rejected)
+      ? pushResult.rejected.filter(
+        (item): item is RejectedSyncItem =>
+          Boolean(item)
+          && typeof item.entity === "string"
+          && typeof item.sync_id === "string"
+          && typeof item.code === "string"
+          && typeof item.message === "string"
+          && (SYNC_TABLES as readonly string[]).includes(item.entity),
+      )
+      : [];
     const counts = pushResult.counts || {};
     const acceptedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, accepted[table].length])) as Record<SyncTable, number>;
+    const rejectedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, rejected.filter((item) => item.entity === table).length])) as Record<SyncTable, number>;
     console.info(`${LOG_PREFIX} push result`, {
       hasUser: Boolean(userEmail),
       mode,
       counts,
       acceptedCounts,
+      rejectedCounts,
     });
 
     if (!pushResult.ok) {
-      throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
+      throw new Error("No se pudo confirmar la sincronización con la nube. No se modificó el estado local.");
     }
     const hasMismatch = SYNC_TABLES.some((table) => {
       const pendingCount = pendingCounts[table];
       return (
-        accepted[table].length + Number(pushResult.ignored?.[table] || 0) !== pendingCount ||
+        accepted[table].length + rejectedCounts[table] !== pendingCount ||
         counts[`${table}_received`] !== pendingCount ||
         counts[`${table}_saved`] !== accepted[table].length
       );
@@ -1643,15 +1836,47 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       console.error(`${LOG_PREFIX} cloud confirmation mismatch`, {
         pending: pendingCounts,
         accepted: acceptedCounts,
+        rejected: rejectedCounts,
         counts,
         mode,
       });
-      throw new Error("No se pudo confirmar la sincronizacion con la nube. No se modifico el estado local.");
+      throw new Error("No se pudo confirmar la sincronización con la nube. No se modificó el estado local.");
+    }
+    if (rejected.length > 0) {
+      await markRejectedSyncItems(rejected, snapshot.ownerId);
+      console.warn(`${LOG_PREFIX} rejected items`, {
+        ownerId: shortIdentifier(snapshot.ownerId),
+        total: rejected.length,
+        byEntity: rejectedCounts,
+        codes: Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))),
+      });
+    }
+
+    setSyncPhase("local_pending");
+    const localCloudContractState = await getLocalCloudContractState(snapshot.ownerId);
+    const schemaChanged = typeof health.cloud_schema_revision === "number"
+      && health.cloud_schema_revision !== localCloudContractState.cloud_schema_revision;
+    const syncContractChanged = typeof health.sync_contract_version === "string"
+      && health.sync_contract_version.trim().length > 0
+      && health.sync_contract_version !== localCloudContractState.sync_contract_version;
+    const forceFullPullOnce = schemaChanged || syncContractChanged;
+    if (forceFullPullOnce) {
+      console.info(`${LOG_PREFIX} cloud schema changed`, {
+        endpoint: cloudEndpoint("/health"),
+        ownerId: shortIdentifier(snapshot.ownerId),
+        oldSchemaRevision: localCloudContractState.cloud_schema_revision,
+        newSchemaRevision: health.cloud_schema_revision,
+        oldSyncContractVersion: localCloudContractState.sync_contract_version || "none",
+        newSyncContractVersion: health.sync_contract_version || "none",
+        reason: "cloud_schema_changed",
+        pullMode: "full_once",
+      });
     }
 
     const cursorState = await localGet<{ ok: boolean; cursor: string | null }>("/sync/cursor", snapshot.ownerId, "local_pending");
-    const pullCursor = cursorState.cursor;
+    const pullCursor = forceFullPullOnce ? null : cursorState.cursor;
     const pullPath = pullCursor ? `/sync/pull?since=${encodeURIComponent(pullCursor)}` : "/sync/pull";
+    setSyncPhase("cloud_pull");
     const remoteResponse = await cloudGet<SyncPayload & { cursor?: string | null }>(pullPath, token, {
       phase: "cloud_pull",
       itemsTotal: 0,
@@ -1674,7 +1899,10 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     };
     const pulledTotal = totalCount(pulledCounts);
     const applyResult: ApplyRemoteResult = pulledTotal > 0
-      ? await localPost<ApplyRemoteResult>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote")
+      ? await (async () => {
+          setSyncPhase("local_apply_remote", { criticalSection: true });
+          return localPost<ApplyRemoteResult>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote");
+        })()
       : {
           ok: true,
           result: {},
@@ -1691,6 +1919,7 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
 
     let markSyncedExecuted = false;
     if (SYNC_TABLES.some((table) => accepted[table].length > 0)) {
+      setSyncPhase("local_mark_synced", { criticalSection: true });
       await localPost("/sync/mark-synced", accepted, snapshot.ownerId, "local_mark_synced");
       markSyncedExecuted = true;
       console.info(`${LOG_PREFIX} mark-synced`, { executed: true, mode, ...acceptedCounts });
@@ -1704,8 +1933,27 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     if (ownerStillActive) {
       if (mode === "auto") setLastAutoSyncAt(syncedAt);
       else setLastManualSyncAt(syncedAt);
-      setLastSyncError(null);
-      setLastSyncErrorDetails(null);
+      if (rejected.length > 0) {
+        const warning = "Algunos datos no pudieron sincronizarse y necesitan revision.";
+        setLastSyncError(warning);
+        setLastSyncErrorDetails(
+          makeSyncErrorDetails({
+            type: "invalid_response",
+            endpoint: cloudEndpoint("/sync/push"),
+            technicalMessage: `rejected=${rejected.length} codes=${Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))).join(",")}`,
+            userMessage: warning,
+            method: "POST",
+            phase: "cloud_push",
+            itemsTotal: rejected.length,
+            ownerUsed: snapshot.ownerId,
+            reason,
+            pendingCounts: rejectedCounts,
+          }),
+        );
+      } else {
+        setLastSyncError(null);
+        setLastSyncErrorDetails(null);
+      }
     } else {
       console.info(`${LOG_PREFIX} finished for previous owner`, {
         ownerId: shortIdentifier(snapshot.ownerId),
@@ -1715,8 +1963,16 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       });
     }
     if (remoteResponse.cursor) {
+      setSyncPhase("local_mark_synced", { criticalSection: true });
       await localPost("/sync/cursor", { cursor: remoteResponse.cursor }, snapshot.ownerId, "local_mark_synced");
     }
+    setSyncPhase("local_mark_synced", { criticalSection: true });
+    await setLocalCloudContractState(snapshot.ownerId, {
+      cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null,
+      sync_contract_version: typeof health.sync_contract_version === "string" && health.sync_contract_version.trim().length > 0
+        ? health.sync_contract_version
+        : null,
+    });
     await recordSyncHistory({
       sync_id: historySyncId,
       device_id: deviceInfo.device_id,
@@ -1733,18 +1989,26 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       remote_changes_total: remoteChangesTotal,
       applied_remote_total: appliedRemoteTotal,
       kept_local_total: keptLocalTotal,
-      error_message: null,
+      error_message: rejected.length > 0 ? "Algunos datos no pudieron sincronizarse y necesitan revision." : null,
       details: {
         pending: pendingCounts,
         pushed: acceptedCounts,
+        rejected: rejectedCounts,
         pulled: pulledCounts,
         deleted: deletedCounts,
         applied: applyResult.result,
         conflicts: applyResult.conflicts,
         kept_local: applyResult.kept_local,
         reason,
+        pull_mode: forceFullPullOnce ? "full_once" : "incremental",
+        cloud_schema_change_reason: forceFullPullOnce ? "cloud_schema_changed" : null,
+        old_cloud_schema_revision: localCloudContractState.cloud_schema_revision,
+        new_cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null,
+        old_sync_contract_version: localCloudContractState.sync_contract_version || null,
+        new_sync_contract_version: typeof health.sync_contract_version === "string" ? health.sync_contract_version : null,
         owner_id: snapshot.ownerId,
         owner_changed_during_sync: !ownerStillActive,
+        rejected_total: rejected.length,
       },
     }, snapshot.ownerId);
 
@@ -1752,6 +2016,8 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       syncedAt,
       uploaded: acceptedCounts,
       ignored: pushResult.ignored,
+      rejected,
+      rejectedTotal: rejected.length,
       applied: applyResult.result,
       pulled: pulledCounts,
       conflictsTotal,
@@ -1804,8 +2070,13 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     }, snapshot.ownerId);
     throw new Error(friendly);
   } finally {
-    syncInFlight = false;
-    emitSyncStateChanged();
+    updateSyncRuntimeState({
+      inFlight: false,
+      phase: null,
+      reason: null,
+      ownerId: null,
+      criticalSection: false,
+    });
   }
 }
 

@@ -115,6 +115,13 @@ export type SettingsInfo = {
   backend_ok: boolean;
   db_path: string;
   db_exists?: boolean;
+  db_initialized?: boolean;
+  database_ready?: boolean;
+  db_status?: "ready" | "degraded" | "repair_required" | "migration_failed" | "critical";
+  db_code?: string;
+  db_message?: string;
+  repairable?: boolean;
+  sync_allowed?: boolean;
   db_size?: number;
   data_dir: string;
   backups_dir?: string;

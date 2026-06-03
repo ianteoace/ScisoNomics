@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
 import {
+  DEFAULT_REMEMBER_CLOUD_ACCOUNT,
   clearAllAccounts,
   clearActiveAccountSession,
   cloudAuth,
@@ -54,7 +55,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [loadingSession, setLoadingSession] = useState(true);
   const [sessionCheckError, setSessionCheckError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("Sin sincronizar");
@@ -292,8 +293,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         email: registerEmail,
         password: registerPassword,
       });
-      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember: true, makeActive: true });
-      setTokenMode("persistent");
+      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
+      setTokenMode(remember ? "persistent" : "session");
       setUser(response.user);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(response.user.id);
@@ -360,17 +361,20 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     try {
       const result = await runManualSync(session.token, session.user.email);
       setLastSyncAt(result.syncedAt);
-      setLastSyncError(null);
-      setSyncMessage("Sincronizacion completada");
+      setLastSyncError(result.rejectedTotal ? "Algunos datos no pudieron sincronizarse y necesitan revision." : null);
+      setSyncMessage(result.rejectedTotal ? "Sincronizacion completada con advertencias" : "Sincronizacion completada");
       const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
       const pulledTotal = Object.values(result.pulled || {}).reduce((sum, value) => sum + Number(value || 0), 0);
       setSyncSummary(
-        result.conflictsTotal
+        result.rejectedTotal
+          ? `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}. Quedaron ${result.rejectedTotal} registros para revisar.`
+          : result.conflictsTotal
           ? `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}. Se resolvieron ${result.conflictsTotal} cambios entre dispositivos.`
           : `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}.`,
       );
       await refreshSyncCenter();
-      showSuccess("Sincronizacion completada correctamente.");
+      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revision.");
+      else showSuccess("Sincronizacion completada correctamente.");
     } catch (error) {
       console.error("Error sincronizando:", error);
       setSyncMessage("Error al sincronizar");
@@ -491,8 +495,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         const status = await cloudAuth.googleStatus(result.login_request_id);
         if (status.status === "pending") continue;
         if (status.status === "completed") {
-          addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember: true, makeActive: true });
-          setTokenMode("persistent");
+          addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember, makeActive: true });
+          setTokenMode(remember ? "persistent" : "session");
           setUser(status.user);
           setAccounts(getStoredAccounts());
           setActiveOwnerId(status.user.id);

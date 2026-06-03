@@ -32,6 +32,7 @@ const AUTH_STATE_KEY = "scisonomics_cloud_accounts_v1";
 const AUTH_STATE_SESSION_KEY = "scisonomics_cloud_accounts_session_v1";
 const TOKEN_KEY = "scisonomics_cloud_access_token";
 const USER_KEY = "scisonomics_cloud_user";
+export const DEFAULT_REMEMBER_CLOUD_ACCOUNT = false;
 export const ACCOUNT_SESSION_CHANGED_EVENT = "scisonomics:account-session-changed";
 export const OWNER_CHANGED_EVENT = "scisonomics:owner-changed";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
@@ -134,8 +135,9 @@ function saveSplitState(state: StoredAuthState) {
   const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
   const sessionAccounts = state.accounts.filter((account) => account.storage === "session");
   try {
-    // Las cuentas recordadas persisten JWT en localStorage por decision funcional.
-    // Migrar a secure storage nativo queda pendiente para una version posterior.
+    // Solo las cuentas marcadas explicitamente como recordadas persisten JWT.
+    // Secure storage nativo sigue pendiente; mientras tanto reducimos riesgo
+    // evitando persistir tokens por defecto.
     if (persistentAccounts.length || state.activeOwnerId !== LOCAL_OWNER_ID) {
       writeJsonState(window.localStorage, AUTH_STATE_KEY, { activeOwnerId: state.activeOwnerId, accounts: persistentAccounts });
     } else {
@@ -377,7 +379,7 @@ export function clearStoredToken() {
 }
 
 export const getCloudToken = getStoredToken;
-export const saveCloudToken = (token: string) => setStoredToken(token, true);
+export const saveCloudToken = (token: string) => setStoredToken(token, DEFAULT_REMEMBER_CLOUD_ACCOUNT);
 export const clearCloudToken = clearStoredToken;
 
 export function subscribeAuthChanges(listener: () => void) {
@@ -414,9 +416,9 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     if (response.status === 401 || response.status === 403) {
-      throw new CloudAuthRequestError("Sesion invalida o vencida.", { statusCode: response.status, kind: "auth" });
+      throw new CloudAuthRequestError("Sesión inválida o vencida.", { statusCode: response.status, kind: "auth" });
     }
-    throw new CloudAuthRequestError(typeof body?.detail === "string" ? body.detail : "No se pudo completar la accion.", {
+    throw new CloudAuthRequestError(typeof body?.detail === "string" ? body.detail : "No se pudo completar la acción.", {
       statusCode: response.status,
       kind: response.status >= 500 ? "server" : "unknown",
     });

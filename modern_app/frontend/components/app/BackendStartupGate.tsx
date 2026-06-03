@@ -1,45 +1,60 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
 import { API_URL } from "../../services/http";
 
 type HealthResponse = {
   ok: boolean;
+  service?: string;
   version?: string;
   frozen?: boolean;
-  db_exists?: boolean;
-  db_initialized?: boolean;
-  database_ready?: boolean;
-  initializing?: boolean;
-  database_error?: string | null;
   error?: string;
   detail?: string;
+};
+
+type ReadyResponse = {
+  ok: boolean;
+  status: "ready" | "degraded" | "repair_required" | "migration_failed" | "critical";
+  code?: string;
+  version?: string;
+  database_ready: boolean;
+  checked?: boolean;
+  initializing?: boolean;
+  repairable?: boolean;
+  sync_allowed?: boolean;
+  issue_table?: string | null;
+  message?: string | null;
 };
 
 const MAX_WAIT_MS = 20_000;
 const RETRY_MS = 800;
 const ATTEMPT_TIMEOUT_MS = 2_500;
 const FRONTEND_VERSION = "3.1.0";
+const REPAIR_ROUTE = "/configuracion?section=diagnostico";
+const LIMITED_READY_STATUSES = new Set<ReadyResponse["status"]>(["degraded", "repair_required", "migration_failed", "critical"]);
+const REPAIR_READY_STATUSES = new Set<ReadyResponse["status"]>(["repair_required", "migration_failed", "critical"]);
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isBackendReady(health: HealthResponse | null) {
-  if (!health?.ok) return false;
-  if (health.database_ready === false) return false;
-  if (health.db_exists === false) return false;
-  if (health.db_initialized === false) return false;
-  return true;
-}
-
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
   const [errorDescription, setErrorDescription] = useState("");
   const [statusText, setStatusText] = useState("Iniciando ScisoNomics...");
+  const [limitedReady, setLimitedReady] = useState<ReadyResponse | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    if (!limitedReady || !REPAIR_READY_STATUSES.has(limitedReady.status)) return;
+    if (pathname === "/configuracion") return;
+    router.replace(REPAIR_ROUTE);
+  }, [limitedReady, pathname, router]);
 
   useEffect(() => {
     let active = true;
@@ -48,6 +63,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
       setReady(false);
       setError(false);
       setErrorDescription("");
+      setLimitedReady(null);
       setStatusText("Estamos preparando la aplicacion y tus datos locales...");
 
       const startedAt = Date.now();
@@ -78,7 +94,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
 
           console.info("Startup health response", { attempt, status: response.status, health });
 
-          if (response.ok && isBackendReady(health)) {
+          if (response.ok && health?.ok) {
             if (health?.version && health.version !== FRONTEND_VERSION) {
               console.error("Backend/frontend version mismatch", { frontendVersion: FRONTEND_VERSION, backendVersion: health.version });
               setErrorDescription(
@@ -87,20 +103,61 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
               setError(true);
               return;
             }
-            if (!active) return;
-            console.info("Startup health ready", { attempt, elapsedMs: Date.now() - startedAt });
-            setReady(true);
-            return;
-          }
+            const readyResponse = await fetch(`${API_URL}/ready`, {
+              cache: "no-store",
+              signal: controller.signal,
+            });
+            const readyRaw = await readyResponse.text();
+            let readiness: ReadyResponse | null = null;
+            try {
+              readiness = JSON.parse(readyRaw) as ReadyResponse;
+            } catch {
+              lastError = readyRaw || "El servicio local no devolvio una respuesta valida.";
+            }
 
-          if (health?.initializing || health?.database_ready === false || health?.db_initialized === false) {
-            setStatusText("Estamos preparando tu base de datos local...");
+            console.info("Startup ready response", { attempt, status: readyResponse.status, readiness });
+
+            if (readiness?.version && readiness.version !== FRONTEND_VERSION) {
+              console.error("Backend/frontend version mismatch", { frontendVersion: FRONTEND_VERSION, backendVersion: readiness.version });
+              setErrorDescription(
+                "Detectamos que el servicio local no coincide con la version instalada. Cerra ScisoNomics y volve a abrirla. Si el problema continua, reinstala la ultima version sin omitir archivos.",
+              );
+              setError(true);
+              return;
+            }
+
+            if (readiness?.status === "ready" && readiness.database_ready) {
+              if (!active) return;
+              console.info("Startup ready", { attempt, elapsedMs: Date.now() - startedAt });
+              setLimitedReady(null);
+              setReady(true);
+              return;
+            }
+
+            if (readiness?.initializing || readiness?.code === "db_initializing" || readiness?.code === "db_check_pending") {
+              setStatusText(readiness?.message || "Estamos preparando tu base de datos local...");
+            } else if (readiness && LIMITED_READY_STATUSES.has(readiness.status)) {
+              if (!active) return;
+              setLimitedReady(readiness);
+              setReady(true);
+              return;
+            } else {
+              setStatusText("Estamos preparando los servicios locales...");
+            }
+
+            if (readiness?.message) {
+              lastError = readiness.message;
+            } else if (!readyResponse.ok) {
+              lastError = `HTTP ${readyResponse.status}`;
+            } else if (readyRaw) {
+              lastError = readyRaw;
+            }
           } else {
             setStatusText("Estamos preparando los servicios locales...");
           }
 
-          if (health?.database_error || health?.error || health?.detail) {
-            lastError = `${health.database_error || ""} ${health.error || ""} ${health.detail || ""}`.trim();
+          if (health?.error || health?.detail) {
+            lastError = `${health.error || ""} ${health.detail || ""}`.trim();
           } else if (!response.ok) {
             lastError = `HTTP ${response.status}`;
           } else if (raw) {
@@ -171,5 +228,31 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {limitedReady ? (
+        <div className="sticky top-0 z-40 border-b border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 backdrop-blur">
+          <div className="mx-auto flex max-w-7xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="font-semibold">
+                {limitedReady.message || "ScisoNomics abrio en modo reparacion porque tus datos locales necesitan una revision."}
+              </p>
+              <p className="text-xs text-amber-50/80">
+                Podes crear un backup, revisar o reparar los datos locales desde Datos y seguridad. La sincronizacion queda bloqueada hasta resolverlo.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button className="btn-secondary" onClick={() => router.replace(REPAIR_ROUTE)}>
+                Abrir Datos y seguridad
+              </button>
+              <button className="btn-secondary" onClick={() => setRetryKey((value) => value + 1)}>
+                Reintentar revision
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {children}
+    </>
+  );
 }
