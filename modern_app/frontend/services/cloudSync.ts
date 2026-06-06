@@ -1,5 +1,5 @@
 import { API_URL, getLocalRequestHeaders, getLocalRequestSecurity, getLocalRequestSecuritySnapshot, type LocalRequestSecurity } from "./http";
-import { getActiveCloudSession, getActiveOwnerId } from "./cloudAuth";
+import { forceRefreshActiveCloudSession, getActiveCloudSession, getActiveCloudSessionAsync, getActiveOwnerId } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
@@ -47,6 +47,7 @@ export type SyncErrorDetails = {
   method: string;
   phase: SyncDiagnosticPhase;
   classification?: string | null;
+  code?: string | null;
   items_total: number | null;
   payload_bytes: number | null;
   body_constructed: boolean | null;
@@ -285,6 +286,22 @@ type LocalCloudContractState = {
   sync_contract_version: string | null;
 };
 
+type SyncFailureClassification =
+  | "local_repair_required"
+  | "local_apply_constraint"
+  | "local_service_unreachable"
+  | "local_service_error"
+  | "local_apply_invalid_payload"
+  | "record_rejected"
+  | "cloud_validation"
+  | "cloud_service_error"
+  | "cloud_connection"
+  | "cloud_confirmation"
+  | "sync_in_flight"
+  | "no_session"
+  | "cloud_not_configured"
+  | "unknown";
+
 type SyncRunSnapshot = {
   ownerId: string;
   token: string;
@@ -376,7 +393,7 @@ function syncUserMessage(type: SyncErrorType) {
   if (type === "network") return "No pudimos conectar con el servicio cloud. Revisa internet, firewall o antivirus.";
   if (type === "timeout") return "La conexión con el servicio cloud tardó demasiado.";
   if (type === "unauthorized") return "La sesión venció o no es válida. Volvé a iniciar sesión.";
-  if (type === "forbidden") return "No tenes permisos para sincronizar esta cuenta.";
+  if (type === "forbidden") return "No ten?s permisos para sincronizar esta cuenta.";
   if (type === "server_error") return "El servicio cloud respondió con un error interno.";
   if (type === "invalid_response") return "El servicio cloud respondió con un formato inesperado.";
   return "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
@@ -467,6 +484,8 @@ function makeSyncErrorDetails(input: {
   technicalMessage: unknown;
   statusCode?: number | null;
   userMessage?: string;
+  code?: string | null;
+  classification?: SyncFailureClassification | null;
   method?: string;
   phase?: SyncErrorDetails["phase"];
   itemsTotal?: number | null;
@@ -484,7 +503,8 @@ function makeSyncErrorDetails(input: {
     endpoint: input.endpoint,
     method: input.method || "GET",
     phase: input.phase || "unknown",
-    classification: null,
+    classification: input.classification ?? null,
+    code: input.code ?? null,
     items_total: input.itemsTotal ?? null,
     payload_bytes: input.payloadBytes ?? null,
     body_constructed: input.bodyConstructed ?? null,
@@ -504,6 +524,8 @@ function cloudSyncError(input: {
   technicalMessage: unknown;
   statusCode?: number | null;
   userMessage?: string;
+  code?: string | null;
+  classification?: SyncFailureClassification | null;
   method?: string;
   phase?: SyncErrorDetails["phase"];
   itemsTotal?: number | null;
@@ -560,6 +582,7 @@ async function parseResponse<T>(
       endpoint: response.url,
       statusCode: response.status,
       technicalMessage: typeof body?.detail === "string" ? body.detail : fallback,
+      code: typeof body?.code === "string" ? body.code : null,
       method: options.method,
       phase: options.phase,
       itemsTotal: options.itemsTotal,
@@ -580,6 +603,7 @@ async function parseResponse<T>(
       endpoint: response.url,
       statusCode: response.status,
       technicalMessage: error,
+      code: null,
       method: options.method,
       phase: options.phase,
       itemsTotal: options.itemsTotal,
@@ -600,7 +624,7 @@ async function localGet<T>(path: string, ownerId?: string, phase?: SyncDiagnosti
     const request = await getLocalRequestSecurity(undefined, ownerId, Boolean(phase));
     security = request.security;
     const response = await fetch(endpoint, { cache: "no-store", headers: request.headers });
-    return parseResponse<T>(response, "No se pudo leer la informacion local para sincronizar.", { cloud: Boolean(phase), method: "GET", phase, ownerUsed: ownerId, localSecurity: security });
+    return parseResponse<T>(response, "No se pudo leer la informaci?n local para sincronizar.", { cloud: Boolean(phase), method: "GET", phase, ownerUsed: ownerId, localSecurity: security });
   } catch (error) {
     if (!phase) throw error;
     if (error instanceof CloudSyncError) {
@@ -633,7 +657,7 @@ async function localPost<T>(path: string, payload: unknown, ownerId?: string, ph
       headers: request.headers,
       body,
     });
-    return parseResponse<T>(response, "No se pudo actualizar la informacion local de sincronizacion.", {
+    return parseResponse<T>(response, "No se pudo actualizar la informaci?n local de sincronizaci?n.", {
       cloud: Boolean(phase),
       method: "POST",
       phase,
@@ -684,10 +708,10 @@ type CloudRequestMetadata = {
 const MAX_SYNC_PAYLOAD_BYTES = 5 * 1024 * 1024;
 
 function validateJsonSafeValue(value: unknown, seen: WeakSet<object>) {
-  if (typeof value === "number" && !Number.isFinite(value)) throw new Error("El payload contiene un numero no finito.");
+  if (typeof value === "number" && !Number.isFinite(value)) throw new Error("El payload contiene un número no finito.");
   if (typeof value === "undefined") throw new Error("El payload contiene un valor undefined.");
   if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) throw new Error("El payload contiene una fecha invalida.");
+    if (Number.isNaN(value.getTime())) throw new Error("El payload contiene una fecha inválida.");
     return;
   }
   if (typeof Blob !== "undefined" && value instanceof Blob) throw new Error("El payload contiene un archivo no permitido.");
@@ -708,7 +732,7 @@ function serializeCloudPayload(path: string, payload: unknown, metadata: CloudRe
     const body = JSON.stringify(payload);
     if (typeof body !== "string") throw new Error("No se pudo construir el body JSON.");
     payloadBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(body).byteLength : body.length;
-    if (payloadBytes > MAX_SYNC_PAYLOAD_BYTES) throw new Error(`El payload supera el limite seguro de ${MAX_SYNC_PAYLOAD_BYTES} bytes.`);
+    if (payloadBytes > MAX_SYNC_PAYLOAD_BYTES) throw new Error(`El payload supera el límite seguro de ${MAX_SYNC_PAYLOAD_BYTES} bytes.`);
     return { body, payloadBytes };
   } catch (error) {
     setLastSyncAttemptDetails({
@@ -753,7 +777,7 @@ async function cloudGet<T>(
     cache: "no-store",
     headers: { Authorization: `Bearer ${token}` },
   }, { method: "GET", phase: metadata.phase, itemsTotal: metadata.itemsTotal, ownerUsed: metadata.ownerUsed, reason: metadata.reason, pendingCounts: metadata.pendingCounts });
-  return parseResponse<T>(response, "No se pudo obtener informacion desde el servicio cloud.", {
+  return parseResponse<T>(response, "No se pudo obtener informaci?n desde el servicio cloud.", {
     cloud: true,
     method: "GET",
     phase: metadata.phase,
@@ -811,7 +835,7 @@ async function cloudPost<T>(
     technical_message: response.ok ? "Respuesta HTTP recibida correctamente." : `Respuesta HTTP ${response.status}.`,
     timestamp: nowIso(),
   });
-  return parseResponse<T>(response, "No se pudo enviar informacion al servicio cloud.", {
+  return parseResponse<T>(response, "No se pudo enviar informaci?n al servicio cloud.", {
     cloud: true,
     method: "POST",
     phase: metadata.phase,
@@ -836,13 +860,29 @@ async function cloudFetch(
     ownerUsed?: string | null;
     reason?: SyncReason | null;
     pendingCounts?: Partial<Record<SyncTable, number>> | null;
+    authRetryAttempted?: boolean;
   } = {},
 ) {
   const endpoint = cloudEndpoint(path);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), getCloudTimeoutMs(path, metadata));
   try {
-    return await fetch(endpoint, { ...options, signal: controller.signal });
+    const response = await fetch(endpoint, { ...options, signal: controller.signal });
+    const authorizationHeader =
+      options.headers && typeof Headers !== "undefined" && options.headers instanceof Headers
+        ? options.headers.get("Authorization")
+        : options.headers && !Array.isArray(options.headers)
+          ? (options.headers as Record<string, string>)["Authorization"]
+          : null;
+    if (response.status === 401 && authorizationHeader && !metadata.authRetryAttempted) {
+      const refreshedSession = await forceRefreshActiveCloudSession().catch(() => null);
+      if (refreshedSession?.token) {
+        const nextHeaders = new Headers(options.headers || {});
+        nextHeaders.set("Authorization", `Bearer ${refreshedSession.token}`);
+        return cloudFetch(path, { ...options, headers: nextHeaders }, { ...metadata, authRetryAttempted: true });
+      }
+    }
+    return response;
   } catch (error) {
     if (metadata.phase === "cloud_push") {
       setLastSyncAttemptDetails({
@@ -1187,7 +1227,7 @@ async function ensureCloudSyncCompatible(reason: SyncReason, ownerId: string): P
     endpoint: health.endpoint,
     statusCode: health.status_code,
     technicalMessage: technical,
-    userMessage: "El servicio cloud necesita actualizarse para esta version de ScisoNomics.",
+    userMessage: "El servicio cloud necesita actualizarse para esta versi?n de ScisoNomics.",
     method: "GET",
     phase: "cloud_health",
     ownerUsed: ownerId,
@@ -1237,7 +1277,7 @@ function setLastLocalApplyRemoteCheckResult(value: LocalApplyRemoteCheckResult) 
 
 export async function testCloudSession(): Promise<CloudSessionTestResult> {
   const timestamp = nowIso();
-  const session = getActiveCloudSession();
+  const session = await getActiveCloudSessionAsync();
   const endpoint = cloudEndpoint("/auth/me");
   if (!CLOUD_API_URL) {
     const result: CloudSessionTestResult = {
@@ -1327,7 +1367,7 @@ export async function testCloudSession(): Promise<CloudSessionTestResult> {
 
 export async function testCloudSync(): Promise<CloudSyncTestResult> {
   const timestamp = nowIso();
-  const session = getActiveCloudSession();
+  const session = await getActiveCloudSessionAsync();
   const endpoint = cloudEndpoint("/sync/health");
   if (!CLOUD_API_URL) {
     const result: CloudSyncTestResult = {
@@ -1625,75 +1665,113 @@ function classifySyncFailure(
     localReady: LocalReadyState | null;
     integrity: LocalDbIntegrityResult | null;
     rejectedTotal: number;
+    syncErrorTotal?: number;
   },
 ) {
-  const repairMessage = "No pudimos completar la sincronización porque encontramos un problema con los datos locales. Tu estado sigue guardado en este dispositivo. Probá reparar los datos locales y sincronizá nuevamente.";
-  const rejectedMessage = "Algunos datos no pudieron sincronizarse y necesitan revisión.";
-  const localApplyMessage = "No pudimos aplicar algunos cambios sincronizados en este dispositivo. Reintentá nuevamente.";
-  const localServiceMessage = "No pudimos actualizar los datos locales con la información sincronizada. Reintentá nuevamente.";
-
-  if (
-    context.localReady?.status === "repair_required"
-    || context.localReady?.status === "migration_failed"
-    || context.localReady?.status === "critical"
-    || context.integrity?.status === "critical"
-  ) {
-    return { message: repairMessage, classification: "local_repair_required" };
+  const localReadyBlocksSync = Boolean(
+    context.localReady
+    && (
+      context.localReady.status === "repair_required"
+      || context.localReady.status === "migration_failed"
+      || context.localReady.status === "critical"
+      || context.localReady.sync_allowed === false
+    ),
+  );
+  const integrityBlocksSync = context.integrity?.status === "critical";
+  if (localReadyBlocksSync || integrityBlocksSync) {
+    const classification: SyncFailureClassification = "local_repair_required";
+    return { message: getSyncFailureUserMessage(classification), classification };
   }
-  if (context.rejectedTotal > 0) {
-    return { message: rejectedMessage, classification: "record_rejected" };
+  if (context.rejectedTotal > 0 || (context.syncErrorTotal || 0) > 0) {
+    const classification: SyncFailureClassification = "record_rejected";
+    return { message: getSyncFailureUserMessage(classification), classification };
   }
   if (error instanceof CloudSyncError) {
     const details = error.details;
-    const technical = (details.technical_message || "").toLowerCase();
+    if (details.classification) {
+      const classification = details.classification as SyncFailureClassification;
+      return { message: getSyncFailureUserMessage(classification, details.user_message), classification };
+    }
     if (details.phase === "local_mark_rejected") {
-      return { message: rejectedMessage, classification: "record_rejected" };
+      const classification: SyncFailureClassification = "record_rejected";
+      return { message: getSyncFailureUserMessage(classification), classification };
     }
     if (details.phase === "local_apply_remote") {
-      const looksLikeConstraint =
-        technical.includes("constraint")
-        || technical.includes("integrity")
-        || technical.includes("foreign key")
-        || technical.includes("unique")
-        || technical.includes("sqlite");
-      if (looksLikeConstraint) return { message: repairMessage, classification: "local_apply_constraint" };
-      if (details.type === "network") return { message: localServiceMessage, classification: "local_service_unreachable" };
-      if ((details.status_code || 0) >= 500) return { message: localServiceMessage, classification: "local_service_error" };
-      if (details.status_code === 400 || details.status_code === 422) return { message: localApplyMessage, classification: "local_apply_invalid_payload" };
-    }
-    if (details.phase === "cloud_push" || details.phase === "cloud_pull" || details.phase === "cloud_health") {
-      if (details.status_code === 400 || details.status_code === 422) {
-        return { message: "El servicio cloud rechazó algunos datos para sincronizar. Revisá los datos pendientes e intentá nuevamente.", classification: "cloud_validation" };
-      }
-      if ((details.status_code || 0) >= 500) {
-        return { message: "El servicio cloud respondió con un error. Reintentá más tarde.", classification: "cloud_service_error" };
+      if (details.code === "sqlite_constraint" || details.code === "sqlite_integrity" || details.code === "foreign_key_conflict" || details.status_code === 409) {
+        const classification: SyncFailureClassification = "local_apply_constraint";
+        return { message: getSyncFailureUserMessage(classification), classification };
       }
       if (details.type === "network" || details.type === "timeout") {
-        return { message: syncUserMessage(details.type), classification: "cloud_connection" };
+        const classification: SyncFailureClassification = "local_service_unreachable";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if ((details.status_code || 0) >= 500) {
+        const classification: SyncFailureClassification = "local_service_error";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if (details.status_code == 400 || details.status_code == 422) {
+        const classification: SyncFailureClassification = "local_apply_invalid_payload";
+        return { message: getSyncFailureUserMessage(classification), classification };
       }
     }
-    return { message: details.user_message, classification: "phase_specific" };
+    if (["local_ready_check", "local_integrity_check", "local_device_info", "local_pending", "local_mark_synced", "cursor_save"].includes(details.phase)) {
+      if (details.type === "network" || details.type === "timeout") {
+        const classification: SyncFailureClassification = "local_service_unreachable";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if ((details.status_code || 0) >= 500) {
+        const classification: SyncFailureClassification = "local_service_error";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if (details.status_code === 400 || details.status_code === 422) {
+        const classification: SyncFailureClassification = "local_apply_invalid_payload";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+    }
+    if (["cloud_push", "cloud_pull", "cloud_health"].includes(details.phase)) {
+      if (details.status_code === 400 || details.status_code === 422) {
+        const classification: SyncFailureClassification = "cloud_validation";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if ((details.status_code || 0) >= 500) {
+        const classification: SyncFailureClassification = "cloud_service_error";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if (details.type === "network" || details.type === "timeout") {
+        const classification: SyncFailureClassification = "cloud_connection";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+      if (details.type === "unauthorized" || details.type === "forbidden") {
+        const classification: SyncFailureClassification = "cloud_confirmation";
+        return { message: getSyncFailureUserMessage(classification), classification };
+      }
+    }
+    if (details.phase === "session") {
+      const classification: SyncFailureClassification = "no_session";
+      return { message: getSyncFailureUserMessage(classification), classification };
+    }
+    return { message: details.user_message || getSyncFailureUserMessage("unknown"), classification: "unknown" };
   }
-  const message = error instanceof Error ? error.message : String(error || "");
-  const normalized = message.toLowerCase();
-  if (normalized.includes("datos locales necesitan una revision")) return { message, classification: "local_repair_required" };
-  if (normalized.includes("no pudieron sincronizarse y necesitan revision")) return { message: rejectedMessage, classification: "record_rejected" };
-  if (
-    normalized.includes("failed to fetch") ||
-    normalized.includes("networkerror") ||
-    normalized.includes("load failed") ||
-    normalized.includes("err_connection") ||
-    normalized.includes("err_name_not_resolved") ||
-    normalized.includes("err_cert") ||
-    normalized.includes("err_timed_out") ||
-    normalized.includes("cors") ||
-    normalized.includes("preflight")
-  ) return { message: syncUserMessage("network"), classification: "cloud_connection" };
-  if (normalized.includes("curso")) return { message: "Hay otra sincronización en curso.", classification: "sync_in_flight" };
-  if (normalized.includes("sesion")) return { message: "No hay sesión iniciada.", classification: "no_session" };
-  if (normalized.includes("confirmar") || normalized.includes("nube")) return { message: "No se pudo confirmar la sincronización con la nube.", classification: "cloud_confirmation" };
-  if (normalized.includes("configurado")) return { message: "No hay URL cloud configurada en esta instalación.", classification: "cloud_not_configured" };
-  return { message: "No se pudo sincronizar. Tus cambios quedaron guardados localmente.", classification: "unknown" };
+  return { message: getSyncFailureUserMessage("unknown"), classification: "unknown" };
+}
+
+function getSyncFailureUserMessage(classification: SyncFailureClassification, fallback?: string) {
+  if (classification === "local_repair_required") {
+    return "No pudimos completar la sincronización porque encontramos un problema con los datos locales. Tu estado sigue guardado en este dispositivo. Probá reparar los datos locales y sincronizá nuevamente.";
+  }
+  if (classification === "record_rejected") return "Algunos datos no pudieron sincronizarse y necesitan revisión.";
+  if (classification === "local_apply_constraint") return "No pudimos aplicar algunos cambios sincronizados en este dispositivo. Revisá los datos locales y reintentá nuevamente.";
+  if (classification === "local_service_unreachable") return "No pudimos comunicarnos con el servicio local de ScisoNomics. Probá reiniciar la app.";
+  if (classification === "local_service_error") return "No pudimos actualizar los datos locales con la información sincronizada. Reintentá nuevamente.";
+  if (classification === "local_apply_invalid_payload") return "No pudimos aplicar algunos cambios sincronizados en este dispositivo. Reintentá nuevamente.";
+  if (classification === "cloud_validation") return "El servicio cloud rechazó algunos datos para sincronizar. Revisá los datos pendientes e intentá nuevamente.";
+  if (classification === "cloud_service_error") return "El servicio cloud respondió con un error. Reintentá más tarde.";
+  if (classification === "cloud_connection") return syncUserMessage("network");
+  if (classification === "cloud_confirmation") return "No se pudo confirmar la sincronización con la nube.";
+  if (classification === "sync_in_flight") return "Hay otra sincronización en curso.";
+  if (classification === "no_session") return "No hay una sesión activa para sincronizar.";
+  if (classification === "cloud_not_configured") return "No hay URL cloud configurada en esta instalación.";
+  return fallback || "No se pudo sincronizar. Tus cambios quedaron guardados localmente.";
 }
 
 function acceptedByTable(value: Partial<Record<SyncTable, unknown>>) {
@@ -1775,10 +1853,21 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
 }
 
 async function runSyncWithReason(token: string, userEmail: string | undefined, mode: SyncMode, reason: SyncReason) {
-  const session = getActiveCloudSession();
+  const session = await getActiveCloudSessionAsync();
   if (!session?.token || !session.user?.id) {
     console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
-    throw new Error("Iniciá sesión para sincronizar.");
+    throw cloudSyncError({
+      type: "unauthorized",
+      endpoint: "/sync",
+      technicalMessage: "No active cloud session.",
+      userMessage: getSyncFailureUserMessage("no_session"),
+      classification: "no_session",
+      code: "no_session",
+      method: "POST",
+      phase: "session",
+      ownerUsed: null,
+      reason,
+    });
   }
   const snapshot: SyncRunSnapshot = {
     ownerId: session.user.id,
@@ -1790,8 +1879,34 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
   };
   token = snapshot.token;
   userEmail = snapshot.userEmail;
-  if (!CLOUD_API_URL) throw cloudSyncError({ type: "unknown", endpoint: "/sync", technicalMessage: "Cloud API URL vacía.", userMessage: "No hay URL cloud configurada en esta instalación." });
-  if (syncInFlight) throw new Error("Ya hay una sincronización en curso.");
+  if (!CLOUD_API_URL) {
+    throw cloudSyncError({
+      type: "unknown",
+      endpoint: "/sync",
+      technicalMessage: "Cloud API URL vac?a.",
+      userMessage: getSyncFailureUserMessage("cloud_not_configured"),
+      classification: "cloud_not_configured",
+      code: "cloud_not_configured",
+      method: "POST",
+      phase: "cloud_health",
+      ownerUsed: snapshot.ownerId,
+      reason,
+    });
+  }
+  if (syncInFlight) {
+    throw cloudSyncError({
+      type: "invalid_response",
+      endpoint: "/sync",
+      technicalMessage: "sync_in_flight",
+      userMessage: getSyncFailureUserMessage("sync_in_flight"),
+      classification: "sync_in_flight",
+      code: "sync_in_flight",
+      method: "POST",
+      phase: "sync",
+      ownerUsed: snapshot.ownerId,
+      reason,
+    });
+  }
 
   updateSyncRuntimeState({
     inFlight: true,
@@ -1835,10 +1950,10 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       });
     }
     if (localReady.status === "repair_required" || localReady.status === "migration_failed" || localReady.status === "critical") {
-      throw new Error(localReady.message || "No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.");
+      throw cloudSyncError({ type: "invalid_response", endpoint: `${API_URL}/ready`, technicalMessage: localReady.code || localReady.status || "db_repair_required", userMessage: localReady.message || getSyncFailureUserMessage("local_repair_required"), classification: "local_repair_required", code: localReady.code || "db_repair_required", method: "GET", phase: "local_ready_check", ownerUsed: snapshot.ownerId, reason });
     }
     if (!localReady.database_ready) {
-      throw new Error(localReady.message || "Estamos preparando tus datos locales. Intenta sincronizar nuevamente en unos segundos.");
+      throw cloudSyncError({ type: "unknown", endpoint: `${API_URL}/ready`, technicalMessage: localReady.code || localReady.status || "local_ready_pending", userMessage: localReady.message || "Estamos preparando tus datos locales. Intentá sincronizar nuevamente en unos segundos.", code: localReady.code || "db_initializing", method: "GET", phase: "local_ready_check", ownerUsed: snapshot.ownerId, reason });
     }
     setSyncPhase("cloud_health");
     const health = await ensureCloudSyncCompatible(reason, snapshot.ownerId);
@@ -1846,11 +1961,9 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     integrity = await getLocalDbIntegrity(snapshot.ownerId);
     if (integrity.status === "critical") {
       console.warn(`${LOG_PREFIX} blocked: local integrity critical`, { issueCodes: integrity.issues.map((issue) => issue.code) });
-      throw new Error("No pudimos sincronizar porque tus datos locales necesitan una revision. Crea un backup y ejecuta la reparacion automatica.");
+      throw cloudSyncError({ type: "invalid_response", endpoint: `${API_URL}/local/db-integrity`, technicalMessage: integrity.issues.map((issue) => issue.code).join(",") || "db_integrity_critical", userMessage: getSyncFailureUserMessage("local_repair_required"), classification: "local_repair_required", code: integrity.issues[0]?.code || "db_integrity_critical", method: "GET", phase: "local_integrity_check", ownerUsed: snapshot.ownerId, reason });
     }
-    if (integrity.status === "warning") {
-      console.warn(`${LOG_PREFIX} local integrity warning`, { issueCodes: integrity.issues.map((issue) => issue.code) });
-    }
+    if (integrity.status === "warning") console.warn(`${LOG_PREFIX} local integrity warning`, { issueCodes: integrity.issues.map((issue) => issue.code) });
     setSyncPhase("local_device_info");
     deviceInfo = await localGet<DeviceInfo>("/device/info", snapshot.ownerId, "local_device_info");
     setSyncPhase("local_pending");
@@ -1860,139 +1973,44 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
     console.info(`${LOG_PREFIX} pending`, { hasUser: Boolean(userEmail), mode, reason, device: shortIdentifier(deviceInfo.device_id), ...pendingCounts });
 
     setSyncPhase("cloud_push");
-    const pushResult = await cloudPost<{
-      ok: boolean;
-      accepted: Partial<Record<SyncTable, unknown>>;
-      rejected?: RejectedSyncItem[];
-      ignored: Record<SyncTable, number>;
-      conflicts?: Record<SyncTable, number>;
-      counts?: Record<string, number>;
-    }>("/sync/push", token, {
-      device_id: deviceInfo.device_id,
-      device_name: deviceInfo.device_name,
-      ...emptyPayloadFromPending(pending),
-    }, {
-      phase: "cloud_push",
-      itemsTotal: totalCount(pendingCounts),
-      ownerUsed: snapshot.ownerId,
-      reason,
-      pendingCounts,
-    });
+    const pushResult = await cloudPost<{ ok: boolean; accepted: Partial<Record<SyncTable, unknown>>; rejected?: RejectedSyncItem[]; ignored: Record<SyncTable, number>; conflicts?: Record<SyncTable, number>; counts?: Record<string, number>; }>("/sync/push", token, { device_id: deviceInfo.device_id, device_name: deviceInfo.device_name, ...emptyPayloadFromPending(pending) }, { phase: "cloud_push", itemsTotal: totalCount(pendingCounts), ownerUsed: snapshot.ownerId, reason, pendingCounts });
 
     const accepted = acceptedByTable(pushResult.accepted || {});
-    const rejected = Array.isArray(pushResult.rejected)
-      ? pushResult.rejected.filter(
-        (item): item is RejectedSyncItem =>
-          Boolean(item)
-          && typeof item.entity === "string"
-          && typeof item.sync_id === "string"
-          && typeof item.code === "string"
-          && typeof item.message === "string"
-          && (SYNC_TABLES as readonly string[]).includes(item.entity),
-      )
-      : [];
+    const rejected = Array.isArray(pushResult.rejected) ? pushResult.rejected.filter((item): item is RejectedSyncItem => Boolean(item) && typeof item.entity === "string" && typeof item.sync_id === "string" && typeof item.code === "string" && typeof item.message === "string" && (SYNC_TABLES as readonly string[]).includes(item.entity)) : [];
     const counts = pushResult.counts || {};
     const acceptedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, accepted[table].length])) as Record<SyncTable, number>;
     rejectedCounts = Object.fromEntries(SYNC_TABLES.map((table) => [table, rejected.filter((item) => item.entity === table).length])) as Record<SyncTable, number>;
     finalRejectedTotal = rejected.length;
-    console.info(`${LOG_PREFIX} push result`, {
-      hasUser: Boolean(userEmail),
-      mode,
-      counts,
-      acceptedCounts,
-      rejectedCounts,
-    });
+    console.info(`${LOG_PREFIX} push result`, { hasUser: Boolean(userEmail), mode, counts, acceptedCounts, rejectedCounts });
 
-    if (!pushResult.ok) {
-      throw new Error("No se pudo confirmar la sincronización con la nube. No se modificó el estado local.");
-    }
-    const hasMismatch = SYNC_TABLES.some((table) => {
-      const pendingCount = pendingCounts[table];
-      return (
-        accepted[table].length + rejectedCounts[table] !== pendingCount ||
-        counts[`${table}_received`] !== pendingCount ||
-        counts[`${table}_saved`] !== accepted[table].length
-      );
-    });
+    if (!pushResult.ok) throw cloudSyncError({ type: "invalid_response", endpoint: cloudEndpoint("/sync/push"), technicalMessage: "Cloud push failed confirmation.", userMessage: getSyncFailureUserMessage("cloud_confirmation"), classification: "cloud_confirmation", code: "cloud_confirmation_failed", method: "POST", phase: "cloud_push", ownerUsed: snapshot.ownerId, reason, pendingCounts });
+    const hasMismatch = SYNC_TABLES.some((table) => accepted[table].length + rejectedCounts[table] !== pendingCounts[table] || counts[`${table}_received`] !== pendingCounts[table] || counts[`${table}_saved`] !== accepted[table].length);
     if (hasMismatch) {
-      console.error(`${LOG_PREFIX} cloud confirmation mismatch`, {
-        pending: pendingCounts,
-        accepted: acceptedCounts,
-        rejected: rejectedCounts,
-        counts,
-        mode,
-      });
-      throw new Error("No se pudo confirmar la sincronización con la nube. No se modificó el estado local.");
+      console.error(`${LOG_PREFIX} cloud confirmation mismatch`, { pending: pendingCounts, accepted: acceptedCounts, rejected: rejectedCounts, counts, mode });
+      throw cloudSyncError({ type: "invalid_response", endpoint: cloudEndpoint("/sync/push"), technicalMessage: "Cloud push confirmation mismatch.", userMessage: getSyncFailureUserMessage("cloud_confirmation"), classification: "cloud_confirmation", code: "cloud_confirmation_failed", method: "POST", phase: "cloud_push", ownerUsed: snapshot.ownerId, reason, pendingCounts });
     }
     if (rejected.length > 0) {
       setSyncPhase("local_mark_rejected");
       await markRejectedSyncItems(rejected, snapshot.ownerId);
-      console.warn(`${LOG_PREFIX} rejected items`, {
-        ownerId: shortIdentifier(snapshot.ownerId),
-        total: rejected.length,
-        byEntity: rejectedCounts,
-        codes: Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))),
-      });
+      console.warn(`${LOG_PREFIX} rejected items`, { ownerId: shortIdentifier(snapshot.ownerId), total: rejected.length, byEntity: rejectedCounts, codes: Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))) });
     }
 
     setSyncPhase("local_pending");
     const localCloudContractState = await getLocalCloudContractState(snapshot.ownerId);
-    const schemaChanged = typeof health.cloud_schema_revision === "number"
-      && health.cloud_schema_revision !== localCloudContractState.cloud_schema_revision;
-    const syncContractChanged = typeof health.sync_contract_version === "string"
-      && health.sync_contract_version.trim().length > 0
-      && health.sync_contract_version !== localCloudContractState.sync_contract_version;
+    const schemaChanged = typeof health.cloud_schema_revision === "number" && health.cloud_schema_revision !== localCloudContractState.cloud_schema_revision;
+    const syncContractChanged = typeof health.sync_contract_version === "string" && health.sync_contract_version.trim().length > 0 && health.sync_contract_version !== localCloudContractState.sync_contract_version;
     const forceFullPullOnce = schemaChanged || syncContractChanged;
-    if (forceFullPullOnce) {
-      console.info(`${LOG_PREFIX} cloud schema changed`, {
-        endpoint: cloudEndpoint("/health"),
-        ownerId: shortIdentifier(snapshot.ownerId),
-        oldSchemaRevision: localCloudContractState.cloud_schema_revision,
-        newSchemaRevision: health.cloud_schema_revision,
-        oldSyncContractVersion: localCloudContractState.sync_contract_version || "none",
-        newSyncContractVersion: health.sync_contract_version || "none",
-        reason: "cloud_schema_changed",
-        pullMode: "full_once",
-      });
-    }
-
+    if (forceFullPullOnce) console.info(`${LOG_PREFIX} cloud schema changed`, { endpoint: cloudEndpoint("/health"), ownerId: shortIdentifier(snapshot.ownerId), oldSchemaRevision: localCloudContractState.cloud_schema_revision, newSchemaRevision: health.cloud_schema_revision, oldSyncContractVersion: localCloudContractState.sync_contract_version || "none", newSyncContractVersion: health.sync_contract_version || "none", reason: "cloud_schema_changed", pullMode: "full_once" });
     const cursorState = await localGet<{ ok: boolean; cursor: string | null }>("/sync/cursor", snapshot.ownerId, "local_pending");
-    const pullCursor = forceFullPullOnce ? null : cursorState.cursor;
-    const pullPath = pullCursor ? `/sync/pull?since=${encodeURIComponent(pullCursor)}` : "/sync/pull";
+    const pullPath = forceFullPullOnce || !cursorState.cursor ? "/sync/pull" : `/sync/pull?since=${encodeURIComponent(cursorState.cursor)}`;
     setSyncPhase("cloud_pull");
-    const remoteResponse = await cloudGet<SyncPayload & { cursor?: string | null }>(pullPath, token, {
-      phase: "cloud_pull",
-      itemsTotal: 0,
-      ownerUsed: snapshot.ownerId,
-      reason,
-      pendingCounts,
-    });
+    const remoteResponse = await cloudGet<SyncPayload & { cursor?: string | null }>(pullPath, token, { phase: "cloud_pull", itemsTotal: 0, ownerUsed: snapshot.ownerId, reason, pendingCounts });
     const remote = normalizedSyncPayload(remoteResponse);
     const pulledCounts = countByTable(remote);
     console.info(`${LOG_PREFIX} pull`, { mode, ...pulledCounts });
-    type ApplyRemoteResult = {
-      ok: boolean;
-      result: Record<string, number>;
-      applied?: Record<SyncTable, number>;
-      kept_local?: Record<SyncTable, number>;
-      conflicts?: { total: number; by_table: Record<string, number> };
-      remote_changes_total?: number;
-      applied_remote_total?: number;
-      kept_local_total?: number;
-    };
+    type ApplyRemoteResult = { ok: boolean; result: Record<string, number>; applied?: Record<SyncTable, number>; kept_local?: Record<SyncTable, number>; conflicts?: { total: number; by_table: Record<string, number> }; remote_changes_total?: number; applied_remote_total?: number; kept_local_total?: number; };
     const pulledTotal = totalCount(pulledCounts);
-    const applyResult: ApplyRemoteResult = pulledTotal > 0
-      ? await (async () => {
-          setSyncPhase("local_apply_remote", { criticalSection: true });
-          return localPost<ApplyRemoteResult>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote");
-        })()
-      : {
-          ok: true,
-          result: {},
-          remote_changes_total: 0,
-          applied_remote_total: 0,
-          kept_local_total: 0,
-        };
+    const applyResult: ApplyRemoteResult = pulledTotal > 0 ? await (async () => { setSyncPhase("local_apply_remote", { criticalSection: true }); return localPost<ApplyRemoteResult>("/sync/apply-remote", remote, snapshot.ownerId, "local_apply_remote"); })() : { ok: true, result: {}, remote_changes_total: 0, applied_remote_total: 0, kept_local_total: 0 };
     if (pulledTotal === 0) console.info(`${LOG_PREFIX} apply-remote skipped`, { mode, reason: "empty_remote_payload" });
     console.info(`${LOG_PREFIX} apply-remote`, { mode, result: applyResult.result });
     const conflictsTotal = Number(applyResult.conflicts?.total || 0);
@@ -2007,174 +2025,36 @@ async function runSyncWithReason(token: string, userEmail: string | undefined, m
       markSyncedExecuted = true;
       console.info(`${LOG_PREFIX} mark-synced`, { executed: true, mode, ...acceptedCounts });
     }
-    if (!markSyncedExecuted) {
-      console.info(`${LOG_PREFIX} mark-synced`, { executed: false, mode, ...Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) });
-    }
+    if (!markSyncedExecuted) console.info(`${LOG_PREFIX} mark-synced`, { executed: false, mode, ...Object.fromEntries(SYNC_TABLES.map((table) => [table, 0])) });
 
     const syncedAt = new Date().toISOString();
     const ownerStillActive = getActiveOwnerId() === snapshot.ownerId;
     if (ownerStillActive) {
-      if (mode === "auto") setLastAutoSyncAt(syncedAt);
-      else setLastManualSyncAt(syncedAt);
+      if (mode === "auto") setLastAutoSyncAt(syncedAt); else setLastManualSyncAt(syncedAt);
       if (rejected.length > 0) {
-        const warning = "Algunos datos no pudieron sincronizarse y necesitan revision.";
+        const warning = "Algunos datos no pudieron sincronizarse y necesitan revisión.";
         setLastSyncError(warning);
-        setLastSyncErrorDetails(
-          makeSyncErrorDetails({
-            type: "invalid_response",
-            endpoint: cloudEndpoint("/sync/push"),
-            technicalMessage: `rejected=${rejected.length} codes=${Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))).join(",")}`,
-            userMessage: warning,
-            method: "POST",
-            phase: "cloud_push",
-            itemsTotal: rejected.length,
-            ownerUsed: snapshot.ownerId,
-            reason,
-            pendingCounts: rejectedCounts,
-          }),
-        );
-      } else {
-        setLastSyncError(null);
-        setLastSyncErrorDetails(null);
-      }
+        setLastSyncErrorDetails(makeSyncErrorDetails({ type: "invalid_response", endpoint: cloudEndpoint("/sync/push"), technicalMessage: `rejected=${rejected.length} codes=${Array.from(new Set(rejected.map((item) => `${item.entity}:${item.code}`))).join(",")}`, userMessage: warning, method: "POST", phase: "cloud_push", itemsTotal: rejected.length, ownerUsed: snapshot.ownerId, reason, pendingCounts: rejectedCounts }));
+      } else { setLastSyncError(null); setLastSyncErrorDetails(null); }
     } else {
-      console.info(`${LOG_PREFIX} finished for previous owner`, {
-        ownerId: shortIdentifier(snapshot.ownerId),
-        activeOwnerId: shortIdentifier(getActiveOwnerId()),
-        mode,
-        reason,
-      });
+      console.info(`${LOG_PREFIX} finished for previous owner`, { ownerId: shortIdentifier(snapshot.ownerId), activeOwnerId: shortIdentifier(getActiveOwnerId()), mode, reason });
     }
-    if (remoteResponse.cursor) {
-      setSyncPhase("cursor_save", { criticalSection: true });
-      await localPost("/sync/cursor", { cursor: remoteResponse.cursor }, snapshot.ownerId, "cursor_save");
-    }
+    if (remoteResponse.cursor) { setSyncPhase("cursor_save", { criticalSection: true }); await localPost("/sync/cursor", { cursor: remoteResponse.cursor }, snapshot.ownerId, "cursor_save"); }
     setSyncPhase("cursor_save", { criticalSection: true });
-    await setLocalCloudContractState(snapshot.ownerId, {
-      cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null,
-      sync_contract_version: typeof health.sync_contract_version === "string" && health.sync_contract_version.trim().length > 0
-        ? health.sync_contract_version
-        : null,
-    });
-    await recordSyncHistory({
-      sync_id: historySyncId,
-      device_id: deviceInfo.device_id,
-      mode,
-      status: "success",
-      started_at: startedAt.toISOString(),
-      finished_at: syncedAt,
-      duration_ms: Date.now() - startedAt.getTime(),
-      pending_total: totalCount(pendingCounts),
-      pushed_total: totalCount(acceptedCounts),
-      pulled_total: totalCount(pulledCounts),
-      deleted_total: totalCount(deletedCounts),
-      conflicts_total: conflictsTotal,
-      remote_changes_total: remoteChangesTotal,
-      applied_remote_total: appliedRemoteTotal,
-      kept_local_total: keptLocalTotal,
-      error_message: rejected.length > 0 ? "Algunos datos no pudieron sincronizarse y necesitan revision." : null,
-      details: {
-        pending: pendingCounts,
-        pushed: acceptedCounts,
-        rejected: rejectedCounts,
-        pulled: pulledCounts,
-        deleted: deletedCounts,
-        applied: applyResult.result,
-        conflicts: applyResult.conflicts,
-        kept_local: applyResult.kept_local,
-        reason,
-        pull_mode: forceFullPullOnce ? "full_once" : "incremental",
-        cloud_schema_change_reason: forceFullPullOnce ? "cloud_schema_changed" : null,
-        old_cloud_schema_revision: localCloudContractState.cloud_schema_revision,
-        new_cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null,
-        old_sync_contract_version: localCloudContractState.sync_contract_version || null,
-        new_sync_contract_version: typeof health.sync_contract_version === "string" ? health.sync_contract_version : null,
-        owner_id: snapshot.ownerId,
-        owner_changed_during_sync: !ownerStillActive,
-        rejected_total: rejected.length,
-      },
-    }, snapshot.ownerId);
+    await setLocalCloudContractState(snapshot.ownerId, { cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null, sync_contract_version: typeof health.sync_contract_version === "string" && health.sync_contract_version.trim().length > 0 ? health.sync_contract_version : null });
+    await recordSyncHistory({ sync_id: historySyncId, device_id: deviceInfo.device_id, mode, status: "success", started_at: startedAt.toISOString(), finished_at: syncedAt, duration_ms: Date.now() - startedAt.getTime(), pending_total: totalCount(pendingCounts), pushed_total: totalCount(acceptedCounts), pulled_total: totalCount(pulledCounts), deleted_total: totalCount(deletedCounts), conflicts_total: conflictsTotal, remote_changes_total: remoteChangesTotal, applied_remote_total: appliedRemoteTotal, kept_local_total: keptLocalTotal, error_message: rejected.length > 0 ? "Algunos datos no pudieron sincronizarse y necesitan revisión." : null, details: { pending: pendingCounts, pushed: acceptedCounts, rejected: rejectedCounts, pulled: pulledCounts, deleted: deletedCounts, applied: applyResult.result, conflicts: applyResult.conflicts, kept_local: applyResult.kept_local, reason, pull_mode: forceFullPullOnce ? "full_once" : "incremental", cloud_schema_change_reason: forceFullPullOnce ? "cloud_schema_changed" : null, old_cloud_schema_revision: localCloudContractState.cloud_schema_revision, new_cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null, old_sync_contract_version: localCloudContractState.sync_contract_version || null, new_sync_contract_version: typeof health.sync_contract_version === "string" ? health.sync_contract_version : null, owner_id: snapshot.ownerId, owner_changed_during_sync: !ownerStillActive, rejected_total: rejected.length } }, snapshot.ownerId);
 
-    return {
-      syncedAt,
-      uploaded: acceptedCounts,
-      ignored: pushResult.ignored,
-      rejected,
-      rejectedTotal: rejected.length,
-      applied: applyResult.result,
-      pulled: pulledCounts,
-      conflictsTotal,
-      remoteChangesTotal,
-      appliedRemoteTotal,
-      keptLocalTotal,
-      reason,
-      ownerChangedDuringSync: !ownerStillActive,
-    };
+    return { syncedAt, uploaded: acceptedCounts, ignored: pushResult.ignored, rejected, rejectedTotal: rejected.length, applied: applyResult.result, pulled: pulledCounts, conflictsTotal, remoteChangesTotal, appliedRemoteTotal, keptLocalTotal, reason, ownerChangedDuringSync: !ownerStillActive };
   } catch (error) {
     const classified = classifySyncFailure(error, { localReady, integrity, rejectedTotal: finalRejectedTotal });
-    const cloudError = error instanceof CloudSyncError
-      ? error.details
-      : makeSyncErrorDetails({
-        type: "unknown",
-        endpoint: "/sync",
-        technicalMessage: error,
-        userMessage: classified.message,
-        method: "UNKNOWN",
-        phase: "sync",
-        itemsTotal: totalCount(pendingCounts),
-        ownerUsed: snapshot.ownerId,
-        reason,
-        pendingCounts,
-      });
+    const cloudError = error instanceof CloudSyncError ? error.details : makeSyncErrorDetails({ type: "unknown", endpoint: "/sync", technicalMessage: error, userMessage: classified.message, method: "UNKNOWN", phase: "sync", itemsTotal: totalCount(pendingCounts), ownerUsed: snapshot.ownerId, reason, pendingCounts });
     cloudError.classification = classified.classification;
-    console.warn(`${LOG_PREFIX} classified error`, {
-      reason,
-      phase: cloudError.phase,
-      statusCode: cloudError.status_code,
-      errorType: cloudError.type,
-      classification: classified.classification,
-      ownerId: shortIdentifier(snapshot.ownerId),
-    });
-    if (getActiveOwnerId() === snapshot.ownerId) {
-      setLastSyncError(classified.message);
-      setLastSyncErrorDetails(cloudError);
-    }
-    await recordSyncHistory({
-      sync_id: historySyncId,
-      device_id: deviceInfo?.device_id,
-      mode,
-      status: "error",
-      started_at: startedAt.toISOString(),
-      finished_at: new Date().toISOString(),
-      duration_ms: Date.now() - startedAt.getTime(),
-      pending_total: totalCount(pendingCounts),
-      pushed_total: 0,
-      pulled_total: 0,
-      deleted_total: totalCount(deletedCounts),
-      error_message: classified.message,
-      details: {
-        pending: pendingCounts,
-        deleted: deletedCounts,
-        rejected: rejectedCounts,
-        reason,
-        owner_id: snapshot.ownerId,
-        final_classification: classified.classification,
-        local_ready_status: localReady?.status || null,
-        local_ready_code: localReady?.code || null,
-        local_integrity_status: integrity?.status || null,
-        rejected_total: finalRejectedTotal,
-        cloud_error: cloudError,
-      },
-    }, snapshot.ownerId);
+    console.warn(`${LOG_PREFIX} classified error`, { reason, phase: cloudError.phase, statusCode: cloudError.status_code, errorType: cloudError.type, classification: classified.classification, ownerId: shortIdentifier(snapshot.ownerId) });
+    if (getActiveOwnerId() === snapshot.ownerId) { setLastSyncError(classified.message); setLastSyncErrorDetails(cloudError); }
+    await recordSyncHistory({ sync_id: historySyncId, device_id: deviceInfo?.device_id, mode, status: "error", started_at: startedAt.toISOString(), finished_at: new Date().toISOString(), duration_ms: Date.now() - startedAt.getTime(), pending_total: totalCount(pendingCounts), pushed_total: 0, pulled_total: 0, deleted_total: totalCount(deletedCounts), error_message: classified.message, details: { pending: pendingCounts, deleted: deletedCounts, rejected: rejectedCounts, reason, owner_id: snapshot.ownerId, final_classification: classified.classification, local_ready_status: localReady?.status || null, local_ready_code: localReady?.code || null, local_integrity_status: integrity?.status || null, rejected_total: finalRejectedTotal, cloud_error: cloudError } }, snapshot.ownerId);
     throw new Error(classified.message);
   } finally {
-    updateSyncRuntimeState({
-      inFlight: false,
-      phase: null,
-      reason: null,
-      ownerId: null,
-      criticalSection: false,
-    });
+    updateSyncRuntimeState({ inFlight: false, phase: null, reason: null, ownerId: null, criticalSection: false });
   }
 }
 

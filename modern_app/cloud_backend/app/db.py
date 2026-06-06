@@ -221,6 +221,11 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
 
 
+def _ensure_refresh_token_columns(conn: CloudConnection) -> None:
+    _ensure_column(conn, "cloud_refresh_tokens", "device_id", "TEXT")
+    _ensure_column(conn, "cloud_refresh_tokens", "device_name", "TEXT")
+
+
 def _init_sqlite() -> None:
     with connect() as conn:
         conn.execute(
@@ -429,7 +434,6 @@ def _init_sqlite() -> None:
             CREATE TABLE IF NOT EXISTS google_login_requests (
                 login_request_id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
-                access_token TEXT,
                 user_id TEXT,
                 error_message TEXT,
                 created_at TEXT NOT NULL,
@@ -439,7 +443,26 @@ def _init_sqlite() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                last_used_at TEXT,
+                device_id TEXT,
+                device_name TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_refresh_token_columns(conn)
         _ensure_cloud_sync_schema(conn)
 
 
@@ -642,7 +665,6 @@ def _init_postgres() -> None:
             CREATE TABLE IF NOT EXISTS google_login_requests (
                 login_request_id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
-                access_token TEXT,
                 user_id TEXT,
                 error_message TEXT,
                 created_at TEXT NOT NULL,
@@ -652,5 +674,23 @@ def _init_postgres() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_google_login_requests_expires ON google_login_requests(expires_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cloud_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                last_used_at TEXT,
+                device_id TEXT,
+                device_name TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_refresh_token_columns(conn)
         _ensure_cloud_sync_schema(conn)

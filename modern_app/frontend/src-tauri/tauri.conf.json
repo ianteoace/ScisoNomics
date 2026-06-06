@@ -26,14 +26,12 @@
     }
   },
   "bundle": {
-    "active": true,
     "targets": "all",
-    "publisher": "ScisoNomics",
     "homepage": "https://github.com/iante/scisonomics",
     "copyright": "Copyright © 2026 ScisoNomics",
     "category": "Finance",
-    "shortDescription": "Gestion financiera personal local-first.",
-    "longDescription": "ScisoNomics es una aplicacion desktop local-first para gestionar finanzas personales, con datos locales, cuentas opcionales y sincronizacion cloud.",
+    "shortDescription": "Gestión financiera personal local-first.",
+    "longDescription": "ScisoNomics es una aplicación desktop local-first para gestionar finanzas personales, con datos locales, cuentas opcionales y sincronización cloud.",
     "externalBin": [
       "binaries/scisonomics-backend"
     ],
@@ -63,4 +61,3 @@
     }
   }
 }
-

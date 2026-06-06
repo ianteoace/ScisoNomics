@@ -32,11 +32,32 @@ def get_jwt_secret() -> str:
 
 
 def get_token_expiration_minutes() -> int:
-    raw = os.getenv("SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES", "240")
+    raw = os.getenv("SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES", "15")
     try:
         return max(5, int(raw))
     except ValueError:
-        return 240
+        return 15
+
+
+def get_access_token_expires_in() -> int:
+    return get_token_expiration_minutes() * 60
+
+
+def get_refresh_token_expiration_days() -> int:
+    raw = os.getenv("SCISONOMICS_REFRESH_TOKEN_EXPIRE_DAYS", "30")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 30
+
+
+def create_refresh_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def hash_refresh_token(token: str) -> str:
+    secret = get_jwt_secret().encode("utf-8")
+    return hashlib.sha256(secret + token.encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -68,7 +89,7 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     payload: dict[str, Any] = {
         "sub": subject,
         "iat": now,
-        "exp": now + get_token_expiration_minutes() * 60,
+        "exp": now + get_access_token_expires_in(),
     }
     if extra:
         payload.update(extra)

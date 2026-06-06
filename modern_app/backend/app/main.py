@@ -65,9 +65,13 @@ app = FastAPI(
 )
 _LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token"
 _LOCAL_TOKEN = os.getenv("SCISONOMICS_LOCAL_TOKEN", "").strip()
-_DEV_MODE_WITHOUT_LOCAL_TOKEN = not _LOCAL_TOKEN and not _IS_FROZEN
+_ALLOW_DEV_TOKEN_BYPASS = (
+    not _IS_FROZEN and os.getenv("SCISONOMICS_ALLOW_DEV_TOKEN_BYPASS", "").strip().lower() in {"1", "true", "yes", "on"}
+)
 _PUBLIC_PATHS = {"/health", "/ready"} | (set() if _IS_FROZEN else {"/openapi.json"})
 _PUBLIC_PREFIXES = () if _IS_FROZEN else ("/docs", "/redoc")
+_DEV_BYPASS_ALLOWLIST_PATHS = {"/health", "/ready"} | (set() if _IS_FROZEN else {"/openapi.json"})
+_DEV_BYPASS_ALLOWLIST_PREFIXES = () if _IS_FROZEN else ("/docs", "/redoc")
 
 _LOG_FILE = get_logs_dir() / "backend-startup.log"
 _logger = logging.getLogger("scisonomics.backend")
@@ -126,10 +130,16 @@ def _is_public_path(path: str) -> bool:
     return path in _PUBLIC_PATHS or any(path.startswith(prefix) for prefix in _PUBLIC_PREFIXES)
 
 
+def _is_dev_bypass_allowed_path(path: str) -> bool:
+    return path in _DEV_BYPASS_ALLOWLIST_PATHS or any(path.startswith(prefix) for prefix in _DEV_BYPASS_ALLOWLIST_PREFIXES)
+
+
 def _require_local_token(request: Request) -> None:
-    if _DEV_MODE_WITHOUT_LOCAL_TOKEN:
+    if _ALLOW_DEV_TOKEN_BYPASS and _is_dev_bypass_allowed_path(request.url.path):
         return
     if not _LOCAL_TOKEN:
+        if _ALLOW_DEV_TOKEN_BYPASS:
+            raise HTTPException(status_code=401, detail="No se pudo validar la conexión local de ScisoNomics.")
         raise HTTPException(status_code=503, detail="El servicio local no tiene token de seguridad configurado.")
     provided = request.headers.get(_LOCAL_TOKEN_HEADER, "")
     if not provided or not hmac.compare_digest(provided, _LOCAL_TOKEN):
@@ -216,6 +226,12 @@ async def file_not_found_handler(_: Request, exc: FileNotFoundError):
 def log_db_path() -> None:
     try:
         _cleanup_stale_temp_snapshots()
+        if _ALLOW_DEV_TOKEN_BYPASS:
+            _logger.warning(
+                "Bypass dev del token local habilitado solo para allowlist. paths=%s prefixes=%s",
+                sorted(_DEV_BYPASS_ALLOWLIST_PATHS),
+                list(_DEV_BYPASS_ALLOWLIST_PREFIXES),
+            )
         exists = WEB_DB_PATH.exists()
         size_bytes = WEB_DB_PATH.stat().st_size if exists else 0
         started = start_database_initialization()
@@ -1152,7 +1168,7 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
     payload = await request.json()
     owner = normalize_owner_id(str(payload.get("target_owner_user_id") or payload.get("owner_user_id") or _current_owner()))
     if not owner or owner == LOCAL_OWNER_ID:
-        raise HTTPException(status_code=400, detail="Inicia sesion para asociar datos locales a una cuenta.")
+        raise HTTPException(status_code=400, detail="Iniciá sesión para asociar datos locales a una cuenta.")
     active_cloud_owner = _require_cloud_owner()
     # El destino no puede venir libremente del body: debe coincidir con el owner
     # activo del request para impedir asociaciones accidentales entre cuentas.
@@ -1451,9 +1467,9 @@ async def sync_history_create(request: Request, service: FinanceService = Depend
     mode = str(payload.get("mode") or "manual")
     status = str(payload.get("status") or "success")
     if mode not in {"manual", "auto"}:
-        raise HTTPException(status_code=400, detail="Modo de sincronizacion invalido.")
+        raise HTTPException(status_code=400, detail="Modo de sincronización inválido.")
     if status not in {"success", "error", "skipped"}:
-        raise HTTPException(status_code=400, detail="Estado de sincronizacion invalido.")
+        raise HTTPException(status_code=400, detail="Estado de sincronización inválido.")
 
     details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
     started_at = str(payload.get("started_at") or datetime.now().isoformat(timespec="seconds"))
@@ -2436,7 +2452,7 @@ async def sync_cursor_set(request: Request, service: FinanceService = Depends(ge
     cursor = str(payload.get("cursor") or "").strip() if isinstance(payload, dict) else ""
     normalized_cursor = _serialize_sync_datetime(cursor)
     if not normalized_cursor:
-        raise HTTPException(status_code=422, detail="Cursor de sincronizacion invalido.")
+        raise HTTPException(status_code=422, detail="Cursor de sincronización inválido.")
     with service.db.connect() as conn:
         _config_set(conn, f"sync_pull_cursor:{owner}", normalized_cursor)
     return {"ok": True, "cursor": normalized_cursor}

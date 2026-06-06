@@ -143,6 +143,7 @@ class FinanceService:
         # Validar ownership antes del soft-delete evita responder exito silencioso
         # cuando un ID pertenece a otra cuenta o ya no esta activo.
         self._require_owned_record(conn, table, row_id, "El registro seleccionado")
+        sync_id = self._get_sync_id_for_row(conn, table, row_id)
         result = conn.execute(
             f"""
             UPDATE {table}
@@ -153,7 +154,40 @@ class FinanceService:
             """,
             (row_id, self._owner_id()),
         )
+        self._clear_sync_rejections(conn, table, [sync_id] if sync_id else [])
         return int(result.rowcount or 0)
+
+    def _sync_rejections_available(self, conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_rejections' LIMIT 1"
+        ).fetchone()
+        return bool(row)
+
+    def _get_sync_id_for_row(self, conn: sqlite3.Connection, table: str, row_id: int) -> str | None:
+        row = conn.execute(
+            f"SELECT sync_id FROM {table} WHERE id = ? AND owner_user_id = ? LIMIT 1",
+            (row_id, self._owner_id()),
+        ).fetchone()
+        return str(row["sync_id"]).strip() if row and row["sync_id"] else None
+
+    def _clear_sync_rejections(self, conn: sqlite3.Connection, table: str, sync_ids: Iterable[str]) -> None:
+        if not self._sync_rejections_available(conn):
+            return
+        clean_sync_ids = sorted({str(sync_id).strip() for sync_id in sync_ids if str(sync_id or "").strip()})
+        if not clean_sync_ids:
+            return
+        placeholders = ", ".join(["?"] * len(clean_sync_ids))
+        conn.execute(
+            f"""
+            UPDATE sync_rejections
+            SET resolved_at = CURRENT_TIMESTAMP
+            WHERE owner_user_id = ?
+              AND table_name = ?
+              AND record_sync_id IN ({placeholders})
+              AND resolved_at IS NULL
+            """,
+            (self._owner_id(), table, *clean_sync_ids),
+        )
 
     def list_categorias(self, tipo: str | None = None) -> list[dict]:
         query = "SELECT id, nombre, tipo FROM categorias WHERE (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?"
@@ -172,6 +206,7 @@ class FinanceService:
             raise ValueError("El nombre de categoria es obligatorio.")
         if tipo not in ("ingreso", "gasto", "ahorro", "inversion"):
             raise ValueError("El tipo de categoria es obligatorio.")
+        sync_id = self._new_sync_id()
         try:
             with self.db.connect() as conn:
                 conn.execute(
@@ -179,8 +214,9 @@ class FinanceService:
                     INSERT INTO categorias (nombre, tipo, owner_user_id, sync_id, created_at, updated_at, sync_status)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (nombre, tipo, self._owner_id(), self._new_sync_id()),
+                    (nombre, tipo, self._owner_id(), sync_id),
                 )
+                self._clear_sync_rejections(conn, "categorias", [sync_id])
         except sqlite3.IntegrityError as exc:
             raise ValueError("Ya existe una categoria con ese nombre y tipo.") from exc
         except sqlite3.Error as exc:
@@ -195,10 +231,12 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "categorias", categoria_id, "La categoria seleccionada")
+                sync_id = self._get_sync_id_for_row(conn, "categorias", categoria_id)
                 conn.execute(
                     "UPDATE categorias SET nombre = ?, tipo = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                     (nombre, tipo, categoria_id, self._owner_id()),
                 )
+                self._clear_sync_rejections(conn, "categorias", [sync_id] if sync_id else [])
         except sqlite3.IntegrityError as exc:
             raise ValueError("Ya existe una categoria con ese nombre y tipo.") from exc
         except sqlite3.Error as exc:
@@ -221,14 +259,38 @@ class FinanceService:
                     "UPDATE presupuestos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
                     (categoria_id, self._owner_id()),
                 )
+                presupuesto_sync_ids = [
+                    str(row["sync_id"]).strip()
+                    for row in conn.execute(
+                        "SELECT sync_id FROM presupuestos WHERE categoria_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''",
+                        (categoria_id, self._owner_id()),
+                    ).fetchall()
+                ]
                 conn.execute(
                     "UPDATE gastos_programados SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
                     (categoria_id, self._owner_id()),
                 )
+                gastos_programados_sync_ids = [
+                    str(row["sync_id"]).strip()
+                    for row in conn.execute(
+                        "SELECT sync_id FROM gastos_programados WHERE categoria_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''",
+                        (categoria_id, self._owner_id()),
+                    ).fetchall()
+                ]
                 conn.execute(
                     "UPDATE gastos_fijos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE categoria_id = ? AND (deleted_at IS NULL OR deleted_at = '') AND owner_user_id = ?",
                     (categoria_id, self._owner_id()),
                 )
+                gastos_fijos_sync_ids = [
+                    str(row["sync_id"]).strip()
+                    for row in conn.execute(
+                        "SELECT sync_id FROM gastos_fijos WHERE categoria_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''",
+                        (categoria_id, self._owner_id()),
+                    ).fetchall()
+                ]
+                self._clear_sync_rejections(conn, "presupuestos", presupuesto_sync_ids)
+                self._clear_sync_rejections(conn, "gastos_programados", gastos_programados_sync_ids)
+                self._clear_sync_rejections(conn, "gastos_fijos", gastos_fijos_sync_ids)
                 if self._soft_delete(conn, "categorias", categoria_id) == 0:
                     raise ValueError("No se encontro la categoria a eliminar.")
         except sqlite3.IntegrityError as exc:
@@ -305,6 +367,7 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 self._validate_movement_references(conn, data.categoria_id, meta_id, data.tag_ids or [])
+                sync_id = self._new_sync_id()
                 conn.execute(
                     """
                     INSERT INTO movimientos (
@@ -322,10 +385,11 @@ class FinanceService:
                         meta_id,
                         data.nota.strip(),
                         self._owner_id(),
-                        self._new_sync_id(),
+                        sync_id,
                     ),
                 )
                 mov_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                self._clear_sync_rejections(conn, "movimientos", [sync_id])
                 self._replace_movimiento_tags(conn, mov_id, data.tag_ids or [])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al crear movimiento: {exc}") from exc
@@ -338,6 +402,7 @@ class FinanceService:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "movimientos", movimiento_id, "El movimiento seleccionado")
                 self._validate_movement_references(conn, data.categoria_id, meta_id, data.tag_ids or [])
+                sync_id = self._get_sync_id_for_row(conn, "movimientos", movimiento_id)
                 conn.execute(
                     """
                     UPDATE movimientos
@@ -357,6 +422,7 @@ class FinanceService:
                         self._owner_id(),
                     ),
                 )
+                self._clear_sync_rejections(conn, "movimientos", [sync_id] if sync_id else [])
                 self._replace_movimiento_tags(conn, movimiento_id, data.tag_ids or [])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al actualizar movimiento: {exc}") from exc
@@ -389,6 +455,17 @@ class FinanceService:
         self._require_owned_record(conn, "movimientos", movimiento_id, "El movimiento seleccionado")
         for tag_id in unique_ids:
             self._require_owned_record(conn, "tags", tag_id, "Una etiqueta seleccionada")
+        existing_sync_ids = [
+            str(row["sync_id"]).strip()
+            for row in conn.execute(
+                """
+                SELECT sync_id
+                FROM movimiento_tags
+                WHERE movimiento_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''
+                """,
+                (movimiento_id, self._owner_id()),
+            ).fetchall()
+        ]
         conn.execute(
             """
             UPDATE movimiento_tags
@@ -411,6 +488,18 @@ class FinanceService:
             """,
             [(movimiento_id, tag_id, self._owner_id(), self._new_sync_id()) for tag_id in unique_ids],
         )
+        current_sync_ids = [
+            str(row["sync_id"]).strip()
+            for row in conn.execute(
+                """
+                SELECT sync_id
+                FROM movimiento_tags
+                WHERE movimiento_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''
+                """,
+                (movimiento_id, self._owner_id()),
+            ).fetchall()
+        ]
+        self._clear_sync_rejections(conn, "movimiento_tags", [*existing_sync_ids, *current_sync_ids])
 
     def get_tags_for_movimiento(self, movimiento_id: int) -> list[dict]:
         with self.db.connect() as conn:
@@ -438,13 +527,15 @@ class FinanceService:
         if not nombre:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
+            sync_id = self._new_sync_id()
             conn.execute(
                 """
                 INSERT INTO tags (nombre, color, owner_user_id, sync_id, created_at, updated_at, sync_status)
                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
-                (nombre, data.color, self._owner_id(), self._new_sync_id()),
+                (nombre, data.color, self._owner_id(), sync_id),
             )
+            self._clear_sync_rejections(conn, "tags", [sync_id])
 
     def update_tag(self, tag_id: int, data: TagInput) -> None:
         nombre = data.nombre.strip()
@@ -452,14 +543,24 @@ class FinanceService:
             raise ValueError("El nombre de etiqueta es obligatorio.")
         with self.db.connect() as conn:
             self._require_owned_record(conn, "tags", tag_id, "La etiqueta seleccionada")
+            sync_id = self._get_sync_id_for_row(conn, "tags", tag_id)
             conn.execute(
                 "UPDATE tags SET nombre = ?, color = ?, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                 (nombre, data.color, tag_id, self._owner_id()),
             )
+            self._clear_sync_rejections(conn, "tags", [sync_id] if sync_id else [])
 
     def delete_tag(self, tag_id: int) -> None:
         with self.db.connect() as conn:
             self._require_owned_record(conn, "tags", tag_id, "La etiqueta seleccionada")
+            sync_id = self._get_sync_id_for_row(conn, "tags", tag_id)
+            movimiento_tag_sync_ids = [
+                str(row["sync_id"]).strip()
+                for row in conn.execute(
+                    "SELECT sync_id FROM movimiento_tags WHERE tag_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''",
+                    (tag_id, self._owner_id()),
+                ).fetchall()
+            ]
             conn.execute(
                 "UPDATE tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                 (tag_id, self._owner_id()),
@@ -468,6 +569,8 @@ class FinanceService:
                 "UPDATE movimiento_tags SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE tag_id = ? AND owner_user_id = ?",
                 (tag_id, self._owner_id()),
             )
+            self._clear_sync_rejections(conn, "tags", [sync_id] if sync_id else [])
+            self._clear_sync_rejections(conn, "movimiento_tags", movimiento_tag_sync_ids)
 
     def list_metas_ahorro(self) -> list[dict]:
         with self.db.connect() as conn:
@@ -500,6 +603,7 @@ class FinanceService:
 
     def create_meta_ahorro(self, data: MetaAhorroInput) -> None:
         with self.db.connect() as conn:
+            sync_id = self._new_sync_id()
             conn.execute(
                 """
                 INSERT INTO metas_ahorro (
@@ -508,12 +612,14 @@ class FinanceService:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                 """,
-                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, self._owner_id(), self._new_sync_id()),
+                (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, self._owner_id(), sync_id),
             )
+            self._clear_sync_rejections(conn, "metas_ahorro", [sync_id])
 
     def update_meta_ahorro(self, meta_id: int, data: MetaAhorroInput) -> None:
         with self.db.connect() as conn:
             self._require_owned_record(conn, "metas_ahorro", meta_id, "La meta seleccionada")
+            sync_id = self._get_sync_id_for_row(conn, "metas_ahorro", meta_id)
             conn.execute(
                 """
                 UPDATE metas_ahorro
@@ -523,14 +629,23 @@ class FinanceService:
                 """,
                 (data.nombre.strip(), data.monto_objetivo, data.monto_inicial, data.fecha_objetivo, data.descripcion.strip(), data.estado, meta_id, self._owner_id()),
             )
+            self._clear_sync_rejections(conn, "metas_ahorro", [sync_id] if sync_id else [])
 
     def delete_meta_ahorro(self, meta_id: int) -> None:
         with self.db.connect() as conn:
             self._require_owned_record(conn, "metas_ahorro", meta_id, "La meta seleccionada")
+            movimiento_sync_ids = [
+                str(row["sync_id"]).strip()
+                for row in conn.execute(
+                    "SELECT sync_id FROM movimientos WHERE meta_id = ? AND owner_user_id = ? AND sync_id IS NOT NULL AND trim(sync_id) <> ''",
+                    (meta_id, self._owner_id()),
+                ).fetchall()
+            ]
             conn.execute(
                 "UPDATE movimientos SET meta_id = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE meta_id = ? AND owner_user_id = ?",
                 (meta_id, self._owner_id()),
             )
+            self._clear_sync_rejections(conn, "movimientos", movimiento_sync_ids)
             self._soft_delete(conn, "metas_ahorro", meta_id)
 
     def get_calendario_mensual(self, month: int, year: int) -> list[dict]:
@@ -911,6 +1026,7 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
+                sync_id = self._new_sync_id()
                 conn.execute(
                     """
                     INSERT INTO gastos_fijos (
@@ -919,8 +1035,9 @@ class FinanceService:
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'pending')
                     """,
-                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, self._owner_id(), self._new_sync_id()),
+                    (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, self._owner_id(), sync_id),
                 )
+                self._clear_sync_rejections(conn, "gastos_fijos", [sync_id])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al crear gasto fijo: {exc}") from exc
 
@@ -929,6 +1046,7 @@ class FinanceService:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "gastos_fijos", gasto_id, "El gasto fijo seleccionado")
                 self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
+                sync_id = self._get_sync_id_for_row(conn, "gastos_fijos", gasto_id)
                 conn.execute(
                     """
                     UPDATE gastos_fijos
@@ -938,6 +1056,7 @@ class FinanceService:
                     """,
                     (data.categoria_id, data.descripcion.strip(), data.monto, data.dia_vencimiento, data.activo, gasto_id, self._owner_id()),
                 )
+                self._clear_sync_rejections(conn, "gastos_fijos", [sync_id] if sync_id else [])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al actualizar gasto fijo: {exc}") from exc
 
@@ -1133,6 +1252,7 @@ class FinanceService:
         try:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
+                sync_id = self._new_sync_id()
                 conn.execute(
                     """
                     INSERT INTO gastos_programados (
@@ -1150,9 +1270,10 @@ class FinanceService:
                         data.es_recurrente,
                         data.frecuencia,
                         self._owner_id(),
-                        self._new_sync_id(),
+                        sync_id,
                     ),
                 )
+                self._clear_sync_rejections(conn, "gastos_programados", [sync_id])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al crear gasto programado: {exc}") from exc
 
@@ -1162,6 +1283,7 @@ class FinanceService:
             with self.db.connect() as conn:
                 self._require_owned_record(conn, "gastos_programados", gasto_id, "El gasto programado seleccionado")
                 self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
+                sync_id = self._get_sync_id_for_row(conn, "gastos_programados", gasto_id)
                 conn.execute(
                     """
                     UPDATE gastos_programados
@@ -1182,6 +1304,7 @@ class FinanceService:
                         self._owner_id(),
                     ),
                 )
+                self._clear_sync_rejections(conn, "gastos_programados", [sync_id] if sync_id else [])
         except sqlite3.Error as exc:
             raise RuntimeError(f"Error al actualizar gasto programado: {exc}") from exc
 
@@ -1224,6 +1347,9 @@ class FinanceService:
                 "UPDATE gastos_programados SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP, sync_status = 'pending' WHERE id = ? AND owner_user_id = ?",
                 (gasto_id, self._owner_id()),
             )
+            gasto_programado_sync_id = self._get_sync_id_for_row(conn, "gastos_programados", gasto_id)
+            self._clear_sync_rejections(conn, "gastos_programados", [gasto_programado_sync_id] if gasto_programado_sync_id else [])
+            movimiento_sync_id = self._new_sync_id()
             conn.execute(
                 """
                 INSERT INTO movimientos (
@@ -1238,9 +1364,10 @@ class FinanceService:
                     row["descripcion"],
                     row["monto_estimado"],
                     self._owner_id(),
-                    self._new_sync_id(),
+                    movimiento_sync_id,
                 ),
             )
+            self._clear_sync_rejections(conn, "movimientos", [movimiento_sync_id])
             generated_next = False
             is_recurrent = int(row["es_recurrente"]) == 1
             if is_recurrent:
@@ -1265,6 +1392,7 @@ class FinanceService:
                 ).fetchone()
 
                 if not exists_next:
+                    next_sync_id = self._new_sync_id()
                     conn.execute(
                         """
                         INSERT INTO gastos_programados (
@@ -1280,9 +1408,10 @@ class FinanceService:
                             next_due_iso,
                             row["frecuencia"],
                             self._owner_id(),
-                            self._new_sync_id(),
+                            next_sync_id,
                         ),
                     )
+                    self._clear_sync_rejections(conn, "gastos_programados", [next_sync_id])
                     generated_next = True
 
             return {"changed": True, "generated_next": generated_next, "is_recurrent": is_recurrent}
@@ -1459,6 +1588,7 @@ class FinanceService:
             raise ValueError("El monto debe ser mayor a 0.")
         with self.db.connect() as conn:
             self._require_owned_record(conn, "categorias", data.categoria_id, "La categoria seleccionada")
+            sync_id = self._new_sync_id()
             conn.execute(
                 """
                 INSERT INTO presupuestos (categoria_id, mes, anio, monto, owner_user_id, sync_id, created_at, updated_at, sync_status)
@@ -1466,8 +1596,14 @@ class FinanceService:
                 ON CONFLICT(owner_user_id, categoria_id, mes, anio)
                 DO UPDATE SET monto = excluded.monto, deleted_at = NULL, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
                 """,
-                (data.categoria_id, data.mes, data.anio, data.monto, self._owner_id(), self._new_sync_id()),
+                (data.categoria_id, data.mes, data.anio, data.monto, self._owner_id(), sync_id),
             )
+            presupuesto_row = conn.execute(
+                "SELECT sync_id FROM presupuestos WHERE categoria_id = ? AND mes = ? AND anio = ? AND owner_user_id = ? LIMIT 1",
+                (data.categoria_id, data.mes, data.anio, self._owner_id()),
+            ).fetchone()
+            resolved_sync_id = str(presupuesto_row["sync_id"]).strip() if presupuesto_row and presupuesto_row["sync_id"] else sync_id
+            self._clear_sync_rejections(conn, "presupuestos", [resolved_sync_id])
 
     def delete_presupuesto(self, presupuesto_id: int) -> None:
         with self.db.connect() as conn:

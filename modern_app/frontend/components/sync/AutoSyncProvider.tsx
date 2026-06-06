@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudSession } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudSessionAsync, getActiveOwnerId } from "../../services/cloudAuth";
 import {
   DATA_CHANGED_EVENT,
   SYNC_STATE_CHANGED_EVENT,
@@ -68,7 +68,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
 
     const executeSync = async (reason: AutoSyncReason, force = false): Promise<ExecuteSyncOutcome> => {
       if (!force && !isAutoSyncEnabled()) return "skipped_disabled";
-      const session = getActiveCloudSession();
+      const session = await getActiveCloudSessionAsync();
       if (!session?.token || !session.user?.id) return "skipped_no_session";
       if (isSyncInFlight()) {
         pendingAfterCurrentRef.current = reason;
@@ -126,8 +126,9 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
     };
 
     const scheduleAppStart = (delay = STARTUP_SYNC_DELAY_MS) => {
-      const ownerId = getActiveCloudSession()?.user.id;
-      if (!ownerId || startupSyncedOwners.has(ownerId)) return;
+      const ownerId = getActiveOwnerId();
+      if (!ownerId || ownerId === "local") return;
+      if (startupSyncedOwners.has(ownerId)) return;
       clearStartupTimer();
       startupTimerRef.current = setTimeout(() => {
         startupTimerRef.current = null;
@@ -139,17 +140,18 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           startupSyncFailedOwnersRef.current.add(ownerId);
-          if (outcome === "failed" && getActiveCloudSession()?.user.id === ownerId) {
+          if (getActiveOwnerId() === ownerId && outcome === "failed") {
             scheduleAppStart(STARTUP_SYNC_RETRY_MS);
           }
         });
       }, delay);
     };
 
-    const waitForSyncShutdownWindow = async () => {
+    const waitForSyncShutdownWindow = async (onTick?: () => void | Promise<void>) => {
       const startedAt = Date.now();
       while (Date.now() - startedAt < APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS) {
         const state = getSyncRuntimeState();
+        if (onTick) await onTick();
         if (!state.inFlight) {
           return { idle: true, state };
         }
@@ -163,7 +165,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       return { idle: false, state: getSyncRuntimeState() };
     };
 
-    const runAppCloseSyncWithBudget = async (): Promise<ExecuteSyncOutcome | null> => {
+    const runAppCloseSyncWithBudget = async (onTick?: () => void | Promise<void>): Promise<ExecuteSyncOutcome | null> => {
       const startedAt = Date.now();
       let resolved = false;
       let outcome: ExecuteSyncOutcome | null = null;
@@ -173,6 +175,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       });
 
       while (Date.now() - startedAt < APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS) {
+        if (onTick) await onTick();
         if (resolved) return outcome;
         const state = getSyncRuntimeState();
         const maxWait = state.criticalSection ? APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS : APP_CLOSE_SYNC_TIMEOUT_MS;
@@ -210,11 +213,18 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
     if ("__TAURI_INTERNALS__" in window) {
       void Promise.all([import("@tauri-apps/api/event"), import("@tauri-apps/api/core")])
         .then(async ([{ listen }, { invoke }]) => {
+          const updateCloseTimeoutBudget = async () => {
+            const state = getSyncRuntimeState();
+            const timeoutMs = state.criticalSection ? APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS : APP_CLOSE_SYNC_TIMEOUT_MS;
+            await invoke("set_app_close_sync_timeout", { timeoutMs }).catch(() => null);
+          };
+
           unlistenClose = await listen(APP_CLOSE_SYNC_EVENT, async () => {
             clearTimer();
             clearStartupTimer();
             try {
-              const idleBeforeClose = await waitForSyncShutdownWindow();
+              await updateCloseTimeoutBudget();
+              const idleBeforeClose = await waitForSyncShutdownWindow(updateCloseTimeoutBudget);
               if (!idleBeforeClose.idle) {
                 const state = idleBeforeClose.state;
                 console.warn("[auto-sync] app_close sync interrupted", {
@@ -226,7 +236,8 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
                 return;
               }
 
-              const outcome = await runAppCloseSyncWithBudget();
+              await updateCloseTimeoutBudget();
+              const outcome = await runAppCloseSyncWithBudget(updateCloseTimeoutBudget);
               if (outcome === null) {
                 const state = getSyncRuntimeState();
                 console.warn("[auto-sync] app_close sync timed out", {
@@ -236,11 +247,12 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
                   ownerId: state.ownerId ? `${state.ownerId.slice(0, 6)}...` : "unknown",
                 });
               } else {
+                await updateCloseTimeoutBudget();
                 console.info("[auto-sync] app_close sync finished", {
                   reason: "app_close",
                   status: outcome,
                   phase: getSyncRuntimeState().phase || "completed",
-                  ownerId: getActiveCloudSession()?.user.id ? `${getActiveCloudSession()!.user.id.slice(0, 6)}...` : "unknown",
+                  ownerId: getActiveOwnerId() !== "local" ? `${getActiveOwnerId().slice(0, 6)}...` : "unknown",
                 });
               }
             } finally {

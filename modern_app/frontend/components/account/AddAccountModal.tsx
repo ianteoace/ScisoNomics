@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
-import { DEFAULT_REMEMBER_CLOUD_ACCOUNT, addOrUpdateAccount, cloudAuth, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
+import { DEFAULT_REMEMBER_CLOUD_ACCOUNT, addOrUpdateAccount, cloudAuth, getCloudAuthTokens, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
 import { Modal } from "../ui/Modal";
 import { PasswordInput } from "../ui/PasswordInput";
 
@@ -77,7 +77,7 @@ export function AddAccountModal({
   async function pollGoogleStatus(loginRequestId: string, startedAt: number) {
     if (googleCancelledRef.current) return;
     if (Date.now() - startedAt > 3 * 60 * 1000) {
-      setError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
+      setError("No pudimos confirmar el inicio de sesión con Google. Intentá nuevamente.");
       setGoogleWaiting(false);
       return;
     }
@@ -89,11 +89,14 @@ export function AddAccountModal({
         return;
       }
       if (status.status === "completed") {
-        addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember, makeActive: true });
+        const stored = await addOrUpdateAccount({ user: status.user, tokens: getCloudAuthTokens(status) }, { remember, makeActive: true });
         cancelGooglePolling();
         resetForm();
         onClose();
         onAccountAdded?.();
+        if (remember && stored.finalStorage !== "persistent") {
+          showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+        }
         showSuccess("Cuenta agregada con Google.");
         return;
       }
@@ -101,7 +104,7 @@ export function AddAccountModal({
       setGoogleWaiting(false);
     } catch (err) {
       console.error("No se pudo consultar el estado de Google Login:", err);
-      setError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
+      setError("No pudimos confirmar el inicio de sesión con Google. Intentá nuevamente.");
       setGoogleWaiting(false);
     }
   }
@@ -117,7 +120,7 @@ export function AddAccountModal({
       void pollGoogleStatus(result.login_request_id, Date.now());
     } catch (err) {
       console.error("No se pudo iniciar Google Login:", err);
-      const message = err instanceof Error ? err.message : "Google Login no esta configurado.";
+      const message = err instanceof Error ? err.message : "Google Login no está configurado.";
       setError(message);
       showError(message);
       setGoogleWaiting(false);
@@ -128,7 +131,7 @@ export function AddAccountModal({
     event.preventDefault();
     if (!configured || submitting || googleWaiting) return;
     if (mode === "register" && password !== repeatPassword) {
-      setError("Las contrasenas no coinciden.");
+      setError("Las contraseñas no coinciden.");
       return;
     }
     setSubmitting(true);
@@ -140,18 +143,21 @@ export function AddAccountModal({
           ? await cloudAuth.register({ email, password, display_name: displayName || null })
           : await cloudAuth.login({ email, password });
       const existed = accountsBefore.some((account) => account.user.id === response.user.id);
-      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
+      const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       resetForm();
       onClose();
       onAccountAdded?.();
+      if (remember && stored.finalStorage !== "persistent") {
+        showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+      }
       showSuccess(mode === "register" ? "Cuenta creada y agregada correctamente." : existed ? "Cuenta actualizada y activada." : "Cuenta agregada correctamente.");
     } catch (err) {
       console.error("No se pudo agregar la cuenta:", err);
       const message = err instanceof Error ? err.message : "";
       const friendly =
         message.toLowerCase().includes("fetch") || message.toLowerCase().includes("conectar")
-          ? "No pudimos conectar con el servidor. Intenta nuevamente."
-          : message || "Email o contrasena incorrectos.";
+          ? "No pudimos conectar con el servidor. Intentá nuevamente."
+          : message || "Email o contraseña incorrectos.";
       setError(friendly);
       showError(friendly);
     } finally {
@@ -164,12 +170,12 @@ export function AddAccountModal({
       <form className="space-y-4" onSubmit={handleSubmit}>
         <p className="text-sm text-slate-500 dark:text-slate-400">
           {mode === "register"
-            ? "Crea una cuenta opcional para usarla en este dispositivo y cambiar rapidamente entre cuentas."
-            : "La cuenta se guardara en este dispositivo para que puedas cambiar rapidamente entre cuentas."}
+            ? "Creá una cuenta opcional para usarla en este dispositivo y cambiar rápidamente entre cuentas."
+            : "La cuenta se guardará en este dispositivo para que puedas cambiar rápidamente entre cuentas."}
         </p>
         {!configured ? (
           <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200">
-            El servicio de cuenta no esta configurado en este entorno.
+            El servicio de cuenta no está configurado en este entorno.
           </div>
         ) : null}
         {error ? (
@@ -178,11 +184,11 @@ export function AddAccountModal({
           </div>
         ) : null}
         <button className="btn-secondary w-full justify-center" type="button" onClick={handleGoogleLogin} disabled={!configured || submitting || googleWaiting}>
-          {googleWaiting ? "Esperando confirmacion de Google..." : "Continuar con Google"}
+          {googleWaiting ? "Esperando confirmación de Google..." : "Continuar con Google"}
         </button>
         {googleWaiting ? (
           <div className="rounded-xl border border-sky-400/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-800 dark:text-sky-200">
-            Esperando confirmacion de Google. Completa el login en el navegador externo.
+            Esperando confirmación de Google. Completá el login en el navegador externo.
             <button className="ml-2 font-semibold underline" type="button" onClick={cancelGooglePolling}>
               Cancelar
             </button>
@@ -218,7 +224,7 @@ export function AddAccountModal({
           />
         </label>
         <label className="block text-sm">
-          Contrasena
+          Contraseña
           <PasswordInput
             className={inputClass}
             value={password}
@@ -230,7 +236,7 @@ export function AddAccountModal({
         </label>
         {mode === "register" ? (
           <label className="block text-sm">
-            Repetir contrasena
+            Repetir contraseña
             <PasswordInput
               className={inputClass}
               value={repeatPassword}
@@ -253,7 +259,7 @@ export function AddAccountModal({
           Recordar esta cuenta en este dispositivo
         </label>
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          {mode === "login" ? "No tenes una cuenta? " : "Ya tenes una cuenta? "}
+          {mode === "login" ? "No tenés una cuenta? " : "Ya tenés una cuenta? "}
           <button
             className="font-semibold text-sky-600 hover:underline dark:text-sky-300"
             type="button"
@@ -263,7 +269,7 @@ export function AddAccountModal({
             }}
             disabled={submitting || googleWaiting}
           >
-            {mode === "login" ? "Registrate ahora." : "Inicia sesion."}
+            {mode === "login" ? "Registrate ahora." : "Iniciá sesión."}
           </button>
         </p>
         <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
@@ -271,7 +277,7 @@ export function AddAccountModal({
             Cancelar
           </button>
           <button className="btn" type="submit" disabled={!configured || submitting || googleWaiting}>
-            {submitting ? "Procesando..." : mode === "register" ? "Crear cuenta y agregar" : "Iniciar sesion y agregar cuenta"}
+            {submitting ? "Procesando..." : mode === "register" ? "Crear cuenta y agregar" : "Iniciar sesión y agregar cuenta"}
           </button>
         </div>
       </form>

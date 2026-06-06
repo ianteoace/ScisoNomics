@@ -10,7 +10,7 @@ import { Modal } from "../../../components/ui/Modal";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
-import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveCloudSession, getActiveOwnerId } from "../../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -249,7 +249,7 @@ export default function ConfiguracionPage() {
   }
 
   async function handleManualSync() {
-    const session = getActiveCloudSession();
+    const session = await getActiveCloudSessionAsync();
     if (!session) {
       showError("Inicia sesion para sincronizar.");
       return;
@@ -313,7 +313,7 @@ export default function ConfiguracionPage() {
   }
 
   function handleAutoSyncToggle(enabled: boolean) {
-    if (activeOwner === "local" || !getActiveCloudSession()) {
+    if (activeOwner === "local" || !getActiveAccount()) {
       showError("La sincronizacion automatica requiere una cuenta cloud activa.");
       return;
     }
@@ -381,7 +381,7 @@ export default function ConfiguracionPage() {
     }
   }
 
-  const activeSession = getActiveCloudSession();
+  const activeSession = getActiveAccount();
   const activeOwner = getActiveOwnerId();
   const currentMode = activeOwner === "local" ? "Modo local" : "Cuenta cloud";
   const databasePath = diagnostics?.database_path || info?.db_path;

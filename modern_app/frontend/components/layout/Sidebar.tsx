@@ -11,7 +11,9 @@ import {
   ACCOUNT_SESSION_CHANGED_EVENT,
   OWNER_CHANGED_EVENT,
   cloudAuth,
-  getActiveCloudSession,
+  getActiveAccount,
+  getActiveCloudAuthState,
+  getActiveCloudSessionAsync,
   getActiveOwnerId,
   getStoredAccounts,
   isCloudAuthConfigured,
@@ -39,6 +41,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const pathname = usePathname();
   const router = useRouter();
   const [accountUser, setAccountUser] = useState<CloudUser | null>(null);
+  const [accountAvailability, setAccountAvailability] = useState<"local" | "none" | "saved_without_token" | "session_expired" | "refresh_failed" | "active">("local");
   const [activeOwnerId, setActiveOwnerId] = useState("local");
   const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -51,20 +54,26 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     async function loadAccount() {
       if (!isCloudAuthConfigured()) {
         setAccountUser(null);
+        setAccountAvailability("local");
         setActiveOwnerId(getActiveOwnerId());
         return;
       }
 
-      const session = getActiveCloudSession();
+      const authState = await getActiveCloudAuthState();
+      const activeAccount = authState.account;
       setActiveOwnerId(getActiveOwnerId());
       setAccounts(getStoredAccounts());
-      if (!session) {
+      setAccountAvailability(authState.availability);
+      if (!activeAccount) {
         setAccountUser(null);
         return;
       }
 
-      setAccountUser(session.user);
+      setAccountUser(activeAccount.user);
+      if (authState.availability !== "active") return;
       try {
+        const session = await getActiveCloudSessionAsync();
+        if (!session) return;
         const user = await cloudAuth.me(session.token);
         if (!cancelled) {
           setAccountUser(user);
@@ -91,7 +100,13 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   }, []);
 
   const accountLabel = activeOwnerId === "local" ? "Modo local" : accountUser?.display_name || accountUser?.email || "Cuenta";
-  const accountSubtitle = activeOwnerId === "local" ? "Sin sincronización" : "Cuenta sincronizable";
+  const accountSubtitle = activeOwnerId === "local"
+    ? "Sin sincronización"
+    : accountAvailability === "saved_without_token" || accountAvailability === "session_expired" || accountAvailability === "refresh_failed"
+      ? "Sesión no disponible"
+      : accountAvailability === "active"
+        ? "Cuenta sincronizable"
+        : "Cuenta guardada";
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -128,8 +143,9 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       switchActiveOwner(ownerId);
     }
     setActiveOwnerId(getActiveOwnerId());
-    const session = getActiveCloudSession();
+    const session = getActiveAccount();
     setAccountUser(session?.user || null);
+    setAccountAvailability(ownerId === "local" ? "local" : session ? "saved_without_token" : "none");
     setAccounts(getStoredAccounts());
     setAccountMenuOpen(false);
   }
@@ -244,7 +260,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         onAccountAdded={() => {
           setAddAccountOpen(false);
           setActiveOwnerId(getActiveOwnerId());
-          const session = getActiveCloudSession();
+          const session = getActiveAccount();
           setAccountUser(session?.user || null);
           setAccounts(getStoredAccounts());
         }}

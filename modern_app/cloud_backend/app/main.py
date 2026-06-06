@@ -11,13 +11,23 @@ from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-from .auth import create_access_token, decode_access_token, get_jwt_secret, hash_password, verify_password
+from .auth import (
+    create_access_token,
+    create_refresh_token,
+    decode_access_token,
+    get_access_token_expires_in,
+    get_jwt_secret,
+    get_refresh_token_expiration_days,
+    hash_password,
+    hash_refresh_token,
+    verify_password,
+)
 from .db import connect, get_database_engine, init_db
-from .schemas import AuthResponse, LoginRequest, RegisterRequest, UserOut
+from .schemas import AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest, UserOut
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.1.0")
@@ -25,6 +35,15 @@ _logger = logging.getLogger("scisonomics.cloud")
 SYNC_CONTRACT_VERSION = "3.1.0"
 CLOUD_SCHEMA_VERSION = "cloud-sync-v1"
 CLOUD_SCHEMA_REVISION = 2
+_CLOUD_DB_STATE: dict[str, Any] = {
+    "ok": False,
+    "status": "initializing",
+    "code": "db_initializing",
+    "message": "La base cloud se está preparando.",
+    "checked": False,
+    "repairable": False,
+    "error_type": None,
+}
 
 
 def allowed_origins() -> list[str]:
@@ -56,7 +75,47 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 @app.on_event("startup")
 def startup() -> None:
     get_jwt_secret()
-    init_db()
+    _refresh_cloud_db_state(run_init=True)
+
+
+def _cloud_capabilities() -> dict[str, Any]:
+    return {
+        "sync_tables": list(SYNC_TABLES),
+        "incremental_pull": True,
+        "server_revisions": True,
+        "tags_sync": True,
+        "movimiento_tags_sync": True,
+        "tombstones": True,
+        "sync_cursor": True,
+    }
+
+
+def _refresh_cloud_db_state(*, run_init: bool) -> dict[str, Any]:
+    global _CLOUD_DB_STATE
+    if run_init:
+        try:
+            init_db()
+            _CLOUD_DB_STATE = {
+                "ok": True,
+                "status": "ready",
+                "code": "db_ready",
+                "message": "La base cloud está lista.",
+                "checked": True,
+                "repairable": False,
+                "error_type": None,
+            }
+        except Exception as exc:
+            _logger.exception("[cloud-db] initialization failed error_type=%s", type(exc).__name__)
+            _CLOUD_DB_STATE = {
+                "ok": False,
+                "status": "migration_failed",
+                "code": "db_migration_failed",
+                "message": "La base cloud no está lista.",
+                "checked": True,
+                "repairable": False,
+                "error_type": type(exc).__name__,
+            }
+    return dict(_CLOUD_DB_STATE)
 
 
 def now_iso() -> str:
@@ -83,6 +142,77 @@ def short_identifier(value: str) -> str:
     if len(clean) <= 8:
         return "***"
     return f"{clean[:4]}...{clean[-4:]}"
+
+
+def _issue_auth_response(
+    conn,
+    user: UserOut,
+    *,
+    now: str,
+    rotate_from_hash: str | None = None,
+    device_id: str | None = None,
+    device_name: str | None = None,
+) -> AuthResponse:
+    refresh_token = create_refresh_token()
+    refresh_token_id = str(uuid4())
+    refresh_token_hash = hash_refresh_token(refresh_token)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expiration_days())).isoformat(timespec="seconds")
+    if rotate_from_hash:
+        conn.execute(
+            """
+            UPDATE cloud_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, ?), last_used_at = ?
+            WHERE token_hash = ?
+            """,
+            (now, now, rotate_from_hash),
+        )
+    conn.execute(
+        """
+        INSERT INTO cloud_refresh_tokens (id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at, device_id, device_name)
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+        """,
+        (refresh_token_id, user.id, refresh_token_hash, now, expires_at, now, device_id, device_name),
+    )
+    access_token = create_access_token(user.id)
+    return AuthResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=get_access_token_expires_in(),
+        token=access_token,
+        user=user,
+    )
+
+
+def _extract_device_context(request: Request) -> tuple[str | None, str | None]:
+    device_id = request.headers.get("X-Scisonomics-Device-Id", "").strip() or None
+    device_name = request.headers.get("X-Scisonomics-Device-Name", "").strip() or None
+    return device_id, device_name
+
+
+def _lookup_refresh_token(conn, refresh_token: str):
+    token_hash = hash_refresh_token(refresh_token)
+    row = conn.execute(
+        """
+        SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at, device_id, device_name
+        FROM cloud_refresh_tokens
+        WHERE token_hash = ?
+        LIMIT 1
+        """,
+        (token_hash,),
+    ).fetchone()
+    return row, token_hash
+
+
+def _validate_refresh_token_row(row, *, now: str):
+    if row is None:
+        raise HTTPException(status_code=401, detail="Refresh token invalido.")
+    if row["revoked_at"]:
+        raise HTTPException(status_code=401, detail="Refresh token revocado.")
+    expires_at = parse_sync_datetime(row["expires_at"])
+    if not expires_at or expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="Refresh token expirado.")
+    return row
 
 
 def validate_credentials(email: str, password: str) -> str:
@@ -529,8 +659,8 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
 
 @app.get("/health")
 def health():
-    init_db()
     database = get_database_engine()
+    db_state = _refresh_cloud_db_state(run_init=False)
     return {
         "ok": True,
         "service": "scisonomics-cloud-auth",
@@ -539,20 +669,37 @@ def health():
         "schema_version": CLOUD_SCHEMA_VERSION,
         "sync_contract_version": SYNC_CONTRACT_VERSION,
         "cloud_schema_revision": CLOUD_SCHEMA_REVISION,
-        "capabilities": {
-            "sync_tables": list(SYNC_TABLES),
-            "incremental_pull": True,
-            "server_revisions": True,
-            "tags_sync": True,
-            "movimiento_tags_sync": True,
-            "tombstones": True,
-            "sync_cursor": True,
+        "db_status": {
+            "status": db_state["status"],
+            "code": db_state["code"],
+            "checked": db_state["checked"],
+            "ready": db_state["ok"],
         },
+        "capabilities": _cloud_capabilities(),
+    }
+
+
+@app.get("/ready")
+def ready():
+    db_state = _refresh_cloud_db_state(run_init=True)
+    return {
+        "ok": bool(db_state["ok"]),
+        "service": "scisonomics-cloud-auth",
+        "status": db_state["status"],
+        "code": db_state["code"],
+        "message": db_state["message"],
+        "checked": db_state["checked"],
+        "repairable": db_state["repairable"],
+        "version": app.version,
+        "schema_version": CLOUD_SCHEMA_VERSION,
+        "sync_contract_version": SYNC_CONTRACT_VERSION,
+        "cloud_schema_revision": CLOUD_SCHEMA_REVISION,
+        "capabilities": _cloud_capabilities(),
     }
 
 
 @app.post("/auth/register", response_model=AuthResponse)
-def register(payload: RegisterRequest):
+def register(payload: RegisterRequest, request: Request):
     email = validate_credentials(payload.email, payload.password)
     user_id = str(uuid4())
     timestamp = now_iso()
@@ -578,11 +725,13 @@ def register(payload: RegisterRequest):
         raise
 
     user = row_to_user(row)
-    return AuthResponse(access_token=create_access_token(user.id), user=user)
+    device_id, device_name = _extract_device_context(request)
+    with connect() as conn:
+        return _issue_auth_response(conn, user, now=timestamp, device_id=device_id, device_name=device_name)
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, request: Request):
     email = normalize_email(payload.email)
     with connect() as conn:
         row = conn.execute(
@@ -594,7 +743,9 @@ def login(payload: LoginRequest):
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
 
     user = row_to_user(row)
-    return AuthResponse(access_token=create_access_token(user.id), user=user)
+    device_id, device_name = _extract_device_context(request)
+    with connect() as conn:
+        return _issue_auth_response(conn, user, now=now_iso(), device_id=device_id, device_name=device_name)
 
 
 @app.get("/auth/me")
@@ -602,8 +753,53 @@ def me(user: UserOut = Depends(get_current_user)):
     return {"ok": True, "user_id": user.id, **user.dict()}
 
 
+@app.post("/auth/refresh", response_model=AuthResponse)
+def refresh_session(payload: RefreshRequest, request: Request):
+    refresh_token = str(payload.refresh_token or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=422, detail="Refresh token requerido.")
+    now = now_iso()
+    device_id, device_name = _extract_device_context(request)
+    with connect() as conn:
+        row, token_hash = _lookup_refresh_token(conn, refresh_token)
+        row = _validate_refresh_token_row(row, now=now)
+        user_row = conn.execute(
+            "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
+            (row["user_id"],),
+        ).fetchone()
+        if not user_row:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+        user = row_to_user(user_row)
+        response = _issue_auth_response(
+            conn,
+            user,
+            now=now,
+            rotate_from_hash=token_hash,
+            device_id=device_id or row["device_id"],
+            device_name=device_name or row["device_name"],
+        )
+        _logger.info("[auth-refresh] success user_id=%s", short_identifier(user.id))
+        return response
+
+
 @app.post("/auth/logout")
-def logout():
+def logout(payload: LogoutRequest):
+    refresh_token = str(payload.refresh_token or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=422, detail="Refresh token requerido.")
+    now = now_iso()
+    with connect() as conn:
+        row, token_hash = _lookup_refresh_token(conn, refresh_token)
+        if row:
+            conn.execute(
+                """
+                UPDATE cloud_refresh_tokens
+                SET revoked_at = COALESCE(revoked_at, ?), last_used_at = ?
+                WHERE token_hash = ?
+                """,
+                (now, now, token_hash),
+            )
+            _logger.info("[auth-logout] revoked user_id=%s", short_identifier(row["user_id"]))
     return {"ok": True}
 
 
@@ -760,14 +956,15 @@ def google_start():
 
 
 @app.get("/auth/google/status/{login_request_id}")
-def google_status(login_request_id: str):
+def google_status(login_request_id: str, request: Request):
     init_db()
     now = now_iso()
+    device_id, device_name = _extract_device_context(request)
     with connect() as conn:
         _cleanup_google_login_requests(conn, now)
         row = conn.execute(
             """
-            SELECT login_request_id, status, access_token, user_id, error_message, expires_at
+            SELECT login_request_id, status, user_id, error_message, expires_at
             FROM google_login_requests
             WHERE login_request_id = ?
             """,
@@ -785,19 +982,19 @@ def google_status(login_request_id: str):
             "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
             (row["user_id"],),
         ).fetchone()
-        if not user_row or not row["access_token"]:
+        if not user_row:
             return {"status": "error", "message": "No se pudo recuperar la sesion de Google."}
-        access_token = row["access_token"]
         user = row_to_user(user_row)
+        response = _issue_auth_response(conn, user, now=now, device_id=device_id, device_name=device_name)
         conn.execute(
             """
             UPDATE google_login_requests
-            SET status = 'consumed', access_token = NULL, updated_at = ?
+            SET status = 'consumed', updated_at = ?
             WHERE login_request_id = ?
             """,
             (now, login_request_id),
         )
-        return {"status": "completed", "access_token": access_token, "user": user}
+        return {"status": "completed", **response.model_dump()}
 
 
 @app.get("/auth/google/callback", response_class=HTMLResponse)
@@ -827,14 +1024,13 @@ def google_callback(code: str = Query(default=""), state: str = Query(default=""
         profile = _exchange_google_code(code, client_id, client_secret, redirect_uri)
         with connect() as conn:
             user = _find_or_create_google_user(conn, profile, now)
-            access_token = create_access_token(user.id)
             conn.execute(
                 """
                 UPDATE google_login_requests
-                SET status = 'completed', access_token = ?, user_id = ?, updated_at = ?
+                SET status = 'completed', user_id = ?, updated_at = ?
                 WHERE login_request_id = ?
                 """,
-                (access_token, user.id, now, state),
+                (user.id, now, state),
             )
         return _google_result_page(True, "Login completado. Ya podes volver a ScisoNomics.")
     except HTTPException as exc:

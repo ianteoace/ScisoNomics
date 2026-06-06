@@ -202,11 +202,6 @@ class Database:
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
                 self._seed_default_tags(conn)
-                self._migrate_sync_columns(conn)
-                self._migrate_owner_columns(conn)
-                self._migrate_categorias_owner_unique(conn)
-                self._migrate_tags_owner_unique(conn)
-                self._migrate_presupuestos_owner_unique(conn)
                 self._set_schema_version(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():

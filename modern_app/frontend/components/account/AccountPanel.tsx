@@ -9,10 +9,14 @@ import {
   clearAllAccounts,
   clearActiveAccountSession,
   cloudAuth,
-  getActiveCloudSession,
+  getActiveAccount,
+  getActiveCloudAuthState,
+  getActiveCloudSessionAsync,
   getActiveOwnerId,
+  getCloudAuthTokens,
   getStoredAccounts,
   isCloudAuthConfigured,
+  logoutAccount,
   removeAccount,
   switchActiveOwner,
   addOrUpdateAccount,
@@ -54,6 +58,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [mode, setMode] = useState<Mode>("login");
   const [loadingSession, setLoadingSession] = useState(true);
   const [sessionCheckError, setSessionCheckError] = useState("");
+  const [sessionAvailable, setSessionAvailable] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [remember, setRemember] = useState(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
@@ -99,11 +104,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   function refreshAuthState() {
     const currentAccounts = getStoredAccounts();
     const owner = getActiveOwnerId();
-    const session = getActiveCloudSession();
+    const session = getActiveAccount();
     setAccounts(currentAccounts);
     setActiveOwnerId(owner);
     setUser(session?.user || null);
     setTokenMode(session?.storage || null);
+    setSessionAvailable(false);
     setAutoSyncEnabledState(isAutoSyncEnabled());
     if (owner === "local") {
       setSyncOverview(null);
@@ -134,16 +140,24 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       setLastSyncError(getLastSyncError());
       setAutoSyncEnabledState(isAutoSyncEnabled());
       refreshAuthState();
-      const session = getActiveCloudSession();
-      if (!session) {
+      const authState = await getActiveCloudAuthState();
+      if (!authState.account) {
         setUser(null);
+        setSessionAvailable(false);
         setLoadingSession(false);
         return;
       }
       if (!cancelled) {
-        setUser(session.user);
-        setTokenMode(session.storage);
+        setUser(authState.account.user);
+        setTokenMode(authState.account.storage);
+        setSessionAvailable(authState.availability === "active");
         setLoadingSession(false);
+      }
+      if (authState.availability === "saved_without_token") {
+        if (!cancelled) {
+          setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
+        }
+        return;
       }
       if (!configured) return;
       try {
@@ -151,16 +165,16 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         if (!cancelled) {
           setUser(verifiedSession?.user || null);
           setTokenMode(verifiedSession?.storage || null);
+          setSessionAvailable(Boolean(verifiedSession?.token));
           setAccounts(getStoredAccounts());
           setActiveOwnerId(getActiveOwnerId());
         }
       } catch (error) {
-        console.error("No se pudo validar la sesion cloud:", error);
+        console.error("No se pudo validar la sesión cloud:", error);
         setAutoSyncEnabled(false);
         if (!cancelled) {
-          setUser(null);
-          setTokenMode(null);
-          setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesion. Podes volver a iniciar sesion.");
+          setSessionAvailable(false);
+          setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesión. Podés volver a iniciar sesión.");
         }
       } finally {
         if (!cancelled) setLoadingSession(false);
@@ -173,18 +187,19 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   }, [configured]);
 
   function handleClearLocalSession() {
-    const activeSession = getActiveCloudSession();
+    const activeSession = getActiveAccount();
     if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
     clearActiveAccountSession();
     setAutoSyncEnabled(false);
     refreshAuthState();
     setLoadingSession(false);
     setSessionCheckError("");
+    setSessionAvailable(false);
     setSyncOverview(null);
     setSyncHistory([]);
     setSyncConflicts([]);
     setCloudDevices([]);
-    showSuccess("Sesion activa quitada de este dispositivo.");
+      showSuccess("Sesión activa quitada de este dispositivo.");
   }
 
   async function handleRetrySessionCheck() {
@@ -194,20 +209,31 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     if (!configured) {
       setLoadingSession(false);
       setUser(null);
+      setSessionAvailable(false);
       return;
     }
     try {
+      const authState = await getActiveCloudAuthState();
+      if (authState.availability !== "active") {
+        setUser(authState.account?.user || null);
+        setTokenMode(authState.account?.storage || null);
+        setSessionAvailable(false);
+        setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
+        return;
+      }
       const verifiedSession = await verifyStoredSession();
       setUser(verifiedSession?.user || null);
       setTokenMode(verifiedSession?.storage || null);
+      setSessionAvailable(Boolean(verifiedSession?.token));
       setAccounts(getStoredAccounts());
       setActiveOwnerId(getActiveOwnerId());
     } catch (error) {
-      console.error("No se pudo revalidar la sesion cloud:", error);
+      console.error("No se pudo revalidar la sesión cloud:", error);
       setAutoSyncEnabled(false);
       setUser(null);
       setTokenMode(null);
-      setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesion. Podes volver a iniciar sesion.");
+      setSessionAvailable(false);
+      setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesión. Podés volver a iniciar sesión.");
     } finally {
       setLoadingSession(false);
       hasCheckedSessionRef.current = true;
@@ -231,7 +257,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     if (!configured || !user) return;
     setSyncCenterLoading(true);
     try {
-      const session = getActiveCloudSession();
+      const session = await getActiveCloudSessionAsync();
       const [overview, history, conflicts, devices] = await Promise.all([
         getSyncOverview(),
         getSyncHistory(10),
@@ -245,7 +271,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       setCloudDevices(devices.devices || []);
       setHasLocalData(Boolean(context?.has_local_data || (context?.local_claimable_total || 0) > 0));
     } catch (error) {
-      console.warn("No se pudo cargar el centro de sincronizacion:", error);
+      console.warn("No se pudo cargar el centro de sincronización:", error);
     } finally {
       setSyncCenterLoading(false);
     }
@@ -262,18 +288,23 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setSubmitting(true);
     try {
       const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
-      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
-      setTokenMode(remember ? "persistent" : "session");
-      setUser(response.user);
+      const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
+      const authState = await getActiveCloudAuthState();
+      setTokenMode(authState.account?.storage || null);
+      setSessionAvailable(authState.availability === "active");
+      setUser(authState.account?.user || response.user);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(response.user.id);
       setSessionCheckError("");
       setShowAddAccount(false);
       clearAuthForms();
-      showSuccess("Sesion iniciada.");
+      if (remember && stored.finalStorage !== "persistent") {
+        showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+      }
+      showSuccess("Sesión iniciada.");
     } catch (error) {
-      console.error("Error iniciando sesion:", error);
-      showError(error instanceof Error ? error.message : "No se pudo iniciar sesion.");
+      console.error("Error iniciando sesión:", error);
+      showError(error instanceof Error ? error.message : "No se pudo iniciar sesión.");
     } finally {
       setSubmitting(false);
     }
@@ -283,7 +314,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     event.preventDefault();
     if (!configured || submitting) return;
     if (registerPassword !== repeatPassword) {
-      showError("Las contrasenas no coinciden.");
+      showError("Las contraseñas no coinciden.");
       return;
     }
     setSubmitting(true);
@@ -293,14 +324,19 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         email: registerEmail,
         password: registerPassword,
       });
-      addOrUpdateAccount({ token: response.access_token, user: response.user }, { remember, makeActive: true });
-      setTokenMode(remember ? "persistent" : "session");
-      setUser(response.user);
+      const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
+      const authState = await getActiveCloudAuthState();
+      setTokenMode(authState.account?.storage || null);
+      setSessionAvailable(authState.availability === "active");
+      setUser(authState.account?.user || response.user);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(response.user.id);
       setSessionCheckError("");
       setShowAddAccount(false);
       clearAuthForms();
+      if (remember && stored.finalStorage !== "persistent") {
+        showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+      }
       showSuccess("Cuenta creada.");
     } catch (error) {
       console.error("Error creando cuenta:", error);
@@ -311,13 +347,15 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   }
 
   async function handleLogout() {
-    const activeSession = getActiveCloudSession();
-    const token = activeSession?.token || null;
-    await cloudAuth.logout(token);
-    if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
+    const activeSession = await getActiveCloudSessionAsync();
+    if (activeSession?.user.id) {
+      await logoutAccount(activeSession.user.id);
+      clearAutoSyncPreference(activeSession.user.id);
+    }
     clearActiveAccountSession();
     setTokenMode(null);
     setUser(null);
+    setSessionAvailable(false);
     setSessionCheckError("");
     setAutoSyncEnabled(false);
     setAutoSyncEnabledState(false);
@@ -328,11 +366,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setSyncConflicts([]);
     setCloudDevices([]);
     clearAuthForms();
-    showSuccess("Sesion cerrada. Tus datos de cuenta no se muestran en modo local.");
+    showSuccess("Sesión cerrada. Tus datos de cuenta no se muestran en modo local.");
   }
 
   async function handleClaimLocalData() {
-    const session = getActiveCloudSession();
+    const session = getActiveAccount();
     if (!session?.user.id || claimingLocalData) return;
     setClaimingLocalData(true);
     try {
@@ -340,7 +378,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       const total = Number(result.claimed_total ?? result.claimable_total ?? Object.values(result.claimed).reduce((sum, value) => sum + Number(value || 0), 0));
       setHasLocalData(false);
       await refreshSyncCenter();
-      showSuccess(total > 0 ? `Datos locales asociados a esta cuenta: ${total}.` : "No habia datos locales para asociar.");
+      showSuccess(total > 0 ? `Datos locales asociados a esta cuenta: ${total}.` : "No había datos locales para asociar.");
     } catch (error) {
       console.error("Error asociando datos locales:", error);
       showError("No se pudieron asociar los datos locales a esta cuenta.");
@@ -350,9 +388,9 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   }
 
   async function handleManualSync() {
-    const session = getActiveCloudSession();
+    const session = await getActiveCloudSessionAsync();
     if (!session?.token || syncing) {
-      showError("Inicia sesion para sincronizar.");
+      showError("Iniciá sesión para sincronizar.");
       return;
     }
     setSyncing(true);
@@ -361,8 +399,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     try {
       const result = await runManualSync(session.token, session.user.email);
       setLastSyncAt(result.syncedAt);
-      setLastSyncError(result.rejectedTotal ? "Algunos datos no pudieron sincronizarse y necesitan revision." : null);
-      setSyncMessage(result.rejectedTotal ? "Sincronizacion completada con advertencias" : "Sincronizacion completada");
+      setLastSyncError(result.rejectedTotal ? "Algunos datos no pudieron sincronizarse y necesitan revisión." : null);
+      setSyncMessage(result.rejectedTotal ? "Sincronización completada con advertencias" : "Sincronización completada");
       const uploadedTotal = Object.values(result.uploaded).reduce((sum, value) => sum + Number(value || 0), 0);
       const pulledTotal = Object.values(result.pulled || {}).reduce((sum, value) => sum + Number(value || 0), 0);
       setSyncSummary(
@@ -373,8 +411,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           : `Confirmados en la nube: ${uploadedTotal}. Cambios recibidos: ${pulledTotal}.`,
       );
       await refreshSyncCenter();
-      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revision.");
-      else showSuccess("Sincronizacion completada correctamente.");
+      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revisión.");
+      else showSuccess("Sincronización completada correctamente.");
     } catch (error) {
       console.error("Error sincronizando:", error);
       setSyncMessage("Error al sincronizar");
@@ -387,7 +425,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   function handleAutoSyncToggle(enabled: boolean) {
     setAutoSyncEnabled(enabled);
     setAutoSyncEnabledState(enabled);
-    setSyncMessage(enabled ? "Sincronizacion automatica activada" : "Sincronizacion desactivada");
+    setSyncMessage(enabled ? "Sincronización automática activada" : "Sincronización desactivada");
   }
 
   async function handleSwitchOwner(ownerId: string) {
@@ -406,13 +444,23 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     }
     showSuccess("Cuenta activa cambiada.");
     try {
+      const authState = await getActiveCloudAuthState();
+      if (authState.availability !== "active") {
+        setUser(authState.account?.user || null);
+        setTokenMode(authState.account?.storage || null);
+        setSessionAvailable(false);
+        setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
+        setAccounts(getStoredAccounts());
+        return;
+      }
       const verifiedSession = await verifyStoredSession(ownerId);
       setUser(verifiedSession?.user || null);
       setTokenMode(verifiedSession?.storage || null);
+      setSessionAvailable(Boolean(verifiedSession?.token));
       setAccounts(getStoredAccounts());
     } catch (error) {
-      console.error("La cuenta guardada ya no es valida:", error);
-      setSessionCheckError("La sesion de esa cuenta vencio o no pudo verificarse. Volve a iniciar sesion.");
+      console.error("La cuenta guardada ya no es válida:", error);
+      setSessionCheckError("La sesión de esa cuenta venció o no pudo verificarse. Volvé a iniciar sesión.");
       refreshAuthState();
     }
   }
@@ -473,12 +521,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       data_change: "Cambio local",
       auto_remote_pull: "Consulta remota",
     };
-    return labels[reason] || (item.mode === "auto" ? "Automatica" : "Manual");
+    return labels[reason] || (item.mode === "auto" ? "Automática" : "Manual");
   }
 
   async function handleGoogleLogin() {
     if (!configured || submitting) {
-      showError("El servicio de cuenta no esta configurado en este entorno.");
+      showError("El servicio de cuenta no está configurado en este entorno.");
       return;
     }
     setSubmitting(true);
@@ -495,24 +543,29 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         const status = await cloudAuth.googleStatus(result.login_request_id);
         if (status.status === "pending") continue;
         if (status.status === "completed") {
-          addOrUpdateAccount({ token: status.access_token, user: status.user }, { remember, makeActive: true });
-          setTokenMode(remember ? "persistent" : "session");
-          setUser(status.user);
+          const stored = await addOrUpdateAccount({ user: status.user, tokens: getCloudAuthTokens(status) }, { remember, makeActive: true });
+          const authState = await getActiveCloudAuthState();
+          setTokenMode(authState.account?.storage || null);
+          setSessionAvailable(authState.availability === "active");
+          setUser(authState.account?.user || status.user);
           setAccounts(getStoredAccounts());
           setActiveOwnerId(status.user.id);
           setSessionCheckError("");
           setShowAddAccount(false);
           clearAuthForms();
+          if (remember && stored.finalStorage !== "persistent") {
+            showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+          }
           showSuccess("Cuenta agregada con Google.");
           return;
         }
         showError(status.message || "No se pudo completar Google Login.");
         return;
       }
-      showError("No pudimos confirmar el inicio de sesion con Google. Intenta nuevamente.");
+      showError("No pudimos confirmar el inicio de sesión con Google. Intentá nuevamente.");
     } catch (error) {
       console.error("Error iniciando Google OAuth:", error);
-      showError(error instanceof Error ? error.message : "El inicio con Google todavia no esta configurado en este entorno.");
+      showError(error instanceof Error ? error.message : "El inicio con Google todavía no está configurado en este entorno.");
     } finally {
       setSubmitting(false);
     }
@@ -525,7 +578,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
           <h2 className="mt-2 text-2xl font-bold">Cuenta</h2>
           <p className="mt-1 max-w-3xl text-sm text-slate-500 dark:text-slate-400">
-            Podes usar ScisoNomics sin cuenta. Tus datos siguen guardandose localmente y la sincronizacion manual esta disponible solo si inicias sesion.
+            Podés usar ScisoNomics sin cuenta. Tus datos siguen guardándose localmente y la sincronización manual está disponible solo si iniciás sesión.
           </p>
         </header>
       ) : null}
@@ -534,7 +587,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         <section className="card border-amber-400/40 bg-amber-500/10 p-5">
           <h3 className="text-lg font-semibold text-amber-900 dark:text-amber-100">Servicio de cuenta no configurado</h3>
           <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
-            El servicio de cuenta no esta configurado en este entorno. La app sigue funcionando en modo local y tus datos continuan guardandose en este dispositivo.
+            El servicio de cuenta no está configurado en este entorno. La app sigue funcionando en modo local y tus datos continúan guardándose en este dispositivo.
           </p>
         </section>
       ) : null}
@@ -574,7 +627,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                 <div>
                   <p className="font-semibold">{account.user.display_name || account.user.email}</p>
                   {account.user.display_name ? <p className="text-xs text-slate-500 dark:text-slate-400">{account.user.email}</p> : null}
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Ultimo uso: {formatDate(account.lastUsedAt)}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Último uso: {formatDate(account.lastUsedAt)}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner(account.user.id)} disabled={activeOwnerId === account.user.id}>
@@ -596,45 +649,50 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           </div>
         ) : null}
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-          Quitar una cuenta de este dispositivo no borra tus datos financieros locales ni los datos sincronizados en la nube. Solo elimina el acceso guardado en esta instalacion.
+          Quitar una cuenta de este dispositivo no borra tus datos financieros locales ni los datos sincronizados en la nube. Solo elimina el acceso guardado en esta instalación.
         </p>
       </section>
 
       {loadingSession ? (
         <section className="card p-5">
-          <p className="text-sm text-slate-500 dark:text-slate-400">Verificando sesion...</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Verificando sesión...</p>
           <button className="btn-secondary mt-4" type="button" onClick={handleClearLocalSession}>
-            Limpiar sesion local
+            Limpiar sesión local
           </button>
         </section>
-      ) : sessionCheckError ? (
+      ) : sessionCheckError && !user ? (
         <section className="card p-5">
-          <h3 className="text-lg font-semibold">No pudimos verificar la sesion</h3>
+          <h3 className="text-lg font-semibold">No pudimos verificar la sesión</h3>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
             {sessionCheckError}
           </p>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
             <button className="btn-secondary" type="button" onClick={handleRetrySessionCheck}>Reintentar</button>
-            <button className="btn" type="button" onClick={handleClearLocalSession}>Limpiar sesion local</button>
+            <button className="btn" type="button" onClick={handleClearLocalSession}>Limpiar sesión local</button>
           </div>
         </section>
       ) : user && !showAddAccount ? (
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
-          <h3 className="mt-2 text-2xl font-semibold">Sesion iniciada</h3>
+          <h3 className="mt-2 text-2xl font-semibold">Sesión iniciada</h3>
           <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">Usuario</p>
             <p className="mt-1 font-semibold">{user.display_name || user.email}</p>
             {user.display_name ? <p className="text-sm text-slate-500 dark:text-slate-400">{user.email}</p> : null}
             {tokenMode === "persistent" ? <p className="mt-2 text-xs text-sky-700 dark:text-sky-300">Recordarme activado</p> : null}
           </div>
+          {!sessionAvailable && sessionCheckError ? (
+            <p className="mt-4 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+              {sessionCheckError}
+            </p>
+          ) : null}
           <p className="mt-4 rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-900 dark:text-sky-100">
-            La sincronizacion cloud es opcional. Tus datos siguen guardandose localmente en este dispositivo.
+            La sincronización cloud es opcional. Tus datos siguen guardándose localmente en este dispositivo.
           </p>
           <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-sm">
             <p className="font-semibold">Modo de datos</p>
             <p className="mt-1 text-slate-500 dark:text-slate-400">
-              Estás viendo datos de esta cuenta. Los datos locales sin cuenta quedan separados y no se sincronizan automaticamente.
+              Estás viendo datos de esta cuenta. Los datos locales sin cuenta quedan separados y no se sincronizan automáticamente.
             </p>
             {hasLocalData ? (
               <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-3 text-amber-900 dark:text-amber-100">
@@ -650,14 +708,14 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
             <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
               <div className="flex flex-col gap-4">
                 <div>
-                  <p className="font-semibold">Sincronizacion</p>
+                  <p className="font-semibold">Sincronización</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    {syncing ? "Sincronizando..." : autoSyncEnabled ? "Sincronizacion automatica activada" : syncMessage}
-                    {lastSyncAt ? ` · Ultima sincronizacion: ${new Date(lastSyncAt).toLocaleString()}` : ""}
+                    {syncing ? "Sincronizando..." : autoSyncEnabled ? "Sincronización automática activada" : syncMessage}
+                    {lastSyncAt ? ` · Última sincronización: ${new Date(lastSyncAt).toLocaleString()}` : ""}
                   </p>
                   {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
-                  {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Ultima sincronizacion automatica: {new Date(lastAutoSyncAt).toLocaleString()}</p> : null}
-                  {lastSyncError ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Ultimo intento fallido: {lastSyncError}</p> : null}
+                  {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Última sincronización automática: {new Date(lastAutoSyncAt).toLocaleString()}</p> : null}
+                  {lastSyncError ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Último intento fallido: {lastSyncError}</p> : null}
                   {syncOverview?.sync_error_total ? (
                     <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
                       Hay {syncOverview.sync_error_total} registros con revisión pendiente.
@@ -665,7 +723,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     </p>
                   ) : null}
                   <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                    ScisoNomics puede sincronizar tus datos manualmente o de forma automatica si activas esta opcion. Cuando esta activada, la app intenta sincronizar al abrirse y despues de cambios importantes.
+                    ScisoNomics puede sincronizar tus datos manualmente o de forma automática si activás esta opción. Cuando está activada, la app intenta sincronizar al abrirse y después de cambios importantes.
                   </p>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
@@ -687,17 +745,17 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     ) : null}
                   </div>
                   <div className="rounded-xl border border-slate-800 p-3">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Ultima sync exitosa</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Última sync exitosa</p>
                     <p className="mt-1 text-sm font-semibold">{formatDate(syncOverview?.last_success?.finished_at || lastSyncAt || lastAutoSyncAt)}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {syncOverview?.last_success ? `${syncOverview.last_success.mode === "auto" ? "Automatica" : "Manual"} - Enviados: ${syncOverview.last_success.pushed_total} - Recibidos: ${syncOverview.last_success.pulled_total}` : "Sin historial"}
+                      {syncOverview?.last_success ? `${syncOverview.last_success.mode === "auto" ? "Automática" : "Manual"} - Enviados: ${syncOverview.last_success.pushed_total} - Recibidos: ${syncOverview.last_success.pulled_total}` : "Sin historial"}
                     </p>
                   </div>
                 </div>
                 <label className="flex items-center justify-between gap-4 rounded-xl border border-slate-800 px-3 py-2 text-sm">
                   <span>
-                    <span className="block font-medium">Sincronizacion automatica mientras usas la app</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">La apertura y el cierre intentan sincronizar siempre. Esta opcion controla el background.</span>
+                    <span className="block font-medium">Sincronización automática mientras usas la app</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">La apertura y el cierre intentan sincronizar siempre. Esta opción controla el background.</span>
                   </span>
                   <input
                     type="checkbox"
@@ -730,11 +788,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                 <div className="rounded-xl border border-slate-800 p-3 text-sm">
                   <p className="font-semibold">Multi-dispositivo</p>
                   <p className="mt-1 text-slate-500 dark:text-slate-400">
-                    ScisoNomics conserva automaticamente la version mas reciente cuando un dato cambia en mas de un dispositivo.
+                    ScisoNomics conserva automáticamente la versión más reciente cuando un dato cambia en más de un dispositivo.
                   </p>
                   {syncOverview?.conflicts_recent ? (
-                    <p className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-amber-800 dark:text-amber-200">
-                      Se detectaron cambios en mas de un dispositivo. Se conservo la version mas reciente.
+                    <p className="mt-2 text-amber-700 dark:text-amber-300">
+                      Se detectaron cambios en más de un dispositivo. Se conservó la versión más reciente.
                     </p>
                   ) : (
                     <p className="mt-2 text-slate-500 dark:text-slate-400">Sin conflictos recientes.</p>
@@ -744,7 +802,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   <div className="rounded-xl border border-slate-800 p-3">
                     <p className="font-semibold">Cambios pendientes</p>
                     {syncOverview && syncOverview.pending_total === 0 ? (
-                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todo esta sincronizado en este dispositivo.</p>
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todo está sincronizado en este dispositivo.</p>
                     ) : null}
                     <div className="mt-3 grid gap-2 md:grid-cols-2">
                       {syncOverview
@@ -767,7 +825,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   <div className="rounded-xl border border-slate-800 p-3">
                     <p className="font-semibold">Dispositivos vinculados</p>
                     {cloudDevices.length === 0 ? (
-                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No se pudieron cargar dispositivos vinculados o todavia no hay otros dispositivos.</p>
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No se pudieron cargar dispositivos vinculados o todavía no hay otros dispositivos.</p>
                     ) : (
                       <div className="mt-3 space-y-2">
                         {cloudDevices.map((device) => {
@@ -779,7 +837,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                                 {isCurrent ? <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300">Este dispositivo</span> : null}
                               </div>
                               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                                ID: {shortDeviceId(device.device_id)} - Ultima actividad: {formatDate(device.last_seen_at)}
+                                ID: {shortDeviceId(device.device_id)} - Última actividad: {formatDate(device.last_seen_at)}
                               </p>
                             </div>
                           );
@@ -822,7 +880,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                       </button>
                     </div>
                     {syncHistory.length === 0 ? (
-                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todavia no hay sincronizaciones registradas.</p>
+                      <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Todavía no hay sincronizaciones registradas.</p>
                     ) : (
                       <div className="mt-3 space-y-2">
                         {syncHistory.slice(0, 10).map((item) => (
@@ -850,7 +908,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
             </div>
           ) : null}
           <div className="mt-5 flex justify-end">
-            <button className="btn-secondary" onClick={handleLogout}>Cerrar sesion</button>
+            <button className="btn-secondary" onClick={handleLogout}>Cerrar sesión</button>
           </div>
         </section>
       ) : (
@@ -860,9 +918,9 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
               <>
                 <div className="text-center">
                   <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">ScisoNomics</p>
-                  <h3 className="mt-2 text-3xl font-bold">Inicia sesion en ScisoNomics</h3>
+                  <h3 className="mt-2 text-3xl font-bold">Iniciá sesión en ScisoNomics</h3>
                   <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
-                    Podes usar ScisoNomics sin cuenta. En futuras versiones, una cuenta te permitira respaldar y sincronizar tus datos entre dispositivos.
+                    Podés usar ScisoNomics sin cuenta. En futuras versiones, una cuenta te permitirá respaldar y sincronizar tus datos entre dispositivos.
                   </p>
                 </div>
 
@@ -880,11 +938,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
 
                 <form className="space-y-4" onSubmit={handleLogin}>
                   <label className="block text-sm">
-                    Correo electronico
+                    Correo electrónico
                     <input className={`${inputClass} mt-1`} type="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} required disabled={!configured} />
                   </label>
                   <label className="block text-sm">
-                    Contrasena
+                    Contraseña
                     <PasswordInput className={inputClass} value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required disabled={!configured} />
                   </label>
                   <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -897,15 +955,15 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                       />
                       Recordarme
                     </label>
-                    <span className="text-slate-400">Olvidaste tu contrasena? Proximamente</span>
+                    <span className="text-slate-400">¿Olvidaste tu contraseña? Próximamente</span>
                   </div>
                   <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
-                    {submitting ? "Ingresando..." : "Iniciar sesion"}
+                    {submitting ? "Ingresando..." : "Iniciar sesión"}
                   </button>
                 </form>
 
                 <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
-                  No tenes una cuenta?{" "}
+                  No tenés una cuenta?{" "}
                   <button className="font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={() => setMode("register")}>
                     Registrate ahora.
                   </button>
@@ -917,7 +975,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
                   <h3 className="mt-2 text-3xl font-bold">Crear cuenta</h3>
                   <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
-                    La cuenta no activa sincronizacion de datos financieros. Tus movimientos siguen guardandose localmente.
+                    La cuenta no activa sincronización de datos financieros. Tus movimientos siguen guardándose localmente.
                   </p>
                 </div>
 
@@ -927,15 +985,15 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                     <input className={`${inputClass} mt-1`} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={!configured} />
                   </label>
                   <label className="block text-sm">
-                    Correo electronico
+                    Correo electrónico
                     <input className={`${inputClass} mt-1`} type="email" value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} required disabled={!configured} />
                   </label>
                   <label className="block text-sm">
-                    Contrasena
+                    Contraseña
                     <PasswordInput className={inputClass} value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
                   </label>
                   <label className="block text-sm">
-                    Repetir contrasena
+                    Repetir contraseña
                     <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
                   </label>
                   <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
@@ -944,9 +1002,9 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                 </form>
 
                 <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
-                  Ya tenes cuenta?{" "}
+                  Ya tenés cuenta?{" "}
                   <button className="font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={() => setMode("login")}>
-                    Inicia sesion.
+                    Iniciá sesión.
                   </button>
                 </p>
               </>
@@ -957,8 +1015,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
             <h3 className="text-lg font-semibold">Modo local-first</h3>
             <div className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">
               <p>La cuenta es opcional.</p>
-              <p>Tus datos siguen guardandose localmente en este equipo.</p>
-              <p>La sincronizacion automatica es opcional y puede desactivarse en cualquier momento.</p>
+              <p>Tus datos siguen guardándose localmente en este equipo.</p>
+              <p>La sincronización automática es opcional y puede desactivarse en cualquier momento.</p>
               <p>No se sube la base de datos completa ni se reemplaza el modo local.</p>
             </div>
           </aside>

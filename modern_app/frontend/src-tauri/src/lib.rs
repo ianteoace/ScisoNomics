@@ -14,13 +14,24 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri::Emitter;
 
+const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
+const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
+
 #[derive(Clone)]
 struct LocalApiToken(String);
 
 #[derive(Clone)]
-struct AppCloseSyncSignal(Arc<(Mutex<bool>, Condvar)>);
+struct AppCloseSyncSignal(Arc<(Mutex<AppCloseSyncState>, Condvar)>);
+
+#[derive(Clone, Copy)]
+struct AppCloseSyncState {
+  completed: bool,
+  timeout_ms: u64,
+}
 
 const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
+const APP_CLOSE_SYNC_TIMEOUT_MS: u64 = 6_000;
+const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS: u64 = 10_000;
 
 #[cfg(target_os = "windows")]
 fn fill_random_bytes(bytes: &mut [u8]) -> bool {
@@ -110,11 +121,94 @@ fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
   token.0.clone()
 }
 
+fn secure_token_entry(service_name: &str, account_id: &str) -> Result<keyring::Entry, String> {
+  keyring::Entry::new(service_name, account_id).map_err(|error| format!("No se pudo preparar el storage seguro: {error}"))
+}
+
+#[tauri::command]
+fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Result<bool, String> {
+  let normalized_account_id = account_id.trim();
+  let normalized_token = token.trim();
+  if normalized_account_id.is_empty() || normalized_token.is_empty() {
+    return Err("No se pudo guardar el refresh token persistente.".to_string());
+  }
+  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+  entry
+    .set_password(normalized_token)
+    .map_err(|error| format!("No se pudo guardar el refresh token persistente: {error}"))?;
+  Ok(true)
+}
+
+#[tauri::command]
+fn load_persistent_cloud_refresh_token(account_id: String) -> Result<Option<String>, String> {
+  let normalized_account_id = account_id.trim();
+  if normalized_account_id.is_empty() {
+    return Ok(None);
+  }
+  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+  match entry.get_password() {
+    Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
+    Ok(_) => Ok(None),
+    Err(keyring::Error::NoEntry) => {
+      let legacy_entry = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
+      match legacy_entry.get_password() {
+        Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
+        Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("No se pudo leer el refresh token persistente: {error}")),
+      }
+    }
+    Err(error) => Err(format!("No se pudo leer el refresh token persistente: {error}")),
+  }
+}
+
+#[tauri::command]
+fn delete_persistent_cloud_refresh_token(account_id: String) -> Result<bool, String> {
+  let normalized_account_id = account_id.trim();
+  if normalized_account_id.is_empty() {
+    return Ok(false);
+  }
+  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+  match entry.delete_credential() {
+    Ok(()) | Err(keyring::Error::NoEntry) => {}
+    Err(error) => return Err(format!("No se pudo borrar el refresh token persistente: {error}")),
+  }
+  let legacy_entry = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
+  match legacy_entry.delete_credential() {
+    Ok(()) | Err(keyring::Error::NoEntry) => Ok(true),
+    Err(error) => Err(format!("No se pudo borrar el refresh token persistente legacy: {error}")),
+  }
+}
+
+#[tauri::command]
+fn save_persistent_cloud_token(account_id: String, token: String) -> Result<bool, String> {
+  save_persistent_cloud_refresh_token(account_id, token)
+}
+
+#[tauri::command]
+fn load_persistent_cloud_token(account_id: String) -> Result<Option<String>, String> {
+  load_persistent_cloud_refresh_token(account_id)
+}
+
+#[tauri::command]
+fn delete_persistent_cloud_token(account_id: String) -> Result<bool, String> {
+  delete_persistent_cloud_refresh_token(account_id)
+}
+
 #[tauri::command]
 fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>) {
   let (lock, condition) = &*signal.0;
-  if let Ok(mut completed) = lock.lock() {
-    *completed = true;
+  if let Ok(mut state) = lock.lock() {
+    state.completed = true;
+    condition.notify_all();
+  }
+}
+
+#[tauri::command]
+fn set_app_close_sync_timeout(signal: tauri::State<'_, AppCloseSyncSignal>, timeout_ms: u64) {
+  let bounded = timeout_ms.clamp(APP_CLOSE_SYNC_TIMEOUT_MS, APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS);
+  let (lock, condition) = &*signal.0;
+  if let Ok(mut state) = lock.lock() {
+    state.timeout_ms = bounded;
     condition.notify_all();
   }
 }
@@ -123,20 +217,33 @@ type BackendChild = Arc<Mutex<Option<CommandChild>>>;
 
 fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   let (lock, _) = &*signal.0;
-  if let Ok(mut completed) = lock.lock() {
-    *completed = false;
+  if let Ok(mut state) = lock.lock() {
+    state.completed = false;
+    state.timeout_ms = APP_CLOSE_SYNC_TIMEOUT_MS;
   }
 }
 
-fn wait_for_app_close_sync(signal: &AppCloseSyncSignal, timeout: Duration) -> bool {
+fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> bool {
   let (lock, condition) = &*signal.0;
-  let Ok(completed) = lock.lock() else {
+  let Ok(mut state) = lock.lock() else {
     return false;
   };
-  condition
-    .wait_timeout_while(completed, timeout, |completed| !*completed)
-    .map(|(completed, _)| *completed)
-    .unwrap_or(false)
+  let started_at = Instant::now();
+  loop {
+    if state.completed {
+      return true;
+    }
+    let timeout = Duration::from_millis(state.timeout_ms);
+    if started_at.elapsed() >= timeout {
+      return false;
+    }
+    let remaining = timeout.saturating_sub(started_at.elapsed());
+    let wait_step = remaining.min(Duration::from_millis(100));
+    match condition.wait_timeout(state, wait_step) {
+      Ok((next_state, _)) => state = next_state,
+      Err(_) => return false,
+    }
+  }
 }
 
 fn local_backend_address() -> SocketAddr {
@@ -340,7 +447,10 @@ fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let backend_child: BackendChild = Arc::new(Mutex::new(None));
-  let app_close_sync_signal = AppCloseSyncSignal(Arc::new((Mutex::new(false), Condvar::new())));
+  let app_close_sync_signal = AppCloseSyncSignal(Arc::new((Mutex::new(AppCloseSyncState {
+    completed: false,
+    timeout_ms: APP_CLOSE_SYNC_TIMEOUT_MS,
+  }), Condvar::new())));
   let close_in_progress = Arc::new(AtomicBool::new(false));
   let local_api_token = generate_local_api_token();
   let setup_backend_child = Arc::clone(&backend_child);
@@ -357,7 +467,18 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(LocalApiToken(local_api_token.clone()))
     .manage(app_close_sync_signal)
-    .invoke_handler(tauri::generate_handler![save_binary_file, get_local_api_token, complete_app_close_sync])
+    .invoke_handler(tauri::generate_handler![
+      save_binary_file,
+      get_local_api_token,
+      save_persistent_cloud_token,
+      load_persistent_cloud_token,
+      delete_persistent_cloud_token,
+      save_persistent_cloud_refresh_token,
+      load_persistent_cloud_refresh_token,
+      delete_persistent_cloud_refresh_token,
+      complete_app_close_sync,
+      set_app_close_sync_timeout
+    ])
     .setup(move |app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -447,7 +568,7 @@ pub fn run() {
           log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
         }
         std::thread::spawn(move || {
-          if !wait_for_app_close_sync(&sync_signal, Duration::from_secs(6)) {
+          if !wait_for_app_close_sync(&sync_signal) {
             log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
           }
           stop_backend_sidecar(&backend_child, &local_api_token);
