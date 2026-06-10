@@ -1,5 +1,5 @@
 import { API_URL, getLocalRequestHeaders, getLocalRequestSecurity, getLocalRequestSecuritySnapshot, type LocalRequestSecurity } from "./http";
-import { forceRefreshActiveCloudSession, getActiveCloudSession, getActiveCloudSessionAsync, getActiveOwnerId } from "./cloudAuth";
+import { forceRefreshActiveCloudSession, getActiveCloudSession, getActiveCloudSessionAsync, getActiveOwnerId, getValidAccessToken } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
@@ -1277,7 +1277,7 @@ function setLastLocalApplyRemoteCheckResult(value: LocalApplyRemoteCheckResult) 
 
 export async function testCloudSession(): Promise<CloudSessionTestResult> {
   const timestamp = nowIso();
-  const session = await getActiveCloudSessionAsync();
+  const session = await getValidAccessToken();
   const endpoint = cloudEndpoint("/auth/me");
   if (!CLOUD_API_URL) {
     const result: CloudSessionTestResult = {
@@ -1367,7 +1367,7 @@ export async function testCloudSession(): Promise<CloudSessionTestResult> {
 
 export async function testCloudSync(): Promise<CloudSyncTestResult> {
   const timestamp = nowIso();
-  const session = await getActiveCloudSessionAsync();
+  const session = await getValidAccessToken();
   const endpoint = cloudEndpoint("/sync/health");
   if (!CLOUD_API_URL) {
     const result: CloudSyncTestResult = {
@@ -1853,7 +1853,7 @@ export async function runSync(token: string, userEmail?: string, mode: SyncMode 
 }
 
 async function runSyncWithReason(token: string, userEmail: string | undefined, mode: SyncMode, reason: SyncReason) {
-  const session = await getActiveCloudSessionAsync();
+  const session = await getValidAccessToken();
   if (!session?.token || !session.user?.id) {
     console.info(`${LOG_PREFIX} skipped: no cloud session`, { mode, reason });
     throw cloudSyncError({

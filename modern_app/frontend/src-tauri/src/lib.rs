@@ -136,6 +136,9 @@ fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Res
   entry
     .set_password(normalized_token)
     .map_err(|error| format!("No se pudo guardar el refresh token persistente: {error}"))?;
+  if let Ok(legacy_entry) = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id) {
+    let _ = legacy_entry.delete_credential();
+  }
   Ok(true)
 }
 
@@ -149,14 +152,7 @@ fn load_persistent_cloud_refresh_token(account_id: String) -> Result<Option<Stri
   match entry.get_password() {
     Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
     Ok(_) => Ok(None),
-    Err(keyring::Error::NoEntry) => {
-      let legacy_entry = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
-      match legacy_entry.get_password() {
-        Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
-        Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(format!("No se pudo leer el refresh token persistente: {error}")),
-      }
-    }
+    Err(keyring::Error::NoEntry) => Ok(None),
     Err(error) => Err(format!("No se pudo leer el refresh token persistente: {error}")),
   }
 }
