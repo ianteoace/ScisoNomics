@@ -298,7 +298,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       setSessionCheckError("");
       setShowAddAccount(false);
       clearAuthForms();
-      if (remember && stored.finalStorage !== "persistent") {
+      if (remember && !stored.secureResult.storedSecurely) {
         showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
       }
       showSuccess("Sesión iniciada.");
@@ -334,7 +334,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       setSessionCheckError("");
       setShowAddAccount(false);
       clearAuthForms();
-      if (remember && stored.finalStorage !== "persistent") {
+      if (remember && !stored.secureResult.storedSecurely) {
         showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
       }
       showSuccess("Cuenta creada.");
@@ -553,7 +553,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           setSessionCheckError("");
           setShowAddAccount(false);
           clearAuthForms();
-          if (remember && stored.finalStorage !== "persistent") {
+          if (remember && !stored.secureResult.storedSecurely) {
             showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
           }
           showSuccess("Cuenta agregada con Google.");

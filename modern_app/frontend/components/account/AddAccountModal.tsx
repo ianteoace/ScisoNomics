@@ -94,7 +94,7 @@ export function AddAccountModal({
         resetForm();
         onClose();
         onAccountAdded?.();
-        if (remember && stored.finalStorage !== "persistent") {
+        if (remember && !stored.secureResult.storedSecurely) {
           showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
         }
         showSuccess("Cuenta agregada con Google.");
@@ -147,7 +147,7 @@ export function AddAccountModal({
       resetForm();
       onClose();
       onAccountAdded?.();
-      if (remember && stored.finalStorage !== "persistent") {
+      if (remember && !stored.secureResult.storedSecurely) {
         showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
       }
       showSuccess(mode === "register" ? "Cuenta creada y agregada correctamente." : existed ? "Cuenta actualizada y activada." : "Cuenta agregada correctamente.");

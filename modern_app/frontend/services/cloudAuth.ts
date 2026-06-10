@@ -1052,8 +1052,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     refreshTokenPresent: Boolean(session.tokens.refreshToken),
   });
   const secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
-  const storage: "persistent" | "session" =
-    requestedStorage === "persistent" && !secureResult.storedSecurely ? "session" : requestedStorage;
+  const storage: "persistent" | "session" = requestedStorage;
   const account: StoredCloudAccount = {
     user: session.user,
     storage,
@@ -1062,6 +1061,8 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
   };
   const accounts = [account, ...state.accounts.filter((item) => item.user.id !== session.user.id)];
   saveStoredAuthState({ activeOwnerId: options.makeActive === false ? state.activeOwnerId : session.user.id, accounts }, { notify: options.notify });
+  const persistedLocalState = typeof window !== "undefined" ? readPersistedAuthStateRaw(window.localStorage, AUTH_STATE_KEY) : null;
+  const metadataPersisted = Boolean(persistedLocalState?.accounts?.some((item) => item.user?.id === session.user.id && item.storage === "persistent"));
   console.info("[auth] account stored", {
     accountId: shortAccountId(session.user.id),
     email: maskEmail(session.user.email),
@@ -1070,7 +1071,10 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     secure: requestedStorage === "persistent" ? secureResult.storedSecurely : false,
     fallbackUsed: secureResult.fallbackUsed,
     roundtrip: secureResult.roundtrip,
-    savedMetadata: true,
+    metadataPersisted,
+    accountsPersisted: persistedLocalState?.accounts?.length || 0,
+    activeOwnerId: shortAccountId(options.makeActive === false ? state.activeOwnerId : session.user.id),
+    localStorageHasToken: false,
     finalStorage: storage,
   });
   return {
