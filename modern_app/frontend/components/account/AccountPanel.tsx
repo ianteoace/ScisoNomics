@@ -286,7 +286,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     event.preventDefault();
     if (!configured || submitting) return;
     setSubmitting(true);
-    console.info("[auth] login submit", { mode: "login", remember });
+    console.info("[auth] login submit", JSON.stringify({ mode: "login", remember }));
     try {
       const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
@@ -319,7 +319,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       return;
     }
     setSubmitting(true);
-    console.info("[auth] login submit", { mode: "register", remember });
+    console.info("[auth] login submit", JSON.stringify({ mode: "register", remember }));
     try {
       const response = await cloudAuth.register({
         display_name: displayName || null,
@@ -532,7 +532,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       return;
     }
     setSubmitting(true);
-    console.info("[auth] login submit", { mode: "google", remember });
+    console.info("[auth] login submit", JSON.stringify({ mode: "google", remember }));
     try {
       const result = await cloudAuth.googleStart();
       if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {

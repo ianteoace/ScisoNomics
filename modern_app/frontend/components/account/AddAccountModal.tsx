@@ -112,7 +112,7 @@ export function AddAccountModal({
   async function handleGoogleLogin() {
     if (!configured || submitting || googleWaiting) return;
     setError("");
-    console.info("[auth] login submit", { mode: "google", remember });
+    console.info("[auth] login submit", JSON.stringify({ mode: "google", remember }));
     googleCancelledRef.current = false;
     setGoogleWaiting(true);
     try {
@@ -137,7 +137,7 @@ export function AddAccountModal({
     }
     setSubmitting(true);
     setError("");
-    console.info("[auth] login submit", { mode, remember });
+    console.info("[auth] login submit", JSON.stringify({ mode, remember }));
     try {
       const accountsBefore = getStoredAccounts();
       const response =

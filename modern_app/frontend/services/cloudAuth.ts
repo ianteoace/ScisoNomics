@@ -125,6 +125,7 @@ let lastHydratedAuthStateRevision = -1;
 let isHydratingSecureTokens = false;
 let hasHydratedSecureTokensThisBoot = false;
 let lastHydrateResult: { loadedAny: boolean; accountsChecked: number; persistentAccounts: number; reason: string } | null = null;
+let lastMetadataLoadedLog = "";
 
 function emptyAuthState(): StoredAuthState {
   return { activeOwnerId: LOCAL_OWNER_ID, accounts: [] };
@@ -162,10 +163,10 @@ async function invokeCore<T>(command: string, args?: Record<string, unknown>): P
     const { invoke } = await import("@tauri-apps/api/core");
     return (await invoke(command, args)) as T;
   } catch (error) {
-    console.warn("[auth] secure token command failed", {
+    console.warn("[auth] secure token command failed", JSON.stringify(sanitizeAuthLogValue({
       command,
       errorType: error instanceof Error ? error.name : typeof error,
-    });
+    })));
     return null;
   }
 }
@@ -373,8 +374,39 @@ function saveSplitState(state: StoredAuthState) {
   }
 }
 
+function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    const normalized = value.toLowerCase();
+    if (normalized.includes("bearer ") || normalized.includes("authorization") || normalized.includes("jwt")) return "[redacted]";
+    return value;
+  }
+  if (typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeAuthLogValue(item, keyPath));
+
+  const entries = Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isSensitiveKey =
+      normalizedKey === "token"
+      || normalizedKey === "accesstoken"
+      || normalizedKey === "refreshtoken"
+      || normalizedKey === "authorization"
+      || normalizedKey === "jwt"
+      || normalizedKey === "bearer";
+    if (isSensitiveKey) return [key, "[redacted]"];
+    return [key, sanitizeAuthLogValue(nestedValue, keyPath ? `${keyPath}.${key}` : key)];
+  });
+  return Object.fromEntries(entries);
+}
+
 function logAuthLifecycle(stage: string, details?: Record<string, unknown>) {
-  console.info("[auth]", stage, details || {});
+  const safeDetails = sanitizeAuthLogValue(details || {}) as Record<string, unknown>;
+  const payload = JSON.stringify(safeDetails);
+  if (stage === "auth metadata loaded") {
+    if (payload === lastMetadataLoadedLog) return;
+    lastMetadataLoadedLog = payload;
+  }
+  console.info(`[auth] ${stage}`, payload);
 }
 
 function accountTimeValue(value?: string) {
@@ -485,7 +517,7 @@ function normalizeState(state: StoredAuthState): StoredAuthState {
     const discard = keep === account ? existing : account;
     byEmail.set(emailKey, keep);
     discardedOwnerMap.set(discard.user.id, keep.user.id);
-    console.info("[auth] deduped stored account by normalized email", {
+    logAuthLifecycle("deduped stored account by normalized email", {
       email: maskEmail(emailKey),
       keptUserId: shortUserId(keep.user.id),
       removedUserId: shortUserId(discard.user.id),
@@ -517,7 +549,7 @@ function migrateLegacySessionIfNeeded() {
     tokenType: "bearer",
   });
   removeLegacySessionKeys();
-  console.info("[auth] migrated legacy single session", { userId: shortUserId(user.id), email: maskEmail(user.email), storage });
+  logAuthLifecycle("migrated legacy single session", { userId: shortUserId(user.id), email: maskEmail(user.email), storage });
 }
 
 function readStoredAuthStateSnapshot(): StoredAuthState {
@@ -529,12 +561,14 @@ function readStoredAuthStateSnapshot(): StoredAuthState {
   const merged = normalizeState({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] });
   const originalCount = (sessionState.accounts.length || 0) + (localState.accounts.length || 0);
   if (merged.activeOwnerId !== preferredActive || merged.accounts.length !== originalCount) saveSplitState(merged);
-  logAuthLifecycle("auth metadata loaded", {
+  const metadataDetails = {
     metadataLoaded: merged.accounts.length > 0,
     loadedMetadataAccounts: merged.accounts.length,
     activeOwnerId: shortAccountId(merged.activeOwnerId),
     activeOwnerMatchesAccount: merged.activeOwnerId === LOCAL_OWNER_ID || merged.accounts.some((account) => account.user.id === merged.activeOwnerId),
-  });
+    accountsStorageModes: merged.accounts.map((account) => account.storage),
+  };
+  logAuthLifecycle("auth metadata loaded", metadataDetails);
   return merged;
 }
 
@@ -561,10 +595,15 @@ async function hydratePersistentTokens() {
       logAuthLifecycle("secure token hydrate skipped", { secureStorageAvailable: false });
       return;
     }
-    isHydratingSecureTokens = true;
-    logAuthLifecycle("secure token hydrate start");
     const state = readStoredAuthStateSnapshot();
     const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
+    isHydratingSecureTokens = true;
+    logAuthLifecycle("secure token hydrate start", {
+      loadedAny: false,
+      accountsChecked: 0,
+      persistentAccounts: persistentAccounts.length,
+      reason: "hydrate_requested",
+    });
     let accountsChecked = 0;
     let loadedAny = false;
     for (const account of persistentAccounts) {
@@ -639,7 +678,7 @@ export async function migrateLegacyLocalStorageTokens() {
     });
     if (changed) {
       window.localStorage.setItem(AUTH_STATE_KEY, JSON.stringify({ activeOwnerId: state.activeOwnerId, accounts: migratedAccounts }));
-      console.info("[auth] migrated legacy access tokens out of localStorage", { migratedAccounts: migratedAccounts.length });
+      logAuthLifecycle("migrated legacy access tokens out of localStorage", { migratedAccounts: migratedAccounts.length });
       notifyAccountSessionChanged();
     }
     logAuthLifecycle("secure token migration end", { changed });
@@ -900,6 +939,7 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       refreshTokenFound: false,
       refreshSuccess: false,
       rotatedRefresh: false,
+      reason: "refresh_token_missing",
       secureStorageAvailable: canUseSecurePersistentTokenStorage(),
     });
     return null;
@@ -909,6 +949,7 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
     storage: account.storage,
     tokenSource: "secure",
     refreshTokenFound: true,
+    reason: "access_token_missing_or_expired",
   });
   try {
     const response = await cloudAuth.refresh(refreshToken);
@@ -948,6 +989,8 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       refreshTokenFound: true,
       refreshSuccess: true,
       rotatedRefresh,
+      reason: "refresh_completed",
+      statusCode: 200,
       availability: "active",
     });
     return { ...updatedAccount, token: runtime.accessToken, tokenType: runtime.tokenType, expiresAt: runtime.expiresAt };
@@ -968,6 +1011,8 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       refreshTokenFound: true,
       refreshSuccess: false,
       rotatedRefresh: false,
+      reason: error instanceof CloudAuthRequestError ? `refresh_${error.kind}` : "refresh_unknown",
+      statusCode: error instanceof CloudAuthRequestError ? error.statusCode : null,
       availability: "saved_without_token",
       errorType: error instanceof Error ? error.name : typeof error,
     });
@@ -985,12 +1030,53 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
     ownerId && ownerId !== LOCAL_OWNER_ID
       ? state.accounts.find((item) => item.user.id === ownerId) || null
       : getActiveAccount();
-  if (!account) return null;
+  logAuthLifecycle("getValidAccessToken start", {
+    accountId: account ? shortAccountId(account.user.id) : null,
+    storage: account?.storage || "none",
+    accessTokenValidBefore: false,
+    refreshAttempted: false,
+  });
+  if (!account) {
+    logAuthLifecycle("getValidAccessToken end", {
+      accountId: null,
+      accessTokenValidBefore: false,
+      refreshAttempted: false,
+      tokenAvailable: false,
+      reason: "no_account",
+    });
+    return null;
+  }
   const runtime = mergeTokenIntoAccount(account);
-  if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt)) return runtime;
+  const accessTokenValidBefore = Boolean(runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt));
+  if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt)) {
+    logAuthLifecycle("getValidAccessToken end", {
+      accountId: shortAccountId(account.user.id),
+      accessTokenValidBefore: true,
+      refreshAttempted: false,
+      tokenAvailable: true,
+      reason: "runtime_token_valid",
+    });
+    return runtime;
+  }
   if (account.storage === "session") {
-    if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) return runtime;
+    if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) {
+      logAuthLifecycle("getValidAccessToken end", {
+        accountId: shortAccountId(account.user.id),
+        accessTokenValidBefore: false,
+        refreshAttempted: false,
+        tokenAvailable: true,
+        reason: "runtime_token_still_usable",
+      });
+      return runtime;
+    }
     setRuntimeAccessToken(account.user.id, null);
+    logAuthLifecycle("getValidAccessToken end", {
+      accountId: shortAccountId(account.user.id),
+      accessTokenValidBefore: false,
+      refreshAttempted: false,
+      tokenAvailable: false,
+      reason: "session_token_missing_or_expired",
+    });
     return null;
   }
   if (!activeRefreshPromises.has(account.user.id)) {
@@ -1001,7 +1087,15 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
       }),
     );
   }
-  return activeRefreshPromises.get(account.user.id) || null;
+  const refreshed = (await activeRefreshPromises.get(account.user.id)) || null;
+  logAuthLifecycle("getValidAccessToken end", {
+    accountId: shortAccountId(account.user.id),
+    accessTokenValidBefore,
+    refreshAttempted: true,
+    tokenAvailable: Boolean(refreshed?.token),
+    reason: refreshed?.token ? "refresh_result" : "refresh_failed_or_missing",
+  });
+  return refreshed;
 }
 
 export async function forceRefreshActiveCloudSession(): Promise<StoredCloudSession | null> {
@@ -1051,11 +1145,14 @@ export async function getActiveCloudAuthState(): Promise<ActiveCloudAuthState> {
     : account.storage === "persistent"
       ? "saved_without_token"
       : "session_expired";
+  const runtime = getRuntimeAccessToken(account.user.id);
   logAuthLifecycle("active cloud auth state", {
     accountId: shortAccountId(account.user.id),
     storage: account.storage,
     tokenSource,
-    refreshTokenFound: tokenSource === "secure",
+    refreshTokenFound: Boolean(persistentRefreshTokenCache.get(account.user.id)),
+    accessTokenValid: Boolean(runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)),
+    lastAuthErrorCode,
     secureStorageAvailable,
     availability,
   });
@@ -1339,7 +1436,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
     hasSession: Boolean(session),
   });
   if (!session) return null;
-  console.info("[auth] verify start", { userId: shortUserId(session.user.id), email: maskEmail(session.user.email) });
+  logAuthLifecycle("verify start", { userId: shortUserId(session.user.id), email: maskEmail(session.user.email) });
   try {
     const user = await cloudAuth.me(session.token);
     await addOrUpdateAccount({
@@ -1351,10 +1448,10 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
         refreshToken: session.storage === "persistent" ? await loadCloudToken(session.user.id) : null,
       },
     }, { remember: session.storage === "persistent", makeActive: state.activeOwnerId === session.user.id, notify: false });
-    console.info("[auth] verify success", { userId: shortUserId(user.id), email: maskEmail(user.email) });
+    logAuthLifecycle("verify success", { userId: shortUserId(user.id), email: maskEmail(user.email) });
     return { ...session, user };
   } catch (error) {
-    console.warn("[auth] verify failed", { errorType: error instanceof Error ? error.name : typeof error });
+    console.warn("[auth] verify failed", JSON.stringify(sanitizeAuthLogValue({ errorType: error instanceof Error ? error.name : typeof error })));
     if (error instanceof CloudAuthRequestError && error.kind === "auth") {
       setRuntimeAccessToken(session.user.id, null);
       if (session.storage === "persistent") {
