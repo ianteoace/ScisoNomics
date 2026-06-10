@@ -108,6 +108,30 @@ type SaveCloudTokenResult = {
   fallbackUsed: boolean;
   roundtrip: boolean;
   secureStorageAvailable: boolean;
+  errorCode?: string | null;
+};
+
+type SecureRefreshTokenSaveCommandResult = {
+  ok: boolean;
+  roundtrip: boolean;
+  error_code: string | null;
+  service: string;
+  account_id_hash: string;
+};
+
+type SecureRefreshTokenLoadCommandResult = {
+  found: boolean;
+  token: string | null;
+  error_code: string | null;
+  service: string;
+  account_id_hash: string;
+};
+
+type SecureRefreshTokenDeleteCommandResult = {
+  ok: boolean;
+  error_code: string | null;
+  service: string;
+  account_id_hash: string;
 };
 
 const persistentRefreshTokenCache = new Map<string, string>();
@@ -176,23 +200,30 @@ async function savePersistentCloudTokenSecure(accountId: string, token: string) 
     accountId: shortAccountId(accountId),
     secureStorageAvailable: canUseSecurePersistentTokenStorage(),
   });
-  const saved = await invokeCore<boolean>("save_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId), token });
+  const saved = await invokeCore<SecureRefreshTokenSaveCommandResult>("save_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId), token });
   logAuthLifecycle("secure refresh token save end", {
     accountId: shortAccountId(accountId),
     secureStorageAvailable: canUseSecurePersistentTokenStorage(),
-    success: saved === true,
+    success: Boolean(saved?.ok),
+    roundtrip: Boolean(saved?.roundtrip),
+    errorCode: saved?.error_code || null,
+    service: saved?.service || null,
+    accountIdHash: saved?.account_id_hash || null,
   });
-  return saved === true;
+  return saved;
 }
 
 async function loadPersistentCloudTokenSecure(accountId: string) {
-  const token = await invokeCore<string | null>("load_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId) });
+  const result = await invokeCore<SecureRefreshTokenLoadCommandResult>("load_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId) });
   logAuthLifecycle("secure refresh token load", {
     accountId: shortAccountId(accountId),
     secureStorageAvailable: canUseSecurePersistentTokenStorage(),
-    refreshTokenFound: Boolean(typeof token === "string" && token.trim()),
+    refreshTokenFound: Boolean(result?.found && typeof result.token === "string" && result.token.trim()),
+    errorCode: result?.error_code || null,
+    service: result?.service || null,
+    accountIdHash: result?.account_id_hash || null,
   });
-  return typeof token === "string" && token.trim() ? token : null;
+  return result;
 }
 
 async function deletePersistentCloudTokenSecure(accountId: string) {
@@ -200,7 +231,7 @@ async function deletePersistentCloudTokenSecure(accountId: string) {
     accountId: shortAccountId(accountId),
     secureStorageAvailable: canUseSecurePersistentTokenStorage(),
   });
-  await invokeCore<boolean>("delete_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId) });
+  return invokeCore<SecureRefreshTokenDeleteCommandResult>("delete_persistent_cloud_refresh_token", { accountId: normalizePersistentAccountId(accountId) });
 }
 
 function notifyAccountSessionChanged() {
@@ -610,8 +641,9 @@ async function hydratePersistentTokens() {
       if (persistentRefreshTokenCache.has(account.user.id)) continue;
       accountsChecked += 1;
       const token = await loadPersistentCloudTokenSecure(account.user.id);
-      if (token) {
-        persistentRefreshTokenCache.set(account.user.id, token);
+      const value = token?.found && typeof token.token === "string" && token.token.trim() ? token.token : null;
+      if (value) {
+        persistentRefreshTokenCache.set(account.user.id, value);
         loadedAny = true;
       }
     }
@@ -818,34 +850,33 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
     accountId: shortAccountId(normalizedAccountId),
     storage: mode,
     secureStorageAvailable: true,
+    refreshTokenLength: tokens.refreshToken.length,
   });
   const saved = await savePersistentCloudTokenSecure(normalizedAccountId, tokens.refreshToken);
-  if (!saved) {
+  if (!saved?.ok) {
     persistentRefreshTokenCache.delete(normalizedAccountId);
-    setLastAuthErrorCode("secure_refresh_save_failed");
+    setLastAuthErrorCode(saved?.error_code || "secure_refresh_save_failed");
     logAuthLifecycle("secure token save end", {
       accountId: shortAccountId(normalizedAccountId),
       storage: mode,
       success: false,
       roundtrip: false,
-      errorCode: "secure_refresh_save_failed",
+      errorCode: saved?.error_code || "secure_refresh_save_failed",
     });
-    return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
+    return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true, errorCode: saved?.error_code || "secure_refresh_save_failed" };
   }
-  const loaded = await loadPersistentCloudTokenSecure(normalizedAccountId);
-  const roundtripOk = loaded === tokens.refreshToken;
-  if (!roundtripOk) {
+  if (!saved.roundtrip) {
     persistentRefreshTokenCache.delete(normalizedAccountId);
     await deletePersistentCloudTokenSecure(normalizedAccountId).catch(() => null);
-    setLastAuthErrorCode("secure_refresh_roundtrip_failed");
+    setLastAuthErrorCode(saved.error_code || "keyring_roundtrip_failed");
     logAuthLifecycle("secure token save end", {
       accountId: shortAccountId(normalizedAccountId),
       storage: mode,
       success: false,
       roundtrip: false,
-      errorCode: "secure_refresh_roundtrip_failed",
+      errorCode: saved.error_code || "keyring_roundtrip_failed",
     });
-    return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
+    return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true, errorCode: saved.error_code || "keyring_roundtrip_failed" };
   }
   persistentRefreshTokenCache.set(normalizedAccountId, tokens.refreshToken);
   setLastAuthErrorCode(null);
@@ -857,7 +888,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
     roundtrip: true,
     errorCode: null,
   });
-  return { storedSecurely: true, fallbackUsed: false, roundtrip: true, secureStorageAvailable: true };
+  return { storedSecurely: true, fallbackUsed: false, roundtrip: true, secureStorageAvailable: true, errorCode: null };
 }
 
 export async function loadCloudToken(accountId: string) {
@@ -890,11 +921,13 @@ export async function loadCloudToken(accountId: string) {
     accountId: shortAccountId(normalizedAccountId),
     storage: "persistent",
     secureStorageAvailable: true,
-    refreshTokenFound: Boolean(token),
-    tokenSource: token ? "secure" : "missing",
+    refreshTokenFound: Boolean(token?.found && typeof token.token === "string" && token.token.trim()),
+    tokenSource: token?.found ? "secure" : "missing",
+    errorCode: token?.error_code || null,
   });
-  if (token) persistentRefreshTokenCache.set(normalizedAccountId, token);
-  return token;
+  const value = token?.found && typeof token.token === "string" && token.token.trim() ? token.token : null;
+  if (value) persistentRefreshTokenCache.set(normalizedAccountId, value);
+  return value;
 }
 
 export async function deleteCloudToken(accountId: string) {
@@ -1198,6 +1231,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     remember: options.remember !== false,
     requestedStorage,
     refreshTokenPresent: Boolean(session.tokens.refreshToken),
+    refreshTokenLength: session.tokens.refreshToken?.length || 0,
   });
   const secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
   const storage: "persistent" | "session" =

@@ -1,5 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::hash::{Hash, Hasher};
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
 use std::sync::{
   atomic::{AtomicBool, Ordering},
   Arc, Condvar, Mutex,
@@ -13,9 +16,44 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri::Emitter;
+use serde::Serialize;
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
 const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
+
+#[derive(Debug, Serialize)]
+struct PersistentCloudTokenSaveResult {
+  ok: bool,
+  roundtrip: bool,
+  error_code: Option<String>,
+  service: String,
+  account_id_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PersistentCloudTokenLoadResult {
+  found: bool,
+  token: Option<String>,
+  error_code: Option<String>,
+  service: String,
+  account_id_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PersistentCloudTokenDeleteResult {
+  ok: bool,
+  error_code: Option<String>,
+  service: String,
+  account_id_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RefreshKeyringDebugStatus {
+  service: String,
+  account_id_hash: String,
+  found: bool,
+  error_code: Option<String>,
+}
 
 #[derive(Clone)]
 struct LocalApiToken(String);
@@ -121,73 +159,339 @@ fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
   token.0.clone()
 }
 
+#[cfg(not(target_os = "windows"))]
 fn secure_token_entry(service_name: &str, account_id: &str) -> Result<keyring::Entry, String> {
-  keyring::Entry::new(service_name, account_id).map_err(|error| format!("No se pudo preparar el storage seguro: {error}"))
+  #[cfg(target_os = "windows")]
+  {
+    let target = format!("scisonomics::{service_name}::{account_id}");
+    return keyring::Entry::new_with_target(&target, service_name, account_id)
+      .map_err(|error| format!("No se pudo preparar el storage seguro: {error}"));
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    keyring::Entry::new(service_name, account_id).map_err(|error| format!("No se pudo preparar el storage seguro: {error}"))
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn wincred_target_name(service_name: &str, account_id: &str) -> String {
+  format!("scisonomics::{service_name}::{account_id}")
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide(value: &str) -> Vec<u16> {
+  value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn wincred_last_error() -> u32 {
+  #[link(name = "kernel32")]
+  extern "system" {
+    fn GetLastError() -> u32;
+  }
+  unsafe { GetLastError() }
+}
+
+#[cfg(target_os = "windows")]
+#[allow(non_snake_case)]
+#[repr(C)]
+struct FileTime {
+  dwLowDateTime: u32,
+  dwHighDateTime: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[allow(non_snake_case)]
+#[repr(C)]
+struct CredentialAttributeW {
+  Keyword: *mut u16,
+  Flags: u32,
+  ValueSize: u32,
+  Value: *mut u8,
+}
+
+#[cfg(target_os = "windows")]
+#[allow(non_snake_case)]
+#[repr(C)]
+struct CredentialW {
+  Flags: u32,
+  Type: u32,
+  TargetName: *mut u16,
+  Comment: *mut u16,
+  LastWritten: FileTime,
+  CredentialBlobSize: u32,
+  CredentialBlob: *mut u8,
+  Persist: u32,
+  AttributeCount: u32,
+  Attributes: *mut CredentialAttributeW,
+  TargetAlias: *mut u16,
+  UserName: *mut u16,
+}
+
+#[cfg(target_os = "windows")]
+const CRED_TYPE_GENERIC: u32 = 1;
+#[cfg(target_os = "windows")]
+const CRED_PERSIST_ENTERPRISE: u32 = 3;
+#[cfg(target_os = "windows")]
+const ERROR_NOT_FOUND: u32 = 1168;
+
+#[cfg(target_os = "windows")]
+#[link(name = "Advapi32")]
+extern "system" {
+  fn CredWriteW(credential: *const CredentialW, flags: u32) -> i32;
+  fn CredReadW(target_name: *const u16, cred_type: u32, flags: u32, credential: *mut *mut CredentialW) -> i32;
+  fn CredDeleteW(target_name: *const u16, cred_type: u32, flags: u32) -> i32;
+  fn CredFree(buffer: *mut c_void);
+}
+
+#[cfg(target_os = "windows")]
+fn wincred_write_refresh_token(service_name: &str, account_id: &str, token: &str) -> Result<(), String> {
+  let target = wincred_target_name(service_name, account_id);
+  let mut target_name = to_wide(&target);
+  let mut username = to_wide(account_id);
+  let mut comment = to_wide("ScisoNomics refresh token");
+  let mut blob = token.as_bytes().to_vec();
+  let mut credential = CredentialW {
+    Flags: 0,
+    Type: CRED_TYPE_GENERIC,
+    TargetName: target_name.as_mut_ptr(),
+    Comment: comment.as_mut_ptr(),
+    LastWritten: FileTime { dwLowDateTime: 0, dwHighDateTime: 0 },
+    CredentialBlobSize: blob.len() as u32,
+    CredentialBlob: blob.as_mut_ptr(),
+    Persist: CRED_PERSIST_ENTERPRISE,
+    AttributeCount: 0,
+    Attributes: std::ptr::null_mut(),
+    TargetAlias: std::ptr::null_mut(),
+    UserName: username.as_mut_ptr(),
+  };
+  let result = unsafe { CredWriteW(&mut credential, 0) };
+  blob.fill(0);
+  if result == 0 {
+    return Err(format!("wincred_write_failed:{}", wincred_last_error()));
+  }
+  Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn wincred_read_refresh_token(service_name: &str, account_id: &str) -> Result<Option<String>, String> {
+  let target = wincred_target_name(service_name, account_id);
+  let target_name = to_wide(&target);
+  let mut credential_ptr: *mut CredentialW = std::ptr::null_mut();
+  let result = unsafe { CredReadW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential_ptr) };
+  if result == 0 {
+    let error = wincred_last_error();
+    if error == ERROR_NOT_FOUND {
+      return Ok(None);
+    }
+    return Err(format!("wincred_read_failed:{error}"));
+  }
+  let credential = unsafe { &*credential_ptr };
+  let secret = if credential.CredentialBlob.is_null() || credential.CredentialBlobSize == 0 {
+    None
+  } else {
+    let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
+    Some(String::from_utf8(bytes.to_vec()).map_err(|_| "wincred_invalid_utf8".to_string())?)
+  };
+  if !credential.CredentialBlob.is_null() && credential.CredentialBlobSize > 0 {
+    let bytes = unsafe { std::slice::from_raw_parts_mut(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
+    bytes.fill(0);
+  }
+  unsafe { CredFree(credential_ptr as *mut c_void) };
+  Ok(secret.filter(|value| !value.trim().is_empty()))
+}
+
+#[cfg(target_os = "windows")]
+fn wincred_delete_refresh_token(service_name: &str, account_id: &str) -> Result<(), String> {
+  let target = wincred_target_name(service_name, account_id);
+  let target_name = to_wide(&target);
+  let result = unsafe { CredDeleteW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0) };
+  if result == 0 {
+    let error = wincred_last_error();
+    if error == ERROR_NOT_FOUND {
+      return Ok(());
+    }
+    return Err(format!("wincred_delete_failed:{error}"));
+  }
+  Ok(())
+}
+
+fn hashed_account_id(account_id: &str) -> String {
+  let mut hasher = std::collections::hash_map::DefaultHasher::new();
+  account_id.hash(&mut hasher);
+  format!("{:016x}", hasher.finish())
 }
 
 #[tauri::command]
-fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Result<bool, String> {
+fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Result<PersistentCloudTokenSaveResult, String> {
   let normalized_account_id = account_id.trim();
   let normalized_token = token.trim();
+  let account_id_hash = hashed_account_id(normalized_account_id);
   if normalized_account_id.is_empty() || normalized_token.is_empty() {
-    return Err("No se pudo guardar el refresh token persistente.".to_string());
+    return Ok(PersistentCloudTokenSaveResult {
+      ok: false,
+      roundtrip: false,
+      error_code: Some("invalid_account_id".to_string()),
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    });
   }
-  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
-  entry
-    .set_password(normalized_token)
-    .map_err(|error| format!("No se pudo guardar el refresh token persistente: {error}"))?;
-  if let Ok(legacy_entry) = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id) {
-    let _ = legacy_entry.delete_credential();
-  }
-  Ok(true)
+  #[cfg(target_os = "windows")]
+  let write_result = wincred_write_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id, normalized_token);
+  #[cfg(not(target_os = "windows"))]
+  let write_result = {
+    let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    entry
+      .set_password(normalized_token)
+      .map_err(|error| format!("No se pudo guardar el refresh token persistente: {error}"))
+  };
+  write_result?;
+  #[cfg(target_os = "windows")]
+  let roundtrip = match wincred_read_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id) {
+    Ok(Some(saved_token)) => !saved_token.trim().is_empty(),
+    Ok(None) => false,
+    Err(_) => false,
+  };
+  #[cfg(not(target_os = "windows"))]
+  let roundtrip = {
+    let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    match entry.get_password() {
+      Ok(saved_token) => !saved_token.trim().is_empty(),
+      Err(keyring::Error::NoEntry) => false,
+      Err(_) => false,
+    }
+  };
+  Ok(PersistentCloudTokenSaveResult {
+    ok: true,
+    roundtrip,
+    error_code: if roundtrip { None } else { Some("keyring_roundtrip_failed".to_string()) },
+    service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+    account_id_hash,
+  })
 }
 
 #[tauri::command]
-fn load_persistent_cloud_refresh_token(account_id: String) -> Result<Option<String>, String> {
+fn load_persistent_cloud_refresh_token(account_id: String) -> Result<PersistentCloudTokenLoadResult, String> {
   let normalized_account_id = account_id.trim();
+  let account_id_hash = hashed_account_id(normalized_account_id);
   if normalized_account_id.is_empty() {
-    return Ok(None);
+    return Ok(PersistentCloudTokenLoadResult {
+      found: false,
+      token: None,
+      error_code: Some("invalid_account_id".to_string()),
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    });
   }
-  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
-  match entry.get_password() {
-    Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
-    Ok(_) => Ok(None),
-    Err(keyring::Error::NoEntry) => Ok(None),
-    Err(error) => Err(format!("No se pudo leer el refresh token persistente: {error}")),
+  #[cfg(target_os = "windows")]
+  let load_result = wincred_read_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id);
+  #[cfg(not(target_os = "windows"))]
+  let load_result = {
+    let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    match entry.get_password() {
+      Ok(token) if !token.trim().is_empty() => Ok(Some(token)),
+      Ok(_) => Ok(None),
+      Err(keyring::Error::NoEntry) => Ok(None),
+      Err(error) => Err(format!("keyring_error:{error}")),
+    }
+  };
+  match load_result {
+    Ok(Some(token)) => Ok(PersistentCloudTokenLoadResult {
+      found: true,
+      token: Some(token),
+      error_code: None,
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    }),
+    Ok(None) => Ok(PersistentCloudTokenLoadResult {
+      found: false,
+      token: None,
+      error_code: Some("no_entry".to_string()),
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    }),
+    Err(error) => Ok(PersistentCloudTokenLoadResult {
+      found: false,
+      token: None,
+      error_code: Some(error),
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    }),
   }
 }
 
 #[tauri::command]
-fn delete_persistent_cloud_refresh_token(account_id: String) -> Result<bool, String> {
+fn delete_persistent_cloud_refresh_token(account_id: String) -> Result<PersistentCloudTokenDeleteResult, String> {
   let normalized_account_id = account_id.trim();
+  let account_id_hash = hashed_account_id(normalized_account_id);
   if normalized_account_id.is_empty() {
-    return Ok(false);
+    return Ok(PersistentCloudTokenDeleteResult {
+      ok: false,
+      error_code: Some("invalid_account_id".to_string()),
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+    });
   }
-  let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
-  match entry.delete_credential() {
-    Ok(()) | Err(keyring::Error::NoEntry) => {}
-    Err(error) => return Err(format!("No se pudo borrar el refresh token persistente: {error}")),
+  #[cfg(target_os = "windows")]
+  {
+    wincred_delete_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    wincred_delete_refresh_token(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
   }
-  let legacy_entry = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
-  match legacy_entry.delete_credential() {
-    Ok(()) | Err(keyring::Error::NoEntry) => Ok(true),
-    Err(error) => Err(format!("No se pudo borrar el refresh token persistente legacy: {error}")),
+  #[cfg(not(target_os = "windows"))]
+  {
+    let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    match entry.delete_credential() {
+      Ok(()) | Err(keyring::Error::NoEntry) => {}
+      Err(error) => return Err(format!("No se pudo borrar el refresh token persistente: {error}")),
+    }
+    let legacy_entry = secure_token_entry(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    match legacy_entry.delete_credential() {
+      Ok(()) | Err(keyring::Error::NoEntry) => {}
+      Err(error) => return Err(format!("No se pudo borrar el refresh token persistente legacy: {error}")),
+    }
   }
+  Ok(PersistentCloudTokenDeleteResult {
+    ok: true,
+    error_code: None,
+    service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+    account_id_hash,
+  })
 }
 
 #[tauri::command]
-fn save_persistent_cloud_token(account_id: String, token: String) -> Result<bool, String> {
+fn save_persistent_cloud_token(account_id: String, token: String) -> Result<PersistentCloudTokenSaveResult, String> {
   save_persistent_cloud_refresh_token(account_id, token)
 }
 
 #[tauri::command]
-fn load_persistent_cloud_token(account_id: String) -> Result<Option<String>, String> {
+fn load_persistent_cloud_token(account_id: String) -> Result<PersistentCloudTokenLoadResult, String> {
   load_persistent_cloud_refresh_token(account_id)
 }
 
 #[tauri::command]
-fn delete_persistent_cloud_token(account_id: String) -> Result<bool, String> {
+fn delete_persistent_cloud_token(account_id: String) -> Result<PersistentCloudTokenDeleteResult, String> {
   delete_persistent_cloud_refresh_token(account_id)
+}
+
+#[tauri::command]
+fn debug_refresh_keyring_status(account_id: String) -> Result<RefreshKeyringDebugStatus, String> {
+  let normalized_account_id = account_id.trim();
+  let account_id_hash = hashed_account_id(normalized_account_id);
+  if normalized_account_id.is_empty() {
+    return Ok(RefreshKeyringDebugStatus {
+      service: CLOUD_REFRESH_TOKEN_SERVICE_NAME.to_string(),
+      account_id_hash,
+      found: false,
+      error_code: Some("invalid_account_id".to_string()),
+    });
+  }
+  let load_result = load_persistent_cloud_refresh_token(normalized_account_id.to_string())?;
+  Ok(RefreshKeyringDebugStatus {
+    service: load_result.service,
+    account_id_hash: load_result.account_id_hash,
+    found: load_result.found,
+    error_code: load_result.error_code,
+  })
 }
 
 #[tauri::command]
@@ -472,6 +776,7 @@ pub fn run() {
       save_persistent_cloud_refresh_token,
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
+      debug_refresh_keyring_status,
       complete_app_close_sync,
       set_app_close_sync_timeout
     ])
@@ -581,4 +886,43 @@ pub fn run() {
         stop_backend_sidecar(&exit_backend_child, &exit_local_api_token);
       }
     });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn keyring_refresh_token_roundtrip_dummy() {
+    let account_id = "debug-keyring-test";
+    let token = "dummy-refresh-token";
+
+    let _ = delete_persistent_cloud_refresh_token(account_id.to_string());
+
+    let save_result = save_persistent_cloud_refresh_token(account_id.to_string(), token.to_string())
+      .expect("save command should return a structured result");
+    println!("save_result={save_result:?}");
+    assert!(save_result.ok, "save should report ok=true");
+    assert!(save_result.roundtrip, "save should report roundtrip=true");
+
+    let load_result = load_persistent_cloud_refresh_token(account_id.to_string())
+      .expect("load command should return a structured result");
+    println!(
+      "load_result={{ found: {}, error_code: {:?}, service: {}, account_id_hash: {} }}",
+      load_result.found,
+      load_result.error_code,
+      load_result.service,
+      load_result.account_id_hash
+    );
+    assert!(load_result.found, "load should report found=true");
+    assert!(load_result.token.is_some(), "load should return the dummy token");
+
+    let delete_result = delete_persistent_cloud_refresh_token(account_id.to_string())
+      .expect("delete command should return a structured result");
+    assert!(delete_result.ok, "delete should report ok=true");
+
+    let final_load = load_persistent_cloud_refresh_token(account_id.to_string())
+      .expect("final load should return a structured result");
+    assert!(!final_load.found, "load after delete should report found=false");
+  }
 }
