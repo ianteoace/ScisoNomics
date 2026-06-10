@@ -120,6 +120,11 @@ let tokenMaintenanceQueued = false;
 let lastAuthErrorCode: string | null = null;
 let lastRefreshSuccess: boolean | null = null;
 let lastRotatedRefresh: boolean | null = null;
+let authStateRevision = 0;
+let lastHydratedAuthStateRevision = -1;
+let isHydratingSecureTokens = false;
+let hasHydratedSecureTokensThisBoot = false;
+let lastHydrateResult: { loadedAny: boolean; accountsChecked: number; persistentAccounts: number; reason: string } | null = null;
 
 function emptyAuthState(): StoredAuthState {
   return { activeOwnerId: LOCAL_OWNER_ID, accounts: [] };
@@ -550,16 +555,21 @@ function getStoredTokenSource(account: StoredCloudAccount | null): CloudTokenSou
 
 async function hydratePersistentTokens() {
   if (persistentTokenHydrationPromise) return persistentTokenHydrationPromise;
+  if (isHydratingSecureTokens) return Promise.resolve();
   persistentTokenHydrationPromise = (async () => {
     if (typeof window === "undefined" || !canUseSecurePersistentTokenStorage()) {
       logAuthLifecycle("secure token hydrate skipped", { secureStorageAvailable: false });
       return;
     }
+    isHydratingSecureTokens = true;
     logAuthLifecycle("secure token hydrate start");
     const state = readStoredAuthStateSnapshot();
+    const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
+    let accountsChecked = 0;
     let loadedAny = false;
-    for (const account of state.accounts) {
-      if (account.storage !== "persistent" || persistentRefreshTokenCache.has(account.user.id)) continue;
+    for (const account of persistentAccounts) {
+      if (persistentRefreshTokenCache.has(account.user.id)) continue;
+      accountsChecked += 1;
       const token = await loadPersistentCloudTokenSecure(account.user.id);
       if (token) {
         persistentRefreshTokenCache.set(account.user.id, token);
@@ -567,8 +577,37 @@ async function hydratePersistentTokens() {
       }
     }
     if (loadedAny) notifyAccountSessionChanged();
-    logAuthLifecycle("secure token hydrate end", { loadedAny });
+    hasHydratedSecureTokensThisBoot = true;
+    lastHydratedAuthStateRevision = authStateRevision;
+    const hydrateReason = loadedAny
+      ? "hydrated_refresh_tokens"
+      : accountsChecked > 0
+        ? "no_refresh_tokens_found"
+        : "already_cached_or_no_persistent_accounts";
+    lastHydrateResult = {
+      loadedAny,
+      accountsChecked,
+      persistentAccounts: persistentAccounts.length,
+      reason: hydrateReason,
+    };
+    if (!loadedAny && accountsChecked > 0) {
+      logAuthLifecycle("secure token hydrate end", {
+        loadedAny: false,
+        reason: "no_refresh_tokens_found",
+        accountsChecked,
+        persistentAccounts: persistentAccounts.length,
+        availability: persistentAccounts.length > 0 ? "saved_without_token" : "none",
+      });
+      return;
+    }
+    logAuthLifecycle("secure token hydrate end", {
+      loadedAny,
+      reason: hydrateReason,
+      accountsChecked,
+      persistentAccounts: persistentAccounts.length,
+    });
   })().finally(() => {
+    isHydratingSecureTokens = false;
     persistentTokenHydrationPromise = null;
   });
   return persistentTokenHydrationPromise;
@@ -616,7 +655,13 @@ function queueTokenMigration() {
   queueMicrotask(() => {
     tokenMaintenanceQueued = false;
     void migrateLegacyLocalStorageTokens();
-    void hydratePersistentTokens();
+    const shouldHydrate =
+      canUseSecurePersistentTokenStorage() &&
+      !isHydratingSecureTokens &&
+      (!hasHydratedSecureTokensThisBoot || lastHydratedAuthStateRevision !== authStateRevision);
+    if (shouldHydrate) {
+      void hydratePersistentTokens();
+    }
   });
 }
 
@@ -633,6 +678,7 @@ export function getStoredAuthState(): StoredAuthState {
 export function saveStoredAuthState(state: StoredAuthState, options: { notify?: boolean } = {}) {
   const normalized = normalizeState(state);
   saveSplitState(normalized);
+  authStateRevision += 1;
   logAuthLifecycle("auth metadata saved", {
     loadedMetadataAccounts: normalized.accounts.length,
     activeOwnerId: shortUserId(normalized.activeOwnerId),
@@ -713,6 +759,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       accountId: shortAccountId(normalizedAccountId),
       storage: mode,
       secureStorageAvailable: false,
+      errorCode: "secure_storage_unavailable",
     });
     setLastAuthErrorCode("secure_storage_unavailable");
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: false };
@@ -723,6 +770,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       storage: mode,
       secureStorageAvailable: true,
       reason: "missing_refresh_token",
+      errorCode: "missing_refresh_token",
     });
     setLastAuthErrorCode("missing_refresh_token");
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
@@ -741,6 +789,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       storage: mode,
       success: false,
       roundtrip: false,
+      errorCode: "secure_refresh_save_failed",
     });
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
   }
@@ -755,6 +804,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       storage: mode,
       success: false,
       roundtrip: false,
+      errorCode: "secure_refresh_roundtrip_failed",
     });
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
   }
@@ -766,6 +816,7 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
     storage: mode,
     success: true,
     roundtrip: true,
+    errorCode: null,
   });
   return { storedSecurely: true, fallbackUsed: false, roundtrip: true, secureStorageAvailable: true };
 }
@@ -1064,7 +1115,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
   saveStoredAuthState({ activeOwnerId: options.makeActive === false ? state.activeOwnerId : session.user.id, accounts }, { notify: options.notify });
   const persistedLocalState = typeof window !== "undefined" ? readPersistedAuthStateRaw(window.localStorage, AUTH_STATE_KEY) : null;
   const metadataPersisted = Boolean(persistedLocalState?.accounts?.some((item) => item.user?.id === session.user.id && item.storage === "persistent"));
-  console.info("[auth] account stored", {
+  logAuthLifecycle("auth metadata persisted", {
     accountId: shortAccountId(session.user.id),
     email: maskEmail(session.user.email),
     storage,
