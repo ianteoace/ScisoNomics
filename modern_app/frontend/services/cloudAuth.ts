@@ -1052,7 +1052,8 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     refreshTokenPresent: Boolean(session.tokens.refreshToken),
   });
   const secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
-  const storage: "persistent" | "session" = requestedStorage;
+  const storage: "persistent" | "session" =
+    requestedStorage === "persistent" && !secureResult.storedSecurely ? "session" : requestedStorage;
   const account: StoredCloudAccount = {
     user: session.user,
     storage,
@@ -1226,7 +1227,9 @@ export const cloudAuth = {
     const response = await cloudRequest<CloudAuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
     logAuthLifecycle("register response", {
       accountId: shortAccountId(response.user.id),
+      accessTokenPresent: Boolean(response.access_token),
       refreshTokenPresent: Boolean(response.refresh_token),
+      expiresIn: response.expires_in,
     });
     return response;
   },
@@ -1234,7 +1237,9 @@ export const cloudAuth = {
     const response = await cloudRequest<CloudAuthResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) });
     logAuthLifecycle("login response", {
       accountId: shortAccountId(response.user.id),
+      accessTokenPresent: Boolean(response.access_token),
       refreshTokenPresent: Boolean(response.refresh_token),
+      expiresIn: response.expires_in,
     });
     return response;
   },
@@ -1260,7 +1265,9 @@ export const cloudAuth = {
     if (response.status === "completed") {
       logAuthLifecycle("google status response", {
         accountId: shortAccountId(response.user.id),
+        accessTokenPresent: Boolean(response.access_token),
         refreshTokenPresent: Boolean(response.refresh_token),
+        expiresIn: response.expires_in,
       });
     }
     return response;
