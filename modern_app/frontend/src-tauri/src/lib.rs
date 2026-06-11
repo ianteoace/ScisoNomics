@@ -287,17 +287,20 @@ fn wincred_read_refresh_token(service_name: &str, account_id: &str) -> Result<Op
     return Err(format!("wincred_read_failed:{error}"));
   }
   let credential = unsafe { &*credential_ptr };
-  let secret = if credential.CredentialBlob.is_null() || credential.CredentialBlobSize == 0 {
-    None
+  let secret_result = if credential.CredentialBlob.is_null() || credential.CredentialBlobSize == 0 {
+    Ok(None)
   } else {
     let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
-    Some(String::from_utf8(bytes.to_vec()).map_err(|_| "wincred_invalid_utf8".to_string())?)
+    String::from_utf8(bytes.to_vec())
+      .map(|value| Some(value))
+      .map_err(|_| "wincred_invalid_utf8".to_string())
   };
   if !credential.CredentialBlob.is_null() && credential.CredentialBlobSize > 0 {
     let bytes = unsafe { std::slice::from_raw_parts_mut(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
     bytes.fill(0);
   }
   unsafe { CredFree(credential_ptr as *mut c_void) };
+  let secret = secret_result?;
   Ok(secret.filter(|value| !value.trim().is_empty()))
 }
 

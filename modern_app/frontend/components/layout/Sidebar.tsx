@@ -12,6 +12,7 @@ import {
   OWNER_CHANGED_EVENT,
   cloudAuth,
   getActiveAccount,
+  getCloudAuthDiagnostics,
   getActiveCloudAuthState,
   getActiveCloudSessionAsync,
   getActiveOwnerId,
@@ -136,18 +137,41 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     router.push("/configuracion?panel=cuenta");
   }
 
-  function switchSidebarOwner(ownerId: string) {
+  async function switchSidebarOwner(ownerId: string) {
     if (ownerId === "local") {
       switchToLocalMode();
-    } else {
-      switchActiveOwner(ownerId);
+      setActiveOwnerId(getActiveOwnerId());
+      setAccountUser(null);
+      setAccountAvailability("local");
+      setAccounts(getStoredAccounts());
+      setAccountMenuOpen(false);
+      return;
     }
+
+    switchActiveOwner(ownerId);
     setActiveOwnerId(getActiveOwnerId());
-    const session = getActiveAccount();
-    setAccountUser(session?.user || null);
-    setAccountAvailability(ownerId === "local" ? "local" : session ? "saved_without_token" : "none");
+    const account = getActiveAccount();
+    setAccountUser(account?.user || null);
     setAccounts(getStoredAccounts());
     setAccountMenuOpen(false);
+
+    try {
+      const authState = await getActiveCloudAuthState();
+      const diagnostics = await getCloudAuthDiagnostics();
+      const expiredByAuth =
+        diagnostics.lastAuthErrorCode === "refresh_http_401"
+        || diagnostics.lastAuthErrorCode === "refresh_http_403"
+        || diagnostics.lastAuthErrorCode === "refresh_auth";
+      if (authState.availability === "active") {
+        setAccountAvailability("active");
+      } else if (expiredByAuth) {
+        setAccountAvailability("session_expired");
+      } else {
+        setAccountAvailability(authState.availability);
+      }
+    } catch {
+      setAccountAvailability("saved_without_token");
+    }
   }
 
   function accountDisplay(account: StoredCloudAccount) {
@@ -191,7 +215,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-900"
-                  onClick={() => switchSidebarOwner("local")}
+                  onClick={() => void switchSidebarOwner("local")}
                   role="menuitem"
                 >
                   <CircleUserRound size={16} className="text-slate-500 dark:text-slate-400" />
@@ -209,7 +233,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                       key={account.user.id}
                       type="button"
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:bg-slate-900"
-                      onClick={() => switchSidebarOwner(account.user.id)}
+                      onClick={() => void switchSidebarOwner(account.user.id)}
                       role="menuitem"
                     >
                       <CircleUserRound size={16} className="text-sky-500" />

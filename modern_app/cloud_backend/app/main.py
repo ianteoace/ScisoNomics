@@ -407,12 +407,20 @@ def parse_sync_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return ensure_utc_aware(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
         try:
-            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+            return ensure_utc_aware(datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S"))
         except ValueError:
             return None
+
+
+def ensure_utc_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 SYNC_TABLES = ("categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags")

@@ -677,7 +677,9 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       ) : user && !showAddAccount ? (
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
-          <h3 className="mt-2 text-2xl font-semibold">Sesión iniciada</h3>
+          <h3 className="mt-2 text-2xl font-semibold">
+            {sessionAvailable ? "Sesión iniciada" : sessionCheckError ? "Sesión no disponible" : "Cuenta guardada"}
+          </h3>
           <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">Usuario</p>
             <p className="mt-1 font-semibold">{user.display_name || user.email}</p>
