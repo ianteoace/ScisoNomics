@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { API_URL } from "../../services/http";
+import packageJson from "../../package.json";
 
 type HealthResponse = {
   ok: boolean;
@@ -31,13 +32,23 @@ type ReadyResponse = {
 const MAX_WAIT_MS = 20_000;
 const RETRY_MS = 800;
 const ATTEMPT_TIMEOUT_MS = 2_500;
-const FRONTEND_VERSION = "3.1.0";
+const FRONTEND_VERSION = packageJson.version;
 const REPAIR_ROUTE = "/configuracion?section=diagnostico";
 const LIMITED_READY_STATUSES = new Set<ReadyResponse["status"]>(["degraded", "repair_required", "migration_failed", "critical"]);
 const REPAIR_READY_STATUSES = new Set<ReadyResponse["status"]>(["repair_required", "migration_failed", "critical"]);
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function versionMajorMinor(value?: string | null) {
+  const match = String(value || "").trim().match(/^(\d+)\.(\d+)/);
+  return match ? `${match[1]}.${match[2]}` : null;
+}
+
+function isCompatibleAppVersion(frontendVersion?: string | null, backendVersion?: string | null) {
+  if (!frontendVersion || !backendVersion) return true;
+  return versionMajorMinor(frontendVersion) === versionMajorMinor(backendVersion);
 }
 
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {
@@ -64,7 +75,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
       setError(false);
       setErrorDescription("");
       setLimitedReady(null);
-      setStatusText("Estamos preparando la aplicacion y tus datos locales...");
+      setStatusText("Estamos preparando la aplicación y tus datos locales...");
 
       const startedAt = Date.now();
       let lastError = "Sin respuesta";
@@ -89,16 +100,16 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
           try {
             health = JSON.parse(raw) as HealthResponse;
           } catch {
-            lastError = raw || "El servicio local no devolvio una respuesta valida.";
+            lastError = raw || "El servicio local no devolvió una respuesta válida.";
           }
 
           console.info("Startup health response", { attempt, status: response.status, health });
 
           if (response.ok && health?.ok) {
-            if (health?.version && health.version !== FRONTEND_VERSION) {
+            if (health?.version && !isCompatibleAppVersion(FRONTEND_VERSION, health.version)) {
               console.error("Backend/frontend version mismatch", { frontendVersion: FRONTEND_VERSION, backendVersion: health.version });
               setErrorDescription(
-                "Detectamos que el servicio local no coincide con la version instalada. Cerra ScisoNomics y volve a abrirla. Si el problema continua, reinstala la ultima version sin omitir archivos.",
+                "Detectamos una incompatibilidad entre la aplicación y el servicio local. Cerrá ScisoNomics y volvé a abrirla. Si el problema continúa, reinstalá la última versión sin omitir archivos.",
               );
               setError(true);
               return;
@@ -112,15 +123,15 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
             try {
               readiness = JSON.parse(readyRaw) as ReadyResponse;
             } catch {
-              lastError = readyRaw || "El servicio local no devolvio una respuesta valida.";
+              lastError = readyRaw || "El servicio local no devolvió una respuesta válida.";
             }
 
             console.info("Startup ready response", { attempt, status: readyResponse.status, readiness });
 
-            if (readiness?.version && readiness.version !== FRONTEND_VERSION) {
+            if (readiness?.version && !isCompatibleAppVersion(FRONTEND_VERSION, readiness.version)) {
               console.error("Backend/frontend version mismatch", { frontendVersion: FRONTEND_VERSION, backendVersion: readiness.version });
               setErrorDescription(
-                "Detectamos que el servicio local no coincide con la version instalada. Cerra ScisoNomics y volve a abrirla. Si el problema continua, reinstala la ultima version sin omitir archivos.",
+                "Detectamos una incompatibilidad entre la aplicación y el servicio local. Cerrá ScisoNomics y volvé a abrirla. Si el problema continúa, reinstalá la última versión sin omitir archivos.",
               );
               setError(true);
               return;
@@ -181,14 +192,14 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
         lastStatus,
       });
       setError(true);
-      setErrorDescription("No pudimos conectar con el servicio local. Proba reiniciar la app o intenta nuevamente en unos segundos.");
+      setErrorDescription("No pudimos conectar con el servicio local. Probá reiniciar la app o intentá nuevamente en unos segundos.");
     };
 
     run().catch((err) => {
       if (!active) return;
       console.error("Startup gate fatal error", err);
       setError(true);
-      setErrorDescription("No pudimos iniciar ScisoNomics. Proba reiniciar la app.");
+      setErrorDescription("No pudimos iniciar ScisoNomics. Probá reiniciar la app.");
     });
 
     return () => {
@@ -202,10 +213,10 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
         <div className="card w-full max-w-xl p-8 text-center">
           <h1 className="text-2xl font-bold">No se pudo iniciar ScisoNomics.</h1>
           <p className="mt-3 text-sm text-slate-300">
-            {errorDescription || "No pudimos conectar con el servicio local. Proba reiniciar la app o intenta nuevamente en unos segundos."}
+            {errorDescription || "No pudimos conectar con el servicio local. Probá reiniciar la app o intentá nuevamente en unos segundos."}
           </p>
           <p className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            Si estabas actualizando, no elijas omitir archivos del instalador. Cerra ScisoNomics y scisonomics-backend.exe desde el Administrador de tareas antes de intentar nuevamente.
+            Si estabas actualizando, no elijas omitir archivos del instalador. Cerrá ScisoNomics y scisonomics-backend.exe desde el Administrador de tareas antes de intentar nuevamente.
           </p>
           <button className="btn mt-5" onClick={() => setRetryKey((value) => value + 1)}>
             Reintentar
@@ -220,7 +231,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
       <div className="grid min-h-screen place-items-center p-6">
         <div className="card w-full max-w-xl p-8 text-center">
           <h1 className="text-3xl font-bold">Iniciando ScisoNomics</h1>
-          <p className="mt-3 text-base">Estamos preparando la aplicacion y tus datos locales.</p>
+          <p className="mt-3 text-base">Estamos preparando la aplicación y tus datos locales.</p>
           <div className="mx-auto mt-6 h-10 w-10 animate-spin rounded-full border-2 border-slate-500/40 border-t-cyan-400" />
           <p className="mt-4 text-xs text-slate-400">{statusText}</p>
         </div>
@@ -235,10 +246,10 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
           <div className="mx-auto flex max-w-7xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="font-semibold">
-                {limitedReady.message || "ScisoNomics abrio en modo reparacion porque tus datos locales necesitan una revision."}
+                {limitedReady.message || "ScisoNomics abrió en modo reparación porque tus datos locales necesitan una revisión."}
               </p>
               <p className="text-xs text-amber-50/80">
-                Podes crear un backup, revisar o reparar los datos locales desde Datos y seguridad. La sincronizacion queda bloqueada hasta resolverlo.
+                Podés crear un backup, revisar o reparar los datos locales desde Datos y seguridad. La sincronización queda bloqueada hasta resolverlo.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -246,7 +257,7 @@ export function BackendStartupGate({ children }: { children: React.ReactNode }) 
                 Abrir Datos y seguridad
               </button>
               <button className="btn-secondary" onClick={() => setRetryKey((value) => value + 1)}>
-                Reintentar revision
+                Reintentar revisión
               </button>
             </div>
           </div>

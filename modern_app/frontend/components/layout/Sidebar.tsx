@@ -10,11 +10,10 @@ import { AddAccountModal } from "../account/AddAccountModal";
 import {
   ACCOUNT_SESSION_CHANGED_EVENT,
   OWNER_CHANGED_EVENT,
-  cloudAuth,
+  type CloudSessionAvailability,
   getActiveAccount,
-  getCloudAuthDiagnostics,
   getActiveCloudAuthState,
-  getActiveCloudSessionAsync,
+  getAuthUIState,
   getActiveOwnerId,
   getStoredAccounts,
   isCloudAuthConfigured,
@@ -42,7 +41,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const pathname = usePathname();
   const router = useRouter();
   const [accountUser, setAccountUser] = useState<CloudUser | null>(null);
-  const [accountAvailability, setAccountAvailability] = useState<"local" | "none" | "saved_without_token" | "session_expired" | "refresh_failed" | "active">("local");
+  const [accountAvailability, setAccountAvailability] = useState<CloudSessionAvailability>("local");
   const [activeOwnerId, setActiveOwnerId] = useState("local");
   const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -69,19 +68,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         setAccountUser(null);
         return;
       }
-
-      setAccountUser(activeAccount.user);
-      if (authState.availability !== "active") return;
-      try {
-        const session = await getActiveCloudSessionAsync();
-        if (!session) return;
-        const user = await cloudAuth.me(session.token);
-        if (!cancelled) {
-          setAccountUser(user);
-        }
-      } catch (error) {
-        console.error("No se pudo cargar la cuenta en el sidebar:", error);
-        if (!cancelled) setAccountUser(null);
+      if (!cancelled) {
+        setAccountUser(activeAccount.user);
       }
     }
 
@@ -102,12 +90,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   const accountLabel = activeOwnerId === "local" ? "Modo local" : accountUser?.display_name || accountUser?.email || "Cuenta";
   const accountSubtitle = activeOwnerId === "local"
-    ? "Sin sincronización"
-    : accountAvailability === "saved_without_token" || accountAvailability === "session_expired" || accountAvailability === "refresh_failed"
-      ? "Sesión no disponible"
-      : accountAvailability === "active"
-        ? "Cuenta sincronizable"
-        : "Cuenta guardada";
+    ? getAuthUIState("local").subtitle
+    : getAuthUIState(accountAvailability).subtitle;
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -150,27 +134,15 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
     switchActiveOwner(ownerId);
     setActiveOwnerId(getActiveOwnerId());
-    const account = getActiveAccount();
-    setAccountUser(account?.user || null);
     setAccounts(getStoredAccounts());
     setAccountMenuOpen(false);
 
     try {
       const authState = await getActiveCloudAuthState();
-      const diagnostics = await getCloudAuthDiagnostics();
-      const expiredByAuth =
-        diagnostics.lastAuthErrorCode === "refresh_http_401"
-        || diagnostics.lastAuthErrorCode === "refresh_http_403"
-        || diagnostics.lastAuthErrorCode === "refresh_auth";
-      if (authState.availability === "active") {
-        setAccountAvailability("active");
-      } else if (expiredByAuth) {
-        setAccountAvailability("session_expired");
-      } else {
-        setAccountAvailability(authState.availability);
-      }
+      setAccountUser(authState.account?.user || null);
+      setAccountAvailability(authState.availability);
     } catch {
-      setAccountAvailability("saved_without_token");
+      setAccountAvailability("unknown_error");
     }
   }
 

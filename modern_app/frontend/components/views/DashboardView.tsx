@@ -104,7 +104,7 @@ export function DashboardView({
             <p className="text-xs uppercase tracking-[0.24em] text-cyan-200/80">Inicio</p>
             <h2 className="mt-2 text-3xl font-black tracking-tight md:text-4xl">Resumen financiero</h2>
             <p className="mt-2 max-w-2xl text-sm text-slate-300">
-              Vista rapida de tu mes, saldos, actividad reciente y puntos que necesitan atencion.
+              Vista rápida de tu mes, saldos, actividad reciente y puntos que necesitan atención.
             </p>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
@@ -125,7 +125,7 @@ export function DashboardView({
             <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Primeros pasos</p>
             <h3 className="mt-2 text-2xl font-black">Bienvenido a ScisoNomics</h3>
             <p className="mt-2 max-w-2xl text-sm text-slate-300">
-              Podes empezar en modo local o agregar una cuenta para sincronizar. Tus datos principales se guardan en este dispositivo.
+              Podés empezar en modo local o agregar una cuenta para sincronizar. Tus datos principales se guardan en este dispositivo.
             </p>
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               <button className="btn" onClick={onQuickNewMovement}>Registrar primer movimiento</button>
@@ -154,10 +154,10 @@ export function DashboardView({
           </div>
         </div>
         <div className="card p-5">
-          <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Sincronizacion</p>
+          <p className="text-xs uppercase tracking-[0.22em] text-slate-500 dark:text-slate-400">Sincronización</p>
           <p className="mt-2 text-lg font-semibold">Estado local-first</p>
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Tus datos se guardan localmente. Si activaste sync automatica, ScisoNomics tambien consulta cambios remotos en segundo plano.
+            Tus datos se guardan localmente. Si activaste sincronización automática, ScisoNomics también consulta cambios remotos en segundo plano.
           </p>
         </div>
       </section>
@@ -177,13 +177,13 @@ export function DashboardView({
       )}
 
       <section className="card p-4">
-        <SectionHeader title="Indicadores utiles" subtitle="Puntos clave para decidir rapido" />
+        <SectionHeader title="Indicadores útiles" subtitle="Puntos clave para decidir rápido" />
         {loading ? (
           <LoadingSkeleton rows={4} />
         ) : (
           <div className="grid gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-line p-3 text-sm">
-              <p className="text-slate-500 dark:text-slate-400">Presupuesto mas comprometido</p>
+              <p className="text-slate-500 dark:text-slate-400">Presupuesto más comprometido</p>
               {presupuestoComprometido ? (
                 <>
                   <p className="mt-1 font-semibold">{presupuestoComprometido.categoria}</p>
@@ -192,16 +192,16 @@ export function DashboardView({
               ) : <p className="mt-1">Sin presupuestos cargados.</p>}
             </div>
             <div className="rounded-xl border border-line p-3 text-sm">
-              <p className="text-slate-500 dark:text-slate-400">Proximo gasto fijo</p>
+              <p className="text-slate-500 dark:text-slate-400">Próximo gasto fijo</p>
               {proximoGastoFijo ? (
                 <>
                   <p className="mt-1 font-semibold">{proximoGastoFijo.descripcion}</p>
-                  <p>{money(proximoGastoFijo.monto)} - Dia {proximoGastoFijo.dia_vencimiento}</p>
+                  <p>{money(proximoGastoFijo.monto)} - Día {proximoGastoFijo.dia_vencimiento}</p>
                 </>
               ) : <p className="mt-1">Sin gastos fijos activos.</p>}
             </div>
             <div className="rounded-xl border border-line p-3 text-sm">
-              <p className="text-slate-500 dark:text-slate-400">Meta mas avanzada</p>
+              <p className="text-slate-500 dark:text-slate-400">Meta más avanzada</p>
               {metaMasAvanzada ? (
                 <>
                   <p className="mt-1 font-semibold">{metaMasAvanzada.nombre}</p>
@@ -214,11 +214,11 @@ export function DashboardView({
       </section>
 
       <section className="card p-4">
-        <SectionHeader title="Accesos rapidos" subtitle="Acciones frecuentes" />
+        <SectionHeader title="Accesos rápidos" subtitle="Acciones frecuentes" />
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           <button className="btn" onClick={onQuickNewMovement}>Nuevo ingreso/gasto</button>
           <button className="btn-secondary" onClick={onQuickMovements}>Ver movimientos</button>
-          <button className="btn-secondary" onClick={onQuickStats}>Ver estadisticas</button>
+          <button className="btn-secondary" onClick={onQuickStats}>Ver estadísticas</button>
           <button className="btn-secondary" onClick={() => onQuickExport().catch(() => undefined)}>Exportar reporte</button>
           <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia de seguridad</button>
         </div>
@@ -261,7 +261,7 @@ export function DashboardView({
 
       <div className="grid gap-4 xl:grid-cols-3">
         <section className="card p-5 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40 xl:col-span-2">
-          <SectionHeader title="Ingresos vs gastos" subtitle="Comparativa rapida del mes" />
+          <SectionHeader title="Ingresos vs gastos" subtitle="Comparativa rápida del mes" />
           <div className="h-64">
             {loading ? (
               <div className="h-full w-full animate-pulse rounded-lg border border-slate-800 bg-slate-900" />
@@ -291,7 +291,7 @@ export function DashboardView({
         </section>
 
         <section className="card p-5 transition-colors duration-200 hover:border-slate-300 dark:hover:border-white/40">
-          <SectionHeader title="Proximos gastos" subtitle="Pendientes cercanos" />
+          <SectionHeader title="Próximos gastos" subtitle="Pendientes cercanos" />
           {loading ? (
             <LoadingSkeleton rows={5} />
           ) : (
@@ -318,7 +318,7 @@ export function DashboardView({
       ) : null}
 
       <section className="card p-4">
-        <SectionHeader title="Actividad reciente" subtitle="Ultimos 5 movimientos" />
+        <SectionHeader title="Actividad reciente" subtitle="Últimos 5 movimientos" />
         {loading ? (
           <LoadingSkeleton rows={5} />
         ) : recentMovements.length === 0 ? (
@@ -328,7 +328,7 @@ export function DashboardView({
             {recentMovements.map((mov) => (
               <div key={mov.id} className="rounded-lg border border-line p-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{mov.descripcion || "Sin descripcion"}</span>
+                  <span className="font-medium">{mov.descripcion || "Sin descripción"}</span>
                   <strong className={mov.tipo === "ingreso" ? "text-emerald-300" : "text-rose-300"}>{money(mov.monto)}</strong>
                 </div>
                 <div className="text-xs text-slate-400">{mov.fecha} - {mov.categoria} - {mov.tipo}</div>

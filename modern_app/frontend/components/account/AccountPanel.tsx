@@ -11,6 +11,7 @@ import {
   cloudAuth,
   getActiveAccount,
   getActiveCloudAuthState,
+  getAuthUIState,
   getActiveCloudSessionAsync,
   getActiveOwnerId,
   getCloudAuthTokens,
@@ -20,7 +21,7 @@ import {
   removeAccount,
   switchActiveOwner,
   addOrUpdateAccount,
-  verifyStoredSession,
+  type CloudSessionAvailability,
   type StoredCloudAccount,
   type CloudUser,
 } from "../../services/cloudAuth";
@@ -58,7 +59,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [mode, setMode] = useState<Mode>("login");
   const [loadingSession, setLoadingSession] = useState(true);
   const [sessionCheckError, setSessionCheckError] = useState("");
-  const [sessionAvailable, setSessionAvailable] = useState(false);
+  const [sessionAvailability, setSessionAvailability] = useState<CloudSessionAvailability>("none");
   const [submitting, setSubmitting] = useState(false);
   const [remember, setRemember] = useState(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
@@ -91,6 +92,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [registerPassword, setRegisterPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
   const hasCheckedSessionRef = useRef(false);
+  const sessionAvailable = sessionAvailability === "active";
 
   function clearAuthForms() {
     setLoginEmail("");
@@ -109,7 +111,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setActiveOwnerId(owner);
     setUser(session?.user || null);
     setTokenMode(session?.storage || null);
-    setSessionAvailable(false);
+    setSessionAvailability("none");
     setAutoSyncEnabledState(isAutoSyncEnabled());
     if (owner === "local") {
       setSyncOverview(null);
@@ -141,44 +143,14 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       setAutoSyncEnabledState(isAutoSyncEnabled());
       refreshAuthState();
       const authState = await getActiveCloudAuthState();
-      if (!authState.account) {
-        setUser(null);
-        setSessionAvailable(false);
-        setLoadingSession(false);
-        return;
-      }
-      if (!cancelled) {
-        setUser(authState.account.user);
-        setTokenMode(authState.account.storage);
-        setSessionAvailable(authState.availability === "active");
-        setLoadingSession(false);
-      }
-      if (authState.availability === "saved_without_token") {
-        if (!cancelled) {
-          setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
-        }
-        return;
-      }
-      if (!configured) return;
-      try {
-        const verifiedSession = await verifyStoredSession();
-        if (!cancelled) {
-          setUser(verifiedSession?.user || null);
-          setTokenMode(verifiedSession?.storage || null);
-          setSessionAvailable(Boolean(verifiedSession?.token));
-          setAccounts(getStoredAccounts());
-          setActiveOwnerId(getActiveOwnerId());
-        }
-      } catch (error) {
-        console.error("No se pudo validar la sesión cloud:", error);
-        setAutoSyncEnabled(false);
-        if (!cancelled) {
-          setSessionAvailable(false);
-          setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesión. Podés volver a iniciar sesión.");
-        }
-      } finally {
-        if (!cancelled) setLoadingSession(false);
-      }
+      if (cancelled) return;
+      setUser(authState.account?.user || null);
+      setTokenMode(authState.account?.storage || null);
+      setSessionAvailability(authState.availability);
+      setAccounts(getStoredAccounts());
+      setActiveOwnerId(getActiveOwnerId());
+      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
+      setLoadingSession(false);
     }
     loadSession();
     return () => {
@@ -194,7 +166,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     refreshAuthState();
     setLoadingSession(false);
     setSessionCheckError("");
-    setSessionAvailable(false);
+    setSessionAvailability("none");
     setSyncOverview(null);
     setSyncHistory([]);
     setSyncConflicts([]);
@@ -209,30 +181,23 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     if (!configured) {
       setLoadingSession(false);
       setUser(null);
-      setSessionAvailable(false);
+      setSessionAvailability("none");
       return;
     }
     try {
       const authState = await getActiveCloudAuthState();
-      if (authState.availability !== "active") {
-        setUser(authState.account?.user || null);
-        setTokenMode(authState.account?.storage || null);
-        setSessionAvailable(false);
-        setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
-        return;
-      }
-      const verifiedSession = await verifyStoredSession();
-      setUser(verifiedSession?.user || null);
-      setTokenMode(verifiedSession?.storage || null);
-      setSessionAvailable(Boolean(verifiedSession?.token));
+      setUser(authState.account?.user || null);
+      setTokenMode(authState.account?.storage || null);
+      setSessionAvailability(authState.availability);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(getActiveOwnerId());
+      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
     } catch (error) {
       console.error("No se pudo revalidar la sesión cloud:", error);
       setAutoSyncEnabled(false);
       setUser(null);
       setTokenMode(null);
-      setSessionAvailable(false);
+      setSessionAvailability("unknown_error");
       setSessionCheckError(error instanceof Error ? error.message : "No pudimos verificar la sesión. Podés volver a iniciar sesión.");
     } finally {
       setLoadingSession(false);
@@ -292,11 +257,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       const authState = await getActiveCloudAuthState();
       setTokenMode(authState.account?.storage || null);
-      setSessionAvailable(authState.availability === "active");
+      setSessionAvailability(authState.availability);
       setUser(authState.account?.user || response.user);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(response.user.id);
-      setSessionCheckError("");
+      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
       setShowAddAccount(false);
       clearAuthForms();
       if (remember && !stored.secureResult.storedSecurely) {
@@ -329,11 +294,11 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       const authState = await getActiveCloudAuthState();
       setTokenMode(authState.account?.storage || null);
-      setSessionAvailable(authState.availability === "active");
+      setSessionAvailability(authState.availability);
       setUser(authState.account?.user || response.user);
       setAccounts(getStoredAccounts());
       setActiveOwnerId(response.user.id);
-      setSessionCheckError("");
+      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
       setShowAddAccount(false);
       clearAuthForms();
       if (remember && !stored.secureResult.storedSecurely) {
@@ -357,7 +322,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     clearActiveAccountSession();
     setTokenMode(null);
     setUser(null);
-    setSessionAvailable(false);
+    setSessionAvailability("none");
     setSessionCheckError("");
     setAutoSyncEnabled(false);
     setAutoSyncEnabledState(false);
@@ -399,7 +364,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setSyncMessage("Sincronizando tus datos...");
     setSyncSummary("");
     try {
-      const result = await runManualSync(session.token, session.user.email);
+      const result = await runManualSync(session.user.email);
       setLastSyncAt(result.syncedAt);
       setLastSyncError(result.rejectedTotal ? "Algunos datos no pudieron sincronizarse y necesitan revisión." : null);
       setSyncMessage(result.rejectedTotal ? "Sincronización completada con advertencias" : "Sincronización completada");
@@ -447,19 +412,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     showSuccess("Cuenta activa cambiada.");
     try {
       const authState = await getActiveCloudAuthState();
-      if (authState.availability !== "active") {
-        setUser(authState.account?.user || null);
-        setTokenMode(authState.account?.storage || null);
-        setSessionAvailable(false);
-        setSessionCheckError("Sesión vencida o no disponible. Iniciá sesión nuevamente.");
-        setAccounts(getStoredAccounts());
-        return;
-      }
-      const verifiedSession = await verifyStoredSession(ownerId);
-      setUser(verifiedSession?.user || null);
-      setTokenMode(verifiedSession?.storage || null);
-      setSessionAvailable(Boolean(verifiedSession?.token));
+      setUser(authState.account?.user || null);
+      setTokenMode(authState.account?.storage || null);
+      setSessionAvailability(authState.availability);
       setAccounts(getStoredAccounts());
+      setActiveOwnerId(getActiveOwnerId());
+      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
     } catch (error) {
       console.error("La cuenta guardada ya no es válida:", error);
       setSessionCheckError("La sesión de esa cuenta venció o no pudo verificarse. Volvé a iniciar sesión.");
@@ -549,7 +507,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
           const stored = await addOrUpdateAccount({ user: status.user, tokens: getCloudAuthTokens(status) }, { remember, makeActive: true });
           const authState = await getActiveCloudAuthState();
           setTokenMode(authState.account?.storage || null);
-          setSessionAvailable(authState.availability === "active");
+          setSessionAvailability(authState.availability);
           setUser(authState.account?.user || status.user);
           setAccounts(getStoredAccounts());
           setActiveOwnerId(status.user.id);
@@ -678,7 +636,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
           <h3 className="mt-2 text-2xl font-semibold">
-            {sessionAvailable ? "Sesión iniciada" : sessionCheckError ? "Sesión no disponible" : "Cuenta guardada"}
+            {getAuthUIState(sessionAvailability, Boolean(sessionCheckError)).title}
           </h3>
           <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">Usuario</p>

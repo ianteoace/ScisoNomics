@@ -169,6 +169,71 @@ def _service_value_error(exc: ValueError, resource_label: str = "El recurso") ->
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _category_constraint_http_error(constraint: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "local_apply_constraint",
+            "classification": "local_apply_constraint",
+            "table": "categorias",
+            "constraint": constraint,
+            "message": "No se pudo aplicar una categoria remota porque ya existe una categoria equivalente en el dispositivo."
+            if constraint == "owner_user_id,nombre,tipo"
+            else "No se pudo aplicar una categoria remota porque el sync_id ya pertenece a otra categoria local.",
+        },
+    )
+
+
+def _sync_apply_http_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    table: str | None = None,
+    record_sync_id: str | None = None,
+    constraint: str | None = None,
+    classification: str | None = None,
+    movement_sync_id: str | None = None,
+    tag_sync_id: str | None = None,
+    field: str | None = None,
+) -> HTTPException:
+    detail: dict[str, Any] = {"code": code, "message": message}
+    if classification:
+        detail["classification"] = classification
+    if table:
+        detail["table"] = table
+    if record_sync_id:
+        detail["record_sync_id"] = record_sync_id
+    if constraint:
+        detail["constraint"] = constraint
+    if movement_sync_id:
+        detail["movement_sync_id"] = movement_sync_id
+    if tag_sync_id:
+        detail["tag_sync_id"] = tag_sync_id
+    if field:
+        detail["field"] = field
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _local_structured_http_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    classification: str | None = None,
+    table: str | None = None,
+    constraint: str | None = None,
+) -> HTTPException:
+    detail: dict[str, Any] = {"code": code, "message": message}
+    if classification:
+        detail["classification"] = classification
+    if table:
+        detail["table"] = table
+    if constraint:
+        detail["constraint"] = constraint
+    return HTTPException(status_code=status_code, detail=detail)
+
+
 def _cleanup_temp_snapshot(path: Path) -> None:
     # Los exports usan carpetas temporales dedicadas. Limpiarlas luego de enviar
     # el archivo evita acumular snapshots sin tocar backups persistentes.
@@ -2011,6 +2076,58 @@ def _build_local_db_integrity_response(issues: list[dict[str, Any]], detected_sc
     }
 
 
+def _repair_orphan_tags(conn: sqlite3.Connection, now: str, active_owner: str) -> int:
+    columns = _table_columns(conn, "tags")
+    if "owner_user_id" not in columns:
+        return 0
+    repaired = 0
+    orphan_rows = conn.execute(
+        """
+        SELECT id, sync_id, created_at, updated_at, sync_status
+        FROM tags
+        WHERE owner_user_id IS NULL OR trim(owner_user_id) = ''
+        ORDER BY id
+        """
+    ).fetchall()
+    for row in orphan_rows:
+        tag_id = int(row["id"])
+        refs = conn.execute(
+            """
+            SELECT DISTINCT owner_user_id
+            FROM movimiento_tags
+            WHERE tag_id = ? AND owner_user_id IS NOT NULL AND trim(owner_user_id) <> ''
+            """,
+            (tag_id,),
+        ).fetchall()
+        referenced_owners = [str(ref["owner_user_id"]).strip() for ref in refs if str(ref["owner_user_id"]).strip()]
+        if not referenced_owners:
+            conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+            repaired += 1
+            continue
+        inferred_owner = None
+        unique_owners = sorted(set(referenced_owners))
+        if len(unique_owners) == 1:
+            inferred_owner = unique_owners[0]
+        elif active_owner and active_owner != LOCAL_OWNER_ID:
+            inferred_owner = active_owner
+        if not inferred_owner:
+            continue
+        sync_id = str(row["sync_id"] or "").strip() or str(uuid4())
+        sync_status = str(row["sync_status"] or "").strip() or "pending"
+        created_at = _serialize_sync_datetime(row["created_at"], fallback=now) or now
+        updated_at = _serialize_sync_datetime(row["updated_at"], fallback=created_at) or created_at
+        conn.execute(
+            """
+            UPDATE tags
+            SET owner_user_id = ?, sync_id = ?, sync_status = ?, created_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (inferred_owner, sync_id, sync_status, created_at, updated_at, tag_id),
+        )
+        repaired += 1
+    return repaired
+
+
 def _create_local_backup() -> Path:
     if not WEB_DB_PATH.exists():
         raise HTTPException(status_code=404, detail="No existe una base de datos local para respaldar.")
@@ -2027,9 +2144,29 @@ def _create_local_backup() -> Path:
 
 @app.get("/local/db-integrity")
 def local_db_integrity():
-    report = _local_db_integrity_report()
-    _logger.info("[db-integrity] status=%s issue_codes=%s", report["status"], [issue["code"] for issue in report["issues"]])
-    return report
+    try:
+        report = _local_db_integrity_report()
+        _logger.info("[db-integrity] status=%s issue_codes=%s", report["status"], [issue["code"] for issue in report["issues"]])
+        return report
+    except sqlite3.IntegrityError as exc:
+        _logger.warning("[db-integrity] integrity error error_type=%s", type(exc).__name__)
+        raise _local_structured_http_error(
+            status_code=409,
+            code="local_repair_required",
+            classification="local_repair_required",
+            message="No se pudo completar la revision de datos locales por una inconsistencia que requiere reparacion.",
+        ) from exc
+    except ValueError as exc:
+        _logger.warning("[db-integrity] invalid payload/state error_type=%s", type(exc).__name__)
+        raise _local_structured_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            message="No se pudo interpretar correctamente el estado local para revisar los datos.",
+        ) from exc
+    except Exception as exc:
+        _logger.exception("[db-integrity] unexpected error error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="No se pudo revisar el estado de los datos locales.") from exc
 
 
 @app.post("/local/backup")
@@ -2041,99 +2178,137 @@ def local_backup():
 
 @app.post("/local/db-repair")
 def local_db_repair():
-    backup = _create_local_backup()
-    before = _local_db_integrity_report()
-    _logger.info("[db-repair] start issue_codes=%s", [issue["code"] for issue in before["issues"]])
-    blocking_critical = [
-        issue
-        for issue in before["issues"]
-        if issue["severity"] == "critical" and not bool(issue["repairable"])
-    ]
-    if blocking_critical:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "backup_created": True,
-                "repaired_count": 0,
-                "unresolved_count": before["issues_count"],
-                "safe_summary": ["Se creo un backup antes de revisar.", "Encontramos problemas que requieren revision manual.", "Tus datos no fueron modificados."],
-            },
-        )
-
-    repaired_count = 0
-    owner_unique_issues = [
-        issue
-        for issue in before["issues"]
-        if issue["code"] in {"missing_owner_unique_constraint", "duplicate_owner_category", "duplicate_owner_tag"}
-    ]
-    if owner_unique_issues:
-        # init_db contiene migraciones idempotentes y con backup propio para los
-        # UNIQUE owner-aware. El endpoint ya creo ademas un backup general antes
-        # de llegar aca.
-        Database(db_path=WEB_DB_PATH).init_db()
-        repaired_count += len(owner_unique_issues)
-        schema_after = _local_db_integrity_report()
-        if any(issue["severity"] == "critical" for issue in schema_after["issues"]):
-            _logger.warning(
-                "[db-repair] owner unique repair unresolved issue_codes=%s",
-                [issue["code"] for issue in schema_after["issues"]],
-            )
+    try:
+        backup = _create_local_backup()
+        before = _local_db_integrity_report()
+        _logger.info("[db-repair] start issue_codes=%s", [issue["code"] for issue in before["issues"]])
+        active_owner = normalize_owner_id(_current_owner())
+        blocking_critical = [
+            issue
+            for issue in before["issues"]
+            if issue["severity"] == "critical" and not bool(issue["repairable"])
+        ]
+        if blocking_critical:
             return JSONResponse(
                 status_code=409,
                 content={
                     "ok": False,
+                    "code": "local_repair_incomplete",
+                    "classification": "local_repair_incomplete",
                     "backup_created": True,
-                    "repaired_count": repaired_count,
-                    "unresolved_count": schema_after["issues_count"],
-                    "safe_summary": [
-                        "Se creo un backup antes de reparar.",
-                        "Encontramos problemas que requieren revision manual.",
-                        "Tus datos financieros no fueron eliminados.",
-                    ],
+                    "repaired_count": 0,
+                    "unresolved_count": before["issues_count"],
+                    "safe_summary": ["Se creo un backup antes de revisar.", "Encontramos problemas que requieren revision manual.", "Tus datos no fueron modificados."],
                 },
             )
 
-    now = datetime.now().isoformat(timespec="seconds")
-    with closing(_open_local_db()) as conn:
-        with conn:
-            for table in INTEGRITY_SYNC_TABLES:
-                columns = _table_columns(conn, table)
-                if "created_at" in columns:
-                    cursor = conn.execute(f"UPDATE {table} SET created_at = ? WHERE created_at IS NULL OR trim(created_at) = '' OR datetime(created_at) IS NULL", (now,))
-                    repaired_count += max(cursor.rowcount, 0)
-                if "updated_at" in columns:
-                    cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
-                    repaired_count += max(cursor.rowcount, 0)
-                if "sync_status" in columns:
-                    cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced', 'deleted', 'sync_error')")
-                    repaired_count += max(cursor.rowcount, 0)
-                if "sync_id" in columns:
-                    rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
-                    for row in rows:
-                        conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
-                    repaired_count += len(rows)
-            # Borrar un cursor corrupto es seguro: la proxima sync realiza un
-            # full-pull y reconstruye el cursor sin eliminar datos financieros.
-            existing_tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
-            if "app_config" in existing_tables:
-                cursor_rows = conn.execute("SELECT key, value FROM app_config WHERE key LIKE 'sync_pull_cursor:%'").fetchall()
-                for row in cursor_rows:
-                    if _parse_sync_datetime(row["value"]) is None:
-                        conn.execute("DELETE FROM app_config WHERE key = ?", (row["key"],))
-                        repaired_count += 1
+        repaired_count = 0
+        owner_unique_issues = [
+            issue
+            for issue in before["issues"]
+            if issue["code"] in {"missing_owner_unique_constraint", "duplicate_owner_category", "duplicate_owner_tag"}
+        ]
+        if owner_unique_issues:
+            Database(db_path=WEB_DB_PATH).init_db()
+            repaired_count += len(owner_unique_issues)
+            schema_after = _local_db_integrity_report()
+            if any(issue["severity"] == "critical" for issue in schema_after["issues"]):
+                _logger.warning(
+                    "[db-repair] owner unique repair unresolved issue_codes=%s",
+                    [issue["code"] for issue in schema_after["issues"]],
+                )
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "ok": False,
+                        "code": "local_repair_incomplete",
+                        "classification": "local_repair_incomplete",
+                        "backup_created": True,
+                        "repaired_count": repaired_count,
+                        "unresolved_count": schema_after["issues_count"],
+                        "safe_summary": [
+                            "Se creo un backup antes de reparar.",
+                            "Encontramos problemas que requieren revision manual.",
+                            "Tus datos financieros no fueron eliminados.",
+                        ],
+                    },
+                )
 
-    after = _local_db_integrity_report()
-    unresolved_count = int(after["issues_count"])
-    _logger.info("[db-repair] finish repaired=%s unresolved=%s issue_codes=%s", repaired_count, unresolved_count, [issue["code"] for issue in after["issues"]])
-    return {
-        "ok": after["status"] != "critical",
-        "backup_created": True,
-        "backup_path": str(backup),
-        "repaired_count": repaired_count,
-        "unresolved_count": unresolved_count,
-        "safe_summary": ["Se creo un backup antes de reparar.", "No se eliminaron datos financieros."] + list(after["safe_summary"]),
-    }
+        now = datetime.now().isoformat(timespec="seconds")
+        with closing(_open_local_db()) as conn:
+            with conn:
+                if "tags" in {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}:
+                    repaired_count += _repair_orphan_tags(conn, now, active_owner)
+                for table in INTEGRITY_SYNC_TABLES:
+                    columns = _table_columns(conn, table)
+                    if "created_at" in columns:
+                        cursor = conn.execute(f"UPDATE {table} SET created_at = ? WHERE created_at IS NULL OR trim(created_at) = '' OR datetime(created_at) IS NULL", (now,))
+                        repaired_count += max(cursor.rowcount, 0)
+                    if "updated_at" in columns:
+                        cursor = conn.execute(f"UPDATE {table} SET updated_at = COALESCE(NULLIF(created_at, ''), ?) WHERE updated_at IS NULL OR trim(updated_at) = '' OR datetime(updated_at) IS NULL", (now,))
+                        repaired_count += max(cursor.rowcount, 0)
+                    if "sync_status" in columns:
+                        cursor = conn.execute(f"UPDATE {table} SET sync_status = 'pending' WHERE sync_status IS NULL OR trim(sync_status) = '' OR sync_status NOT IN ('pending', 'synced', 'deleted', 'sync_error')")
+                        repaired_count += max(cursor.rowcount, 0)
+                    if "sync_id" in columns:
+                        rows = conn.execute(f"SELECT rowid FROM {table} WHERE sync_id IS NULL OR trim(sync_id) = ''").fetchall()
+                        for row in rows:
+                            conn.execute(f"UPDATE {table} SET sync_id = ? WHERE rowid = ?", (str(uuid4()), row["rowid"]))
+                        repaired_count += len(rows)
+                existing_tables = {str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+                if "app_config" in existing_tables:
+                    cursor_rows = conn.execute("SELECT key, value FROM app_config WHERE key LIKE 'sync_pull_cursor:%'").fetchall()
+                    for row in cursor_rows:
+                        if _parse_sync_datetime(row["value"]) is None:
+                            conn.execute("DELETE FROM app_config WHERE key = ?", (row["key"],))
+                            repaired_count += 1
+
+        after = _local_db_integrity_report()
+        unresolved_count = int(after["issues_count"])
+        _logger.info("[db-repair] finish repaired=%s unresolved=%s issue_codes=%s", repaired_count, unresolved_count, [issue["code"] for issue in after["issues"]])
+        if after["status"] == "critical":
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "code": "local_repair_incomplete",
+                    "classification": "local_repair_incomplete",
+                    "backup_created": True,
+                    "backup_path": str(backup),
+                    "repaired_count": repaired_count,
+                    "unresolved_count": unresolved_count,
+                    "safe_summary": ["Se creo un backup antes de reparar.", "No se eliminaron datos financieros."] + list(after["safe_summary"]),
+                },
+            )
+        return {
+            "ok": after["status"] != "critical",
+            "backup_created": True,
+            "backup_path": str(backup),
+            "repaired_count": repaired_count,
+            "unresolved_count": unresolved_count,
+            "safe_summary": ["Se creo un backup antes de reparar.", "No se eliminaron datos financieros."] + list(after["safe_summary"]),
+        }
+    except HTTPException:
+        raise
+    except sqlite3.IntegrityError as exc:
+        _logger.warning("[db-repair] integrity error error_type=%s", type(exc).__name__)
+        raise _local_structured_http_error(
+            status_code=409,
+            code="local_repair_required",
+            classification="local_repair_required",
+            message="No se pudo completar la reparacion local por una inconsistencia de datos que requiere revision.",
+        ) from exc
+    except ValueError as exc:
+        _logger.warning("[db-repair] invalid payload/state error_type=%s", type(exc).__name__)
+        raise _local_structured_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            message="No se pudo interpretar correctamente el estado local para reparar los datos.",
+        ) from exc
+    except Exception as exc:
+        _logger.exception("[db-repair] unexpected error error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="No se pudo completar la reparacion de los datos locales.") from exc
 
 
 def _local_category_ids_for_claim(conn: sqlite3.Connection) -> list[int]:
@@ -2231,15 +2406,397 @@ def _sync_pending_rows(conn: sqlite3.Connection, table: str, owner: str) -> list
     return [dict(row) for row in conn.execute(query, (owner,)).fetchall()]
 
 
-def _local_category_id(conn: sqlite3.Connection, item: dict[str, Any]) -> int | None:
+def _normalize_sync_identity_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _normalize_sync_identity_text_exact(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _find_existing_category_by_identity(conn: sqlite3.Connection, owner: str, nombre: Any, tipo: Any) -> sqlite3.Row | None:
+    normalized_name = _normalize_sync_identity_text(nombre)
+    exact_name = _normalize_sync_identity_text_exact(nombre)
+    clean_tipo = str(tipo or "").strip()
+    if not normalized_name or clean_tipo not in {"ingreso", "gasto", "ahorro", "inversion"}:
+        return None
+    candidates = conn.execute(
+        """
+        SELECT *
+        FROM categorias
+        WHERE owner_user_id = ?
+          AND tipo = ?
+        ORDER BY id
+        """,
+        (owner, clean_tipo),
+    ).fetchall()
+    for candidate in candidates:
+        candidate_normalized_name = _normalize_sync_identity_text(candidate["nombre"])
+        if candidate_normalized_name != normalized_name:
+            continue
+        candidate_exact_name = _normalize_sync_identity_text_exact(candidate["nombre"])
+        if candidate_exact_name != exact_name:
+            raise _sync_apply_http_error(
+                status_code=409,
+                code="local_repair_required",
+                classification="local_repair_required",
+                table="categorias",
+                record_sync_id=str(candidate["sync_id"] or "").strip() or None,
+                constraint="owner_user_id,nombre,tipo",
+                message="Hay categorias locales con nombres equivalentes solo por normalizacion y requieren revision manual.",
+            )
+        if candidate_normalized_name == normalized_name:
+            return candidate
+    return None
+
+
+def _build_category_identity_smoke_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE app_config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE categorias (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            tipo TEXT NOT NULL,
+            owner_user_id TEXT,
+            sync_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            sync_status TEXT,
+            last_synced_at TEXT,
+            last_remote_device_id TEXT,
+            last_remote_device_name TEXT,
+            last_remote_updated_at TEXT,
+            UNIQUE(owner_user_id, nombre, tipo),
+            UNIQUE(sync_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT,
+            color TEXT,
+            owner_user_id TEXT,
+            sync_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            sync_status TEXT,
+            last_synced_at TEXT,
+            last_remote_device_id TEXT,
+            last_remote_device_name TEXT,
+            last_remote_updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE metas_ahorro (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT,
+            monto_objetivo REAL,
+            monto_inicial REAL,
+            fecha_objetivo TEXT,
+            descripcion TEXT,
+            estado TEXT,
+            owner_user_id TEXT,
+            sync_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            sync_status TEXT,
+            last_synced_at TEXT,
+            last_remote_device_id TEXT,
+            last_remote_device_name TEXT,
+            last_remote_updated_at TEXT
+        )
+        """
+    )
+    for table, amount_column in (
+        ("gastos_programados", "monto_estimado"),
+        ("gastos_fijos", "monto"),
+        ("presupuestos", "monto"),
+    ):
+        extra = (
+            "fecha_vencimiento TEXT, estado TEXT, es_recurrente INTEGER, frecuencia TEXT"
+            if table == "gastos_programados"
+            else "dia_vencimiento INTEGER, activo INTEGER"
+            if table == "gastos_fijos"
+            else "mes INTEGER, anio INTEGER"
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE {table} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                categoria_id INTEGER,
+                descripcion TEXT,
+                {amount_column} REAL,
+                {extra},
+                owner_user_id TEXT,
+                sync_id TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                deleted_at TEXT,
+                sync_status TEXT,
+                last_synced_at TEXT,
+                last_remote_device_id TEXT,
+                last_remote_device_name TEXT,
+                last_remote_updated_at TEXT
+            )
+            """
+        )
+    conn.execute(
+        """
+        CREATE TABLE movimientos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha TEXT,
+            tipo TEXT,
+            categoria_id INTEGER,
+            descripcion TEXT,
+            monto REAL,
+            owner_user_id TEXT,
+            sync_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            sync_status TEXT,
+            last_synced_at TEXT,
+            last_remote_device_id TEXT,
+            last_remote_device_name TEXT,
+            last_remote_updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE movimiento_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            movimiento_id INTEGER,
+            tag_id INTEGER,
+            owner_user_id TEXT,
+            sync_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            sync_status TEXT,
+            last_synced_at TEXT,
+            last_remote_device_id TEXT,
+            last_remote_device_name TEXT,
+            last_remote_updated_at TEXT
+        )
+        """
+    )
+    return conn
+
+
+def _run_category_identity_smoke_tests() -> dict[str, Any]:
+    owner = "owner-smoke"
+    tipo = "gasto"
+    now = "2026-06-20T00:00:00Z"
+    conn = _build_category_identity_smoke_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO categorias (nombre, tipo, owner_user_id, sync_id, created_at, updated_at, sync_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("  comida rapida  ", tipo, owner, "cat-existing", now, now, "synced"),
+        )
+
+        exact = _find_existing_category_by_identity(conn, owner, "Comida Rapida", tipo)
+        exact_case_ok = bool(exact and int(exact["id"]) > 0)
+
+        collapsed_space_error: dict[str, Any] | None = None
+        try:
+            _find_existing_category_by_identity(conn, owner, "Comida   Rapida", tipo)
+        except HTTPException as exc:
+            collapsed_space_error = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+
+        class _SmokeConnectionScope:
+            def __init__(self, smoke_conn: sqlite3.Connection):
+                self._conn = smoke_conn
+
+            def __enter__(self) -> sqlite3.Connection:
+                return self._conn
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        class _SmokeDb:
+            def __init__(self, smoke_conn: sqlite3.Connection):
+                self._conn = smoke_conn
+
+            def connect(self) -> _SmokeConnectionScope:
+                return _SmokeConnectionScope(self._conn)
+
+        class _SmokeService:
+            def __init__(self, smoke_conn: sqlite3.Connection):
+                self.db = _SmokeDb(smoke_conn)
+
+        async def _receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": json.dumps({
+                "categorias": [
+                    {
+                        "sync_id": "cat-remote",
+                        "nombre": "Comida   Rapida",
+                        "tipo": tipo,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                ]
+            }).encode("utf-8"), "more_body": False}
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/sync/apply-remote",
+                "headers": [(b"content-type", b"application/json")],
+            },
+            _receive,
+        )
+        token = set_current_owner_id(owner)
+        try:
+            try:
+                import asyncio
+
+                asyncio.run(_sync_apply_remote_impl(request, _SmokeService(conn)))
+                apply_remote_error: dict[str, Any] | None = None
+            except HTTPException as exc:
+                apply_remote_error = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        finally:
+            reset_current_owner_id(token)
+
+        categorias_total = int(conn.execute("SELECT COUNT(*) FROM categorias WHERE owner_user_id = ?", (owner,)).fetchone()[0] or 0)
+        return {
+            "exact_trim_case_resolves_existing": exact_case_ok,
+            "collapsed_spaces_requires_manual_repair": {
+                "status_code": 409 if collapsed_space_error else None,
+                "detail": collapsed_space_error,
+            },
+            "apply_remote_conflict_prevents_duplicate_insert": {
+                "status_code": 409 if apply_remote_error else None,
+                "detail": apply_remote_error,
+                "categorias_total": categorias_total,
+            },
+        }
+    finally:
+        conn.close()
+
+
+def _merge_duplicate_presupuestos_for_category(
+    conn: sqlite3.Connection,
+    owner: str,
+    from_category_id: int,
+    to_category_id: int,
+) -> None:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM presupuestos
+        WHERE owner_user_id = ? AND categoria_id = ?
+        ORDER BY id
+        """,
+        (owner, from_category_id),
+    ).fetchall()
+    for row in rows:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM presupuestos
+            WHERE owner_user_id = ? AND categoria_id = ? AND mes = ? AND anio = ? AND id != ?
+            LIMIT 1
+            """,
+            (owner, to_category_id, row["mes"], row["anio"], row["id"]),
+        ).fetchone()
+        row_sync_status = str(row["sync_status"] or "").strip().lower()
+        if not existing:
+            conn.execute(
+                """
+                UPDATE presupuestos
+                SET categoria_id = ?
+                WHERE id = ? AND owner_user_id = ?
+                """,
+                (to_category_id, row["id"], owner),
+            )
+            continue
+        existing_sync_status = str(existing["sync_status"] or "").strip().lower()
+        row_sync_id = str(row["sync_id"] or "").strip()
+        existing_sync_id = str(existing["sync_id"] or "").strip()
+        if (
+            row_sync_status in {"pending", "sync_error", "deleted_pending", "deleted"}
+            or existing_sync_status in {"pending", "sync_error", "deleted_pending", "deleted"}
+            or (row_sync_id and existing_sync_id and row_sync_id != existing_sync_id)
+        ):
+            raise _sync_apply_http_error(
+                status_code=409,
+                code="local_repair_required",
+                classification="local_repair_required",
+                table="presupuestos",
+                record_sync_id=row_sync_id or existing_sync_id or None,
+                constraint="owner_user_id,categoria_id,mes,anio",
+                message="Hay presupuestos locales duplicados que requieren revision manual antes de aplicar categorias remotas.",
+            )
+        if _parse_sync_datetime(row["updated_at"]) and (
+            _parse_sync_datetime(existing["updated_at"]) is None
+            or _parse_sync_datetime(row["updated_at"]) > _parse_sync_datetime(existing["updated_at"])
+        ):
+            conn.execute(
+                """
+                UPDATE presupuestos
+                SET monto = ?, sync_id = COALESCE(NULLIF(sync_id, ''), ?), updated_at = ?, deleted_at = ?, sync_status = ?, last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE id = ? AND owner_user_id = ?
+                """,
+                (
+                    row["monto"],
+                    row["sync_id"],
+                    row["updated_at"],
+                    row["deleted_at"],
+                    row["sync_status"],
+                    row["last_synced_at"],
+                    row["last_remote_device_id"],
+                    row["last_remote_device_name"],
+                    row["last_remote_updated_at"],
+                    existing["id"],
+                    owner,
+                ),
+            )
+        elif (not existing["sync_id"]) and row["sync_id"]:
+            conn.execute(
+                "UPDATE presupuestos SET sync_id = ? WHERE id = ? AND owner_user_id = ?",
+                (row["sync_id"], existing["id"], owner),
+            )
+        conn.execute("DELETE FROM presupuestos WHERE id = ? AND owner_user_id = ?", (row["id"], owner))
+
+
+def _merge_local_category_rows(conn: sqlite3.Connection, owner: str, canonical_id: int, duplicate_id: int) -> None:
+    if canonical_id == duplicate_id:
+        return
+    for table in ("movimientos", "gastos_fijos", "gastos_programados"):
+        conn.execute(
+            f"""
+            UPDATE {table}
+            SET categoria_id = ?
+            WHERE owner_user_id = ? AND categoria_id = ?
+            """,
+            (canonical_id, owner, duplicate_id),
+        )
+    _merge_duplicate_presupuestos_for_category(conn, owner, duplicate_id, canonical_id)
+    conn.execute("DELETE FROM categorias WHERE id = ? AND owner_user_id = ?", (duplicate_id, owner))
+
+
+def _local_category_id(conn: sqlite3.Connection, item: dict[str, Any], category_sync_map: dict[str, int] | None = None) -> int | None:
     categoria_sync_id = str(item.get("categoria_sync_id") or "").strip()
     if categoria_sync_id:
+        if category_sync_map and categoria_sync_id in category_sync_map:
+            return int(category_sync_map[categoria_sync_id])
         row = conn.execute("SELECT id FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (categoria_sync_id, _current_owner())).fetchone()
-        if row:
-            return int(row["id"])
-    categoria_id = item.get("categoria_id")
-    if categoria_id is not None:
-        row = conn.execute("SELECT id FROM categorias WHERE id = ? AND owner_user_id = ?", (categoria_id, _current_owner())).fetchone()
         if row:
             return int(row["id"])
     return None
@@ -2254,6 +2811,35 @@ def _local_sync_id_record_id(conn: sqlite3.Connection, table: str, sync_id: Any)
         (clean_sync_id, _current_owner()),
     ).fetchone()
     return int(row["id"]) if row else None
+
+
+def _resolve_remote_category_id(
+    conn: sqlite3.Connection,
+    item: dict[str, Any],
+    category_sync_map: dict[str, int] | None,
+    *,
+    table: str,
+    record_sync_id: str,
+) -> int:
+    categoria_sync_id = str(item.get("categoria_sync_id") or "").strip()
+    if not categoria_sync_id:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="missing_category_sync_id",
+            table=table,
+            record_sync_id=record_sync_id or None,
+            message="El registro remoto no incluye categoria_sync_id y no puede resolverse de forma segura en este dispositivo.",
+        )
+    categoria_id = _local_category_id(conn, item, category_sync_map)
+    if categoria_id is None:
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="category_not_found",
+            table=table,
+            record_sync_id=record_sync_id or None,
+            message="No se encontro la categoria local correspondiente para aplicar un registro remoto.",
+        )
+    return categoria_id
 
 
 def _sync_status_value(item: dict[str, Any]) -> str:
@@ -2275,8 +2861,14 @@ def _apply_simple_remote(
     updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
     deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
     if not sync_id:
-        result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
-        return
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            table=table,
+            field="sync_id",
+            message=f"El registro remoto de {table} no incluye sync_id.",
+        )
     local = conn.execute(f"SELECT * FROM {table} WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
     values = [item.get(field) for field in fields]
     if local:
@@ -2345,15 +2937,65 @@ def _apply_remote_tag(
     owner = _current_owner()
     updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
     deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
-    if not sync_id or not nombre:
-        result["tags_skipped"] += 1
-        return
+    if not sync_id:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            table="tags",
+            field="sync_id",
+            message="La etiqueta remota no incluye sync_id.",
+        )
+    if not nombre:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            table="tags",
+            record_sync_id=sync_id,
+            field="nombre",
+            message="La etiqueta remota no incluye un nombre valido.",
+        )
+    existing = conn.execute("SELECT * FROM tags WHERE nombre = ? AND owner_user_id = ?", (nombre, owner)).fetchone()
     local = conn.execute("SELECT * FROM tags WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+    if local and existing and int(local["id"]) != int(existing["id"]):
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="local_apply_constraint",
+            classification="local_apply_constraint",
+            table="tags",
+            record_sync_id=sync_id,
+            constraint="sync_id",
+            message="No se pudo vincular la etiqueta remota porque el sync_id ya pertenece a otra etiqueta local.",
+        )
     if local:
         _apply_simple_remote(conn, "tags", item, ["nombre", "color"], result, now, current_device_id)
         return
-    existing = conn.execute("SELECT * FROM tags WHERE nombre = ? AND owner_user_id = ?", (nombre, owner)).fetchone()
     if existing:
+        sync_owner = conn.execute(
+            "SELECT id FROM tags WHERE sync_id = ? AND owner_user_id = ?",
+            (sync_id, owner),
+        ).fetchone()
+        if sync_owner and int(sync_owner["id"]) != int(existing["id"]):
+            raise _sync_apply_http_error(
+                status_code=409,
+                code="local_apply_constraint",
+                classification="local_apply_constraint",
+                table="tags",
+                record_sync_id=sync_id,
+                constraint="sync_id",
+                message="No se pudo vincular la etiqueta remota porque el sync_id ya pertenece a otra etiqueta local.",
+            )
+        if not str(existing["sync_id"] or "").strip():
+            conn.execute(
+                """
+                UPDATE tags
+                SET sync_id = ?, sync_status = 'synced', last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE id = ? AND owner_user_id = ?
+                """,
+                (sync_id, now, *_remote_meta_values(item), existing["id"], owner),
+            )
         if _remote_is_newer(item, existing):
             conn.execute(
                 """
@@ -2376,12 +3018,74 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
     created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
     updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
     deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
-    movimiento_id = _local_sync_id_record_id(conn, "movimientos", item.get("movimiento_sync_id"))
-    tag_id = _local_sync_id_record_id(conn, "tags", item.get("tag_sync_id"))
-    if not sync_id or movimiento_id is None or tag_id is None:
-        result["movimiento_tags_skipped"] += 1
-        return
-    local = conn.execute("SELECT * FROM movimiento_tags WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+    movimiento_sync_id = str(item.get("movimiento_sync_id") or "").strip()
+    tag_sync_id = str(item.get("tag_sync_id") or "").strip()
+    if not sync_id:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="missing_sync_id",
+            table="movimiento_tags",
+            movement_sync_id=movimiento_sync_id or None,
+            tag_sync_id=tag_sync_id or None,
+            message="La relacion movimiento-tag remota no incluye sync_id.",
+        )
+    if not movimiento_sync_id:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="missing_movement_sync_id",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            tag_sync_id=tag_sync_id or None,
+            message="La relacion movimiento-tag remota no incluye movimiento_sync_id.",
+        )
+    if not tag_sync_id:
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="missing_tag_sync_id",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            movement_sync_id=movimiento_sync_id,
+            message="La relacion movimiento-tag remota no incluye tag_sync_id.",
+        )
+    movimiento_id = _local_sync_id_record_id(conn, "movimientos", movimiento_sync_id)
+    if movimiento_id is None:
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="movement_not_found",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            movement_sync_id=movimiento_sync_id,
+            tag_sync_id=tag_sync_id,
+            message="No se encontro el movimiento local correspondiente para aplicar la relacion remota.",
+        )
+    tag_id = _local_sync_id_record_id(conn, "tags", tag_sync_id)
+    if tag_id is None:
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="tag_not_found",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            movement_sync_id=movimiento_sync_id,
+            tag_sync_id=tag_sync_id,
+            message="No se encontro la etiqueta local correspondiente para aplicar la relacion remota.",
+        )
+    existing = conn.execute(
+        "SELECT rowid AS _rowid, * FROM movimiento_tags WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?",
+        (movimiento_id, tag_id, owner),
+    ).fetchone()
+    local = conn.execute("SELECT rowid AS _rowid, * FROM movimiento_tags WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+    if local and existing and int(local["_rowid"]) != int(existing["_rowid"]):
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="local_apply_constraint",
+            classification="local_apply_constraint",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            movement_sync_id=movimiento_sync_id,
+            tag_sync_id=tag_sync_id,
+            constraint="sync_id",
+            message="No se pudo vincular la relacion movimiento-tag remota porque el sync_id ya pertenece a otra relacion local.",
+        )
     if local:
         if _remote_is_newer(item, local):
             conn.execute(
@@ -2396,11 +3100,33 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
             result["movimiento_tags_updated"] += 1
             result["applied_remote_total"] += 1
         return
-    existing = conn.execute(
-        "SELECT * FROM movimiento_tags WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?",
-        (movimiento_id, tag_id, owner),
-    ).fetchone()
     if existing:
+        sync_owner = conn.execute(
+            "SELECT rowid AS _rowid FROM movimiento_tags WHERE sync_id = ? AND owner_user_id = ?",
+            (sync_id, owner),
+        ).fetchone()
+        if sync_owner and int(sync_owner["_rowid"]) != int(existing["_rowid"]):
+            raise _sync_apply_http_error(
+                status_code=409,
+                code="local_apply_constraint",
+                classification="local_apply_constraint",
+                table="movimiento_tags",
+                record_sync_id=sync_id,
+                movement_sync_id=movimiento_sync_id,
+                tag_sync_id=tag_sync_id,
+                constraint="sync_id",
+                message="No se pudo vincular la relacion movimiento-tag remota porque el sync_id ya pertenece a otra relacion local.",
+            )
+        if str(existing["sync_id"] or "").strip() != sync_id:
+            conn.execute(
+                """
+                UPDATE movimiento_tags
+                SET sync_id = ?, sync_status = 'synced', last_synced_at = ?,
+                    last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                WHERE movimiento_id = ? AND tag_id = ? AND owner_user_id = ?
+                """,
+                (sync_id, now, *_remote_meta_values(item), movimiento_id, tag_id, owner),
+            )
         if _remote_is_newer(item, existing):
             conn.execute(
                 """
@@ -2414,18 +3140,31 @@ def _apply_remote_movement_tag(conn: sqlite3.Connection, item: dict[str, Any], r
             result["movimiento_tags_updated"] += 1
             result["applied_remote_total"] += 1
         return
-    conn.execute(
-        """
-        INSERT INTO movimiento_tags (
-            movimiento_id, tag_id, owner_user_id, sync_id, created_at, updated_at, deleted_at, sync_status,
-            last_synced_at, last_remote_device_id, last_remote_device_name, last_remote_updated_at
+    try:
+        conn.execute(
+            """
+            INSERT INTO movimiento_tags (
+                movimiento_id, tag_id, owner_user_id, sync_id, created_at, updated_at, deleted_at, sync_status,
+                last_synced_at, last_remote_device_id, last_remote_device_name, last_remote_updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
+            """,
+            (movimiento_id, tag_id, owner, sync_id, created_at, updated_at, deleted_at, now, *_remote_meta_values(item)),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'synced', ?, ?, ?, ?)
-        """,
-        (movimiento_id, tag_id, owner, sync_id, created_at, updated_at, deleted_at, now, *_remote_meta_values(item)),
-    )
-    result["movimiento_tags_inserted"] += 1
-    result["applied_remote_total"] += 1
+        result["movimiento_tags_inserted"] += 1
+        result["applied_remote_total"] += 1
+    except sqlite3.IntegrityError as exc:
+        raise _sync_apply_http_error(
+            status_code=409,
+            code="local_apply_constraint",
+            classification="local_apply_constraint",
+            table="movimiento_tags",
+            record_sync_id=sync_id,
+            movement_sync_id=movimiento_sync_id,
+            tag_sync_id=tag_sync_id,
+            constraint=str(exc),
+            message="No se pudo aplicar la relacion movimiento-tag remota por una restriccion local.",
+        ) from exc
 
 
 @app.get("/sync/pending")
@@ -2556,13 +3295,44 @@ async def sync_mark_rejected(request: Request, service: FinanceService = Depends
         _ensure_sync_history_table(conn)
         for item in rejected_items:
             if not isinstance(item, dict):
-                continue
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_rejection_invalid_payload",
+                    classification="local_rejection_invalid_payload",
+                    message="La lista de rechazos contiene un item invalido.",
+                )
             table = str(item.get("entity") or "").strip()
             sync_id = str(item.get("sync_id") or "").strip()
             code = str(item.get("code") or "invalid_payload").strip() or "invalid_payload"
             message = str(item.get("message") or "Registro invalido.").strip()[:240]
-            if table not in SYNC_TABLES or not sync_id:
-                continue
+            if not table:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_rejection_invalid_payload",
+                    classification="local_rejection_invalid_payload",
+                    table="sync_rejections",
+                    field="table",
+                    record_sync_id=sync_id or None,
+                    message="El rechazo remoto no incluye la tabla afectada.",
+                )
+            if table not in SYNC_TABLES:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_rejection_unsupported_table",
+                    classification="local_rejection_invalid_payload",
+                    table=table,
+                    record_sync_id=sync_id or None,
+                    message="El rechazo remoto apunta a una tabla no soportada.",
+                )
+            if not sync_id:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_rejection_invalid_payload",
+                    classification="local_rejection_invalid_payload",
+                    table=table,
+                    field="sync_id",
+                    message="El rechazo remoto no incluye sync_id.",
+                )
             result = conn.execute(
                 f"""
                 UPDATE {table}
@@ -2573,7 +3343,23 @@ async def sync_mark_rejected(request: Request, service: FinanceService = Depends
                 (now, sync_id, owner),
             )
             if int(result.rowcount or 0) <= 0:
-                continue
+                existing = conn.execute(
+                    f"SELECT sync_status FROM {table} WHERE sync_id = ? AND owner_user_id = ?",
+                    (sync_id, owner),
+                ).fetchone()
+                if existing and str(existing["sync_status"] or "").strip() == "sync_error":
+                    marked[table] += 1
+                    summary_key = f"{table}:{code}"
+                    summary[summary_key] = summary.get(summary_key, 0) + 1
+                    continue
+                raise _sync_apply_http_error(
+                    status_code=409,
+                    code="local_rejection_target_not_found",
+                    classification="local_rejection_target_not_found",
+                    table=table,
+                    record_sync_id=sync_id,
+                    message="No se encontro el registro local que debia marcarse como rechazado.",
+                )
             marked[table] += int(result.rowcount or 0)
             summary_key = f"{table}:{code}"
             summary[summary_key] = summary.get(summary_key, 0) + 1
@@ -2645,6 +3431,7 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
     owner = _require_cloud_owner()
     payload, _, _ = await _parse_remote_payload(request)
     now = _utc_now_sync_text()
+    category_sync_map: dict[str, int] = {}
     result: dict[str, Any] = {
         f"{table}_{suffix}": 0
         for table in SYNC_TABLES
@@ -2668,11 +3455,44 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
             updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
             deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
-            if not sync_id or not nombre or tipo not in {"ingreso", "gasto", "ahorro", "inversion"}:
-                continue
+            if not sync_id:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_apply_invalid_payload",
+                    classification="local_apply_invalid_payload",
+                    table="categorias",
+                    field="sync_id",
+                    message="La categoria remota no incluye sync_id.",
+                )
+            if not nombre:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_apply_invalid_payload",
+                    classification="local_apply_invalid_payload",
+                    table="categorias",
+                    record_sync_id=sync_id,
+                    field="nombre",
+                    message="La categoria remota no incluye un nombre valido.",
+                )
+            if tipo not in {"ingreso", "gasto", "ahorro", "inversion"}:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_apply_invalid_payload",
+                    classification="local_apply_invalid_payload",
+                    table="categorias",
+                    record_sync_id=sync_id,
+                    field="tipo",
+                    message="La categoria remota no incluye un tipo valido.",
+                )
 
             local = conn.execute("SELECT * FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+            existing = _find_existing_category_by_identity(conn, owner, nombre, tipo)
+            if local and existing and int(local["id"]) != int(existing["id"]):
+                _merge_local_category_rows(conn, owner, int(local["id"]), int(existing["id"]))
+                local = conn.execute("SELECT * FROM categorias WHERE id = ? AND owner_user_id = ?", (int(local["id"]), owner)).fetchone()
+                existing = local
             if local:
+                category_sync_map[sync_id] = int(local["id"])
                 conflict = _basic_conflict_detected(local, item, current_device_id)
                 if conflict and not _remote_is_newer(item, local):
                     _record_sync_conflict(conn, "categorias", local, item, "kept_local", now, result)
@@ -2695,6 +3515,37 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     result["applied_remote_total"] += 1
                 continue
 
+            if existing:
+                category_sync_map[sync_id] = int(existing["id"])
+                sync_owner = conn.execute("SELECT id FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+                if sync_owner and int(sync_owner["id"]) != int(existing["id"]):
+                    _merge_local_category_rows(conn, owner, int(sync_owner["id"]), int(existing["id"]))
+                    existing = conn.execute("SELECT * FROM categorias WHERE id = ? AND owner_user_id = ?", (int(sync_owner["id"]), owner)).fetchone()
+                    category_sync_map[sync_id] = int(existing["id"])
+                if _remote_is_newer(item, existing):
+                    conn.execute(
+                        """
+                        UPDATE categorias
+                        SET nombre = ?, tipo = ?, sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                        WHERE id = ? AND owner_user_id = ?
+                        """,
+                        (nombre, tipo, sync_id, updated_at, deleted_at, now, *_remote_meta_values(item), existing["id"], owner),
+                    )
+                    result["categorias_updated"] += 1
+                    result["applied_remote_total"] += 1
+                else:
+                    conn.execute(
+                        """
+                        UPDATE categorias
+                        SET sync_id = ?, sync_status = 'synced', last_synced_at = ?,
+                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                        WHERE id = ? AND owner_user_id = ?
+                        """,
+                        (sync_id, now, *_remote_meta_values(item), existing["id"], owner),
+                    )
+                continue
+
             try:
                 conn.execute(
                     """
@@ -2706,25 +3557,44 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
                     """,
                     (nombre, tipo, owner, sync_id, created_at, updated_at, deleted_at, now, *_remote_meta_values(item)),
                 )
+                inserted = conn.execute("SELECT id FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+                if inserted:
+                    category_sync_map[sync_id] = int(inserted["id"])
                 result["categorias_inserted"] += 1
                 result["applied_remote_total"] += 1
             except sqlite3.IntegrityError:
-                existing = conn.execute(
-                    "SELECT * FROM categorias WHERE nombre = ? AND tipo = ? AND owner_user_id = ?",
-                    (nombre, tipo, owner),
-                ).fetchone()
-                if existing and _remote_is_newer(item, existing):
-                    conn.execute(
-                        """
-                        UPDATE categorias
-                        SET sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
-                            last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
-                        WHERE id = ? AND owner_user_id = ?
-                        """,
-                        (sync_id, updated_at, deleted_at, now, *_remote_meta_values(item), existing["id"], owner),
-                    )
-                    result["categorias_updated"] += 1
-                    result["applied_remote_total"] += 1
+                local = conn.execute("SELECT * FROM categorias WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
+                existing = _find_existing_category_by_identity(conn, owner, nombre, tipo)
+                if local and existing and int(local["id"]) != int(existing["id"]):
+                    _merge_local_category_rows(conn, owner, int(local["id"]), int(existing["id"]))
+                    category_sync_map[sync_id] = int(local["id"])
+                    continue
+                if existing:
+                    category_sync_map[sync_id] = int(existing["id"])
+                    if _remote_is_newer(item, existing):
+                        conn.execute(
+                            """
+                            UPDATE categorias
+                            SET nombre = ?, tipo = ?, sync_id = ?, updated_at = ?, deleted_at = ?, sync_status = 'synced', last_synced_at = ?,
+                                last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                            WHERE id = ? AND owner_user_id = ?
+                            """,
+                            (nombre, tipo, sync_id, updated_at, deleted_at, now, *_remote_meta_values(item), existing["id"], owner),
+                        )
+                        result["categorias_updated"] += 1
+                        result["applied_remote_total"] += 1
+                    else:
+                        conn.execute(
+                            """
+                            UPDATE categorias
+                            SET sync_id = ?, sync_status = 'synced', last_synced_at = ?,
+                                last_remote_device_id = ?, last_remote_device_name = ?, last_remote_updated_at = ?
+                            WHERE id = ? AND owner_user_id = ?
+                            """,
+                            (sync_id, now, *_remote_meta_values(item), existing["id"], owner),
+                        )
+                    continue
+                raise
 
         for item in payload.get("tags", []) or []:
             _apply_remote_tag(conn, item, result, now, current_device_id)
@@ -2746,26 +3616,38 @@ async def _sync_apply_remote_impl(request: Request, service: FinanceService):
             "presupuestos": ["mes", "anio", "monto"],
         }.items():
             for item in payload.get(table, []) or []:
-                categoria_id = _local_category_id(conn, item)
-                if categoria_id is None:
-                    result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
-                    continue
+                item_sync_id = str(item.get("sync_id") or "").strip()
+                categoria_id = _resolve_remote_category_id(conn, item, category_sync_map, table=table, record_sync_id=item_sync_id)
                 local_item = dict(item)
                 local_item["categoria_id"] = categoria_id
                 try:
                     _apply_simple_remote(conn, table, local_item, ["categoria_id", *fields], result, now, current_device_id)
-                except sqlite3.IntegrityError:
-                    result[f"{table}_skipped"] = result.get(f"{table}_skipped", 0) + 1
+                except sqlite3.IntegrityError as exc:
+                    raise _sync_apply_http_error(
+                        status_code=409,
+                        code="local_apply_constraint",
+                        classification="local_apply_constraint",
+                        table=table,
+                        record_sync_id=item_sync_id or None,
+                        message=f"No se pudo aplicar el registro remoto en {table} por una restriccion local.",
+                        constraint=str(exc),
+                    ) from exc
 
         for item in payload.get("movimientos", []) or []:
             sync_id = str(item.get("sync_id") or "").strip()
-            categoria_id = _local_category_id(conn, item)
+            if not sync_id:
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_apply_invalid_payload",
+                    classification="local_apply_invalid_payload",
+                    table="movimientos",
+                    field="sync_id",
+                    message="El movimiento remoto no incluye sync_id.",
+                )
+            categoria_id = _resolve_remote_category_id(conn, item, category_sync_map, table="movimientos", record_sync_id=sync_id)
             created_at = _serialize_sync_datetime(item.get("created_at"), fallback=now) or now
             updated_at = _serialize_sync_datetime(item.get("updated_at"), fallback=now) or now
             deleted_at = _serialize_sync_datetime(item.get("deleted_at"))
-            if not sync_id or categoria_id is None:
-                result["movimientos_skipped"] += 1
-                continue
 
             local = conn.execute("SELECT * FROM movimientos WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
             values = (
@@ -2856,8 +3738,53 @@ async def sync_apply_remote(request: Request, service: FinanceService = Depends(
         return await _sync_apply_remote_impl(request, service)
     except HTTPException:
         raise
+    except ValueError as exc:
+        _logger.warning(
+            "Payload invalido aplicando datos remotos. owner=%s error_type=%s",
+            _safe_owner_for_log(_current_owner()),
+            type(exc).__name__,
+        )
+        raise _local_structured_http_error(
+            status_code=422,
+            code="local_apply_invalid_payload",
+            classification="local_apply_invalid_payload",
+            message="Los datos remotos no tienen el formato esperado para aplicarse en el servicio local.",
+        ) from exc
+    except sqlite3.IntegrityError as exc:
+        message = str(exc)
+        if "categorias.owner_user_id, categorias.nombre, categorias.tipo" in message:
+            _logger.warning(
+                "Constraint aplicando categorias remotas. owner=%s constraint=%s",
+                _safe_owner_for_log(_current_owner()),
+                "owner_user_id,nombre,tipo",
+            )
+            raise _category_constraint_http_error("owner_user_id,nombre,tipo") from exc
+        if "categorias.sync_id" in message:
+            _logger.warning(
+                "Constraint aplicando categorias remotas. owner=%s constraint=%s",
+                _safe_owner_for_log(_current_owner()),
+                "sync_id",
+            )
+            raise _category_constraint_http_error("sync_id") from exc
+        _logger.warning(
+            "Constraint aplicando datos remotos. owner=%s constraint=%s error_type=%s",
+            _safe_owner_for_log(_current_owner()),
+            message[:160],
+            type(exc).__name__,
+        )
+        raise _local_structured_http_error(
+            status_code=409,
+            code="local_apply_constraint",
+            classification="local_apply_constraint",
+            message="No se pudieron aplicar los datos remotos por una restriccion local de datos.",
+            constraint=message[:240],
+        ) from exc
     except Exception as exc:
-        _logger.exception("Error aplicando datos remotos. owner=%s error_type=%s", _safe_owner_for_log(_current_owner()), type(exc).__name__)
+        _logger.exception(
+            "Error aplicando datos remotos. owner=%s error_type=%s",
+            _safe_owner_for_log(_current_owner()),
+            type(exc).__name__,
+        )
         raise HTTPException(status_code=500, detail="No se pudieron aplicar los datos remotos en el servicio local.") from exc
 
 

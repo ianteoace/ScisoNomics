@@ -201,7 +201,6 @@ class Database:
                 self._migrate_presupuestos_owner_unique(conn)
                 self._seed_default_categories(conn)
                 self._ensure_required_movement_categories(conn)
-                self._seed_default_tags(conn)
                 self._set_schema_version(conn)
             except sqlite3.OperationalError as exc:
                 if "readonly" in str(exc).lower():
@@ -1031,19 +1030,8 @@ class Database:
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_sync_status ON {table}(sync_status)")
 
     def _seed_default_tags(self, conn: sqlite3.Connection) -> None:
-        defaults = [
-            ("tarjeta", "#2563eb"),
-            ("efectivo", "#16a34a"),
-            ("mercadopago", "#0284c7"),
-            ("iglesia", "#9333ea"),
-            ("trabajo", "#f59e0b"),
-            ("delivery", "#dc2626"),
-            ("facultad", "#4f46e5"),
-        ]
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO tags (nombre, color)
-            VALUES (?, ?)
-            """,
-            defaults,
-        )
+        # No crear etiquetas globales en startup: sin owner activo no existe una
+        # forma segura de asignarlas a una cuenta sincronizable. Mantener esta
+        # ruta deshabilitada evita reintroducir INSERT INTO tags sin
+        # owner_user_id/sync_id/sync_status/updated_at validos.
+        return

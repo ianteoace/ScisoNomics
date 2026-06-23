@@ -78,7 +78,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       if (!force && lastErrorAtRef.current && now - lastErrorAtRef.current < AUTO_SYNC_ERROR_RETRY_MS && reason !== "data_change") return "failed";
       lastAttemptAtRef.current = now;
       try {
-        await runAutoSync(session.token, session.user.email, reason);
+        await runAutoSync(session.user.email, reason);
         lastErrorNotifiedRef.current = false;
         lastErrorAtRef.current = 0;
         return "success";

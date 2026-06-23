@@ -40,7 +40,15 @@ export type StoredCloudSession = StoredCloudAccount & {
   expiresAt: string;
 };
 export type CloudTokenSource = "session" | "secure" | "legacy" | "missing";
-export type CloudSessionAvailability = "local" | "none" | "saved_without_token" | "session_expired" | "refresh_failed" | "active";
+export type CloudSessionAvailability =
+  | "none"
+  | "local"
+  | "active"
+  | "saved_without_token"
+  | "session_expired"
+  | "refresh_failed"
+  | "auth_error"
+  | "unknown_error";
 export type ActiveCloudAuthState = {
   ownerId: string;
   account: StoredCloudAccount | null;
@@ -48,6 +56,8 @@ export type ActiveCloudAuthState = {
   availability: CloudSessionAvailability;
   tokenSource: CloudTokenSource;
   secureStorageAvailable: boolean;
+  persistenceStatus: "ok" | "failed" | "unknown";
+  persistentStorageError: boolean;
   requiresRelogin: boolean;
 };
 
@@ -58,6 +68,8 @@ export type CloudAuthDiagnostics = {
   availability: CloudSessionAvailability;
   tokenSource: CloudTokenSource;
   secureStorageAvailable: boolean;
+  persistenceStatus: "ok" | "failed" | "unknown";
+  persistentStorageError: boolean;
   refreshTokenFound: boolean;
   refreshSuccess: boolean | null;
   rotatedRefresh: boolean | null;
@@ -65,6 +77,14 @@ export type CloudAuthDiagnostics = {
   accessTokenExpiresAt: string | null;
   lastAuthErrorCode: string | null;
 };
+
+export type AuthUIState = {
+  title: string;
+  message: string;
+  subtitle: string;
+};
+
+type CloudPersistenceStatus = "ok" | "failed" | "unknown";
 
 const LOCAL_OWNER_ID = "local";
 const AUTH_STATE_KEY = "scisonomics_cloud_accounts_v1";
@@ -134,16 +154,27 @@ type SecureRefreshTokenDeleteCommandResult = {
   account_id_hash: string;
 };
 
+type AccountAuthStatus = {
+  lastAuthErrorCode: string | null;
+  lastRefreshSuccess: boolean | null;
+  lastRotatedRefresh: boolean | null;
+};
+
+type AccountRuntimeAuthState = {
+  availability: Exclude<CloudSessionAvailability, "none" | "local">;
+  refreshTokenFound: boolean;
+  accessTokenValid: boolean;
+};
+
 const persistentRefreshTokenCache = new Map<string, string>();
 const runtimeAccessTokenCache = new Map<string, StoredRuntimeToken>();
+const accountAuthStatusCache = new Map<string, AccountAuthStatus>();
+const accountRuntimeAuthStateCache = new Map<string, AccountRuntimeAuthState>();
 let persistentTokenHydrationPromise: Promise<void> | null = null;
 let legacyTokenMigrationPromise: Promise<void> | null = null;
 const activeRefreshPromises = new Map<string, Promise<StoredCloudSession | null>>();
 let hasAttemptedSecureTokenMigration = false;
 let tokenMaintenanceQueued = false;
-let lastAuthErrorCode: string | null = null;
-let lastRefreshSuccess: boolean | null = null;
-let lastRotatedRefresh: boolean | null = null;
 let authStateRevision = 0;
 let lastHydratedAuthStateRevision = -1;
 let isHydratingSecureTokens = false;
@@ -157,6 +188,89 @@ function emptyAuthState(): StoredAuthState {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+export function getAuthUIState(
+  availability: CloudSessionAvailability,
+  hasError = false,
+  options?: { persistenceStatus?: CloudPersistenceStatus; persistentStorageError?: boolean },
+): AuthUIState {
+  const persistenceStatus = options?.persistenceStatus ?? getActivePersistenceStatusSnapshot();
+  const persistentStorageError = options?.persistentStorageError ?? (persistenceStatus === "failed");
+  if (availability === "local") {
+    return {
+      title: "Modo local",
+      message: "",
+      subtitle: "Sin sincronización",
+    };
+  }
+  if (availability === "none") {
+    return {
+      title: "Cuenta guardada",
+      message: "",
+      subtitle: "Sin sesión",
+    };
+  }
+  if (availability === "active") {
+    if (persistentStorageError) {
+      return {
+        title: "Sesión activa con advertencia",
+        message: "La sesión está activa, pero no pudimos guardar Recordar sesión. Iniciá sesión nuevamente para restaurar la persistencia.",
+        subtitle: "Recordar sesión pendiente",
+      };
+    }
+    return {
+      title: "Sesión iniciada",
+      message: "",
+      subtitle: "Cuenta sincronizable",
+    };
+  }
+  if (availability === "saved_without_token") {
+    return {
+      title: "Cuenta guardada",
+      message: "Cuenta guardada. Iniciá sesión nuevamente para sincronizar.",
+      subtitle: "Cuenta guardada",
+    };
+  }
+  if (
+    availability === "session_expired"
+    || availability === "refresh_failed"
+    || availability === "auth_error"
+    || availability === "unknown_error"
+    || hasError
+  ) {
+    if (availability === "session_expired") {
+      return {
+        title: "Sesión no disponible",
+        message: "Sesión vencida o no disponible. Iniciá sesión nuevamente.",
+        subtitle: "Sesión vencida",
+      };
+    }
+    if (availability === "refresh_failed") {
+      return {
+        title: "Sesión no disponible",
+        message: "No se pudo renovar la sesión. Probá iniciar sesión nuevamente.",
+        subtitle: "No se pudo renovar la sesión",
+      };
+    }
+    if (availability === "auth_error") {
+      return {
+        title: "Sesión no disponible",
+        message: "No pudimos comprobar la sesión. Probá iniciar sesión nuevamente.",
+        subtitle: "Error al comprobar la sesión",
+      };
+    }
+    return {
+      title: "Sesión no disponible",
+      message: "No pudimos comprobar la sesión. Probá iniciar sesión nuevamente.",
+      subtitle: "Estado de sesión no disponible",
+    };
+  }
+  return {
+    title: "Cuenta guardada",
+    message: "",
+    subtitle: "Cuenta guardada",
+  };
 }
 
 function normalizeEmail(value?: string | null) {
@@ -482,8 +596,52 @@ function shortAccountId(value: string) {
   return normalized ? `${normalized.slice(0, 6)}...` : "unknown";
 }
 
-function setLastAuthErrorCode(code: string | null) {
-  lastAuthErrorCode = code;
+function emptyAccountAuthStatus(): AccountAuthStatus {
+  return {
+    lastAuthErrorCode: null,
+    lastRefreshSuccess: null,
+    lastRotatedRefresh: null,
+  };
+}
+
+function getAccountAuthStatus(accountId?: string | null): AccountAuthStatus {
+  const normalized = normalizePersistentAccountId(String(accountId || ""));
+  if (!normalized) return emptyAccountAuthStatus();
+  return accountAuthStatusCache.get(normalized) || emptyAccountAuthStatus();
+}
+
+function setAccountAuthStatus(accountId: string, patch: Partial<AccountAuthStatus>) {
+  const normalized = normalizePersistentAccountId(accountId);
+  if (!normalized) return;
+  const current = getAccountAuthStatus(normalized);
+  accountAuthStatusCache.set(normalized, {
+    ...current,
+    ...patch,
+  });
+}
+
+function clearAccountAuthStatus(accountId: string) {
+  const normalized = normalizePersistentAccountId(accountId);
+  if (!normalized) return;
+  accountAuthStatusCache.delete(normalized);
+}
+
+function getAccountRuntimeAuthState(accountId?: string | null): AccountRuntimeAuthState | null {
+  const normalized = normalizePersistentAccountId(String(accountId || ""));
+  if (!normalized) return null;
+  return accountRuntimeAuthStateCache.get(normalized) || null;
+}
+
+function setAccountRuntimeAuthState(accountId: string, state: AccountRuntimeAuthState) {
+  const normalized = normalizePersistentAccountId(accountId);
+  if (!normalized) return;
+  accountRuntimeAuthStateCache.set(normalized, state);
+}
+
+function clearAccountRuntimeAuthState(accountId: string) {
+  const normalized = normalizePersistentAccountId(accountId);
+  if (!normalized) return;
+  accountRuntimeAuthStateCache.delete(normalized);
 }
 
 function computeExpiresAt(expiresInSeconds: number | undefined) {
@@ -823,6 +981,12 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
   if (mode === "session") {
     await deletePersistentCloudTokenSecure(normalizedAccountId).catch(() => null);
     persistentRefreshTokenCache.delete(normalizedAccountId);
+    clearAccountAuthStatus(normalizedAccountId);
+    setAccountRuntimeAuthState(normalizedAccountId, {
+      availability: "active",
+      refreshTokenFound: false,
+      accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+    });
     return { storedSecurely: false, fallbackUsed: false, roundtrip: false, secureStorageAvailable: canUseSecurePersistentTokenStorage() };
   }
   if (!canUseSecurePersistentTokenStorage()) {
@@ -832,7 +996,16 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       secureStorageAvailable: false,
       errorCode: "secure_storage_unavailable",
     });
-    setLastAuthErrorCode("secure_storage_unavailable");
+    setAccountAuthStatus(normalizedAccountId, {
+      lastAuthErrorCode: "secure_storage_unavailable",
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(normalizedAccountId, {
+      availability: "active",
+      refreshTokenFound: false,
+      accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+    });
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: false };
   }
   if (!tokens.refreshToken) {
@@ -843,7 +1016,16 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
       reason: "missing_refresh_token",
       errorCode: "missing_refresh_token",
     });
-    setLastAuthErrorCode("missing_refresh_token");
+    setAccountAuthStatus(normalizedAccountId, {
+      lastAuthErrorCode: "missing_refresh_token",
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(normalizedAccountId, {
+      availability: "active",
+      refreshTokenFound: false,
+      accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+    });
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true };
   }
   logAuthLifecycle("secure token save start", {
@@ -855,7 +1037,16 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
   const saved = await savePersistentCloudTokenSecure(normalizedAccountId, tokens.refreshToken);
   if (!saved?.ok) {
     persistentRefreshTokenCache.delete(normalizedAccountId);
-    setLastAuthErrorCode(saved?.error_code || "secure_refresh_save_failed");
+    setAccountAuthStatus(normalizedAccountId, {
+      lastAuthErrorCode: saved?.error_code || "secure_refresh_save_failed",
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(normalizedAccountId, {
+      availability: "active",
+      refreshTokenFound: false,
+      accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+    });
     logAuthLifecycle("secure token save end", {
       accountId: shortAccountId(normalizedAccountId),
       storage: mode,
@@ -868,7 +1059,16 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
   if (!saved.roundtrip) {
     persistentRefreshTokenCache.delete(normalizedAccountId);
     await deletePersistentCloudTokenSecure(normalizedAccountId).catch(() => null);
-    setLastAuthErrorCode(saved.error_code || "keyring_roundtrip_failed");
+    setAccountAuthStatus(normalizedAccountId, {
+      lastAuthErrorCode: saved.error_code || "keyring_roundtrip_failed",
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(normalizedAccountId, {
+      availability: "active",
+      refreshTokenFound: false,
+      accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+    });
     logAuthLifecycle("secure token save end", {
       accountId: shortAccountId(normalizedAccountId),
       storage: mode,
@@ -879,7 +1079,12 @@ export async function saveCloudToken(accountId: string, tokens: CloudAuthTokens,
     return { storedSecurely: false, fallbackUsed: true, roundtrip: false, secureStorageAvailable: true, errorCode: saved.error_code || "keyring_roundtrip_failed" };
   }
   persistentRefreshTokenCache.set(normalizedAccountId, tokens.refreshToken);
-  setLastAuthErrorCode(null);
+  clearAccountAuthStatus(normalizedAccountId);
+  setAccountRuntimeAuthState(normalizedAccountId, {
+    availability: "active",
+    refreshTokenFound: true,
+    accessTokenValid: !isTokenExpiredOrNearExpiry(tokens.expiresAt, 0),
+  });
   logAuthLifecycle("secure token save end", {
     accountId: shortAccountId(normalizedAccountId),
     secureStorageAvailable: true,
@@ -938,6 +1143,8 @@ export async function deleteCloudToken(accountId: string) {
   });
   persistentRefreshTokenCache.delete(normalizedAccountId);
   setRuntimeAccessToken(normalizedAccountId, null);
+  clearAccountAuthStatus(normalizedAccountId);
+  clearAccountRuntimeAuthState(normalizedAccountId);
   if (!canUseSecurePersistentTokenStorage()) return;
   await deletePersistentCloudTokenSecure(normalizedAccountId);
   logAuthLifecycle("secure token delete end", {
@@ -958,13 +1165,105 @@ async function resolveCloudSessionForAccount(account: StoredCloudAccount | null)
   return { session: refreshed, tokenSource: account.storage === "persistent" ? "secure" : "session" };
 }
 
+function isSessionExpiredAuthCode(code: string | null) {
+  return code === "refresh_http_401"
+    || code === "refresh_http_403"
+    || code === "refresh_auth"
+    || code === "verify_http_401"
+    || code === "verify_http_403"
+    || code === "verify_auth";
+}
+
+function isRefreshFailureCode(code: string | null) {
+  return code === "refresh_network"
+    || code === "refresh_timeout"
+    || code === "refresh_server"
+    || code === "refresh_unknown"
+    || code === "refresh_http_429"
+    || code === "refresh_http_500"
+    || code === "refresh_http_502"
+    || code === "refresh_http_503"
+    || code === "refresh_http_504";
+}
+
+function isAuthSubsystemErrorCode(code: string | null) {
+  return code === "secure_storage_unavailable"
+    || code === "secure_refresh_save_failed"
+    || code === "keyring_roundtrip_failed"
+    || code === "missing_refresh_token";
+}
+
+function isPersistenceFailureCode(code: string | null) {
+  return code === "secure_storage_unavailable"
+    || code === "secure_refresh_save_failed"
+    || code === "keyring_roundtrip_failed";
+}
+
+function resolvePersistenceStatus(
+  account: StoredCloudAccount | null,
+  options?: {
+    authStatus?: AccountAuthStatus | null;
+    refreshTokenFound?: boolean;
+  },
+): CloudPersistenceStatus {
+  if (!account || account.storage !== "persistent") return "unknown";
+  const authStatus = options?.authStatus || getAccountAuthStatus(account.user.id);
+  if (isPersistenceFailureCode(authStatus.lastAuthErrorCode)) return "failed";
+  if (options?.refreshTokenFound) return "ok";
+  if (persistentRefreshTokenCache.has(account.user.id)) return "ok";
+  return "unknown";
+}
+
+function getActivePersistenceStatusSnapshot(): CloudPersistenceStatus {
+  const account = getActiveAccount();
+  if (!account) return "unknown";
+  return resolvePersistenceStatus(account);
+}
+
+async function resolveCloudAvailability(
+  account: StoredCloudAccount,
+  session: StoredCloudSession | null,
+): Promise<{ availability: CloudSessionAvailability; refreshTokenFound: boolean }> {
+  const runtimeSessionValid = Boolean(session?.token);
+  const runtimeState = getAccountRuntimeAuthState(account.user.id);
+  if (runtimeSessionValid) {
+    return {
+      availability: "active",
+      refreshTokenFound: account.storage === "persistent"
+        ? Boolean(runtimeState?.refreshTokenFound)
+        : false,
+    };
+  }
+  if (runtimeState) {
+    return {
+      availability: runtimeState.availability,
+      refreshTokenFound: runtimeState.refreshTokenFound,
+    };
+  }
+  if (account.storage !== "persistent") {
+    return { availability: "session_expired", refreshTokenFound: false };
+  }
+  const refreshTokenFound = Boolean(persistentRefreshTokenCache.get(account.user.id) || (await loadCloudToken(account.user.id)));
+  if (!refreshTokenFound) {
+    return { availability: "saved_without_token", refreshTokenFound: false };
+  }
+  return { availability: session ? "active" : "unknown_error", refreshTokenFound: true };
+}
+
 async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promise<StoredCloudSession | null> {
   if (account.storage !== "persistent") return mergeTokenIntoAccount(account);
   const refreshToken = await loadCloudToken(account.user.id);
   if (!refreshToken) {
-    lastRefreshSuccess = false;
-    lastRotatedRefresh = false;
-    setLastAuthErrorCode("refresh_token_missing");
+    setAccountAuthStatus(account.user.id, {
+      lastAuthErrorCode: "refresh_token_missing",
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(account.user.id, {
+      availability: "saved_without_token",
+      refreshTokenFound: false,
+      accessTokenValid: false,
+    });
     logAuthLifecycle("refresh skipped", {
       accountId: shortAccountId(account.user.id),
       storage: account.storage,
@@ -973,6 +1272,7 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       refreshSuccess: false,
       rotatedRefresh: false,
       reason: "refresh_token_missing",
+      availability: "saved_without_token",
       secureStorageAvailable: canUseSecurePersistentTokenStorage(),
     });
     return null;
@@ -998,11 +1298,55 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       },
       "persistent",
     );
+    if (!secureResult.storedSecurely) {
+      const updatedAccount: StoredCloudAccount = {
+        ...account,
+        user: response.user,
+        lastUsedAt: nowIso(),
+        storage: "persistent",
+      };
+      const state = getStoredAuthState();
+      saveStoredAuthState(
+        {
+          activeOwnerId: state.activeOwnerId === account.user.id ? account.user.id : state.activeOwnerId,
+          accounts: [updatedAccount, ...state.accounts.filter((item) => item.user.id !== account.user.id)],
+        },
+        { notify: false },
+      );
+      setAccountAuthStatus(account.user.id, {
+        lastAuthErrorCode: secureResult.errorCode || "secure_refresh_save_failed",
+        lastRefreshSuccess: false,
+        lastRotatedRefresh: rotatedRefresh,
+      });
+      setAccountRuntimeAuthState(account.user.id, {
+        availability: "active",
+        refreshTokenFound: false,
+        accessTokenValid: true,
+      });
+      logAuthLifecycle("refresh end", {
+        accountId: shortAccountId(account.user.id),
+        storage: account.storage,
+        tokenSource: "secure",
+        refreshTokenFound: true,
+        refreshSuccess: false,
+        rotatedRefresh,
+        reason: "refresh_persist_failed",
+        statusCode: null,
+        availability: "auth_error",
+        errorCode: secureResult.errorCode || "secure_refresh_save_failed",
+      });
+      return {
+        ...updatedAccount,
+        token: runtime.accessToken,
+        tokenType: runtime.tokenType,
+        expiresAt: runtime.expiresAt,
+      };
+    }
     const updatedAccount: StoredCloudAccount = {
       ...account,
       user: response.user,
       lastUsedAt: nowIso(),
-      storage: secureResult.storedSecurely ? "persistent" : "session",
+      storage: "persistent",
     };
     const state = getStoredAuthState();
     saveStoredAuthState(
@@ -1012,9 +1356,16 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       },
       { notify: false },
     );
-    lastRefreshSuccess = true;
-    lastRotatedRefresh = rotatedRefresh;
-    setLastAuthErrorCode(null);
+    setAccountAuthStatus(account.user.id, {
+      lastAuthErrorCode: null,
+      lastRefreshSuccess: true,
+      lastRotatedRefresh: rotatedRefresh,
+    });
+    setAccountRuntimeAuthState(account.user.id, {
+      availability: "active",
+      refreshTokenFound: true,
+      accessTokenValid: true,
+    });
     logAuthLifecycle("refresh end", {
       accountId: shortAccountId(account.user.id),
       storage: updatedAccount.storage,
@@ -1028,15 +1379,29 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
     });
     return { ...updatedAccount, token: runtime.accessToken, tokenType: runtime.tokenType, expiresAt: runtime.expiresAt };
   } catch (error) {
-    lastRefreshSuccess = false;
-    lastRotatedRefresh = false;
-    setLastAuthErrorCode(
+    const errorCode =
       error instanceof CloudAuthRequestError
         ? error.statusCode
           ? `refresh_http_${error.statusCode}`
           : `refresh_${error.kind}`
-        : "refresh_unknown",
-    );
+        : "refresh_unknown";
+    const availability = isSessionExpiredAuthCode(errorCode)
+      ? "session_expired"
+      : isRefreshFailureCode(errorCode)
+        ? "refresh_failed"
+        : isAuthSubsystemErrorCode(errorCode)
+          ? "auth_error"
+          : "unknown_error";
+    setAccountAuthStatus(account.user.id, {
+      lastAuthErrorCode: errorCode,
+      lastRefreshSuccess: false,
+      lastRotatedRefresh: false,
+    });
+    setAccountRuntimeAuthState(account.user.id, {
+      availability,
+      refreshTokenFound: true,
+      accessTokenValid: false,
+    });
     logAuthLifecycle("refresh end", {
       accountId: shortAccountId(account.user.id),
       storage: account.storage,
@@ -1046,13 +1411,11 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       rotatedRefresh: false,
       reason: error instanceof CloudAuthRequestError ? `refresh_${error.kind}` : "refresh_unknown",
       statusCode: error instanceof CloudAuthRequestError ? error.statusCode : null,
-      availability: "saved_without_token",
+      availability,
+      errorCode,
       errorType: error instanceof Error ? error.name : typeof error,
     });
     setRuntimeAccessToken(account.user.id, null);
-    if (error instanceof CloudAuthRequestError && error.kind === "auth") {
-      await deleteCloudToken(account.user.id).catch(() => null);
-    }
     return null;
   }
 }
@@ -1082,6 +1445,11 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
   const runtime = mergeTokenIntoAccount(account);
   const accessTokenValidBefore = Boolean(runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt));
   if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt)) {
+    setAccountRuntimeAuthState(account.user.id, {
+      availability: "active",
+      refreshTokenFound: account.storage === "persistent" ? Boolean(persistentRefreshTokenCache.get(account.user.id)) : false,
+      accessTokenValid: true,
+    });
     logAuthLifecycle("getValidAccessToken end", {
       accountId: shortAccountId(account.user.id),
       accessTokenValidBefore: true,
@@ -1093,6 +1461,11 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
   }
   if (account.storage === "session") {
     if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) {
+      setAccountRuntimeAuthState(account.user.id, {
+        availability: "active",
+        refreshTokenFound: false,
+        accessTokenValid: true,
+      });
       logAuthLifecycle("getValidAccessToken end", {
         accountId: shortAccountId(account.user.id),
         accessTokenValidBefore: false,
@@ -1103,6 +1476,11 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
       return runtime;
     }
     setRuntimeAccessToken(account.user.id, null);
+    setAccountRuntimeAuthState(account.user.id, {
+      availability: "session_expired",
+      refreshTokenFound: false,
+      accessTokenValid: false,
+    });
     logAuthLifecycle("getValidAccessToken end", {
       accountId: shortAccountId(account.user.id),
       accessTokenValidBefore: false,
@@ -1158,6 +1536,8 @@ export async function getActiveCloudAuthState(): Promise<ActiveCloudAuthState> {
       availability: "local",
       tokenSource: "missing",
       secureStorageAvailable,
+      persistenceStatus: "unknown",
+      persistentStorageError: false,
       requiresRelogin: false,
     };
   }
@@ -1169,25 +1549,30 @@ export async function getActiveCloudAuthState(): Promise<ActiveCloudAuthState> {
       availability: "none",
       tokenSource: "missing",
       secureStorageAvailable,
+      persistenceStatus: "unknown",
+      persistentStorageError: false,
       requiresRelogin: false,
     };
   }
   const { session, tokenSource } = await resolveCloudSessionForAccount(account);
-  const availability: CloudSessionAvailability = session
-    ? "active"
-    : account.storage === "persistent"
-      ? "saved_without_token"
-      : "session_expired";
+  const { availability, refreshTokenFound } = await resolveCloudAvailability(account, session);
   const runtime = getRuntimeAccessToken(account.user.id);
+  const authStatus = getAccountAuthStatus(account.user.id);
+  const persistenceStatus = resolvePersistenceStatus(account, { authStatus, refreshTokenFound });
+  const persistentStorageError = persistenceStatus === "failed";
+  const requiresRelogin = availability !== "active" || persistentStorageError;
   logAuthLifecycle("active cloud auth state", {
     accountId: shortAccountId(account.user.id),
     storage: account.storage,
     tokenSource,
-    refreshTokenFound: Boolean(persistentRefreshTokenCache.get(account.user.id)),
+    refreshTokenFound,
     accessTokenValid: Boolean(runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)),
-    lastAuthErrorCode,
+    lastAuthErrorCode: authStatus.lastAuthErrorCode,
     secureStorageAvailable,
     availability,
+    persistenceStatus,
+    persistentStorageError,
+    requiresRelogin,
   });
   return {
     ownerId,
@@ -1196,16 +1581,33 @@ export async function getActiveCloudAuthState(): Promise<ActiveCloudAuthState> {
     availability,
     tokenSource,
     secureStorageAvailable,
-    requiresRelogin: !session,
+    persistenceStatus,
+    persistentStorageError,
+    requiresRelogin,
   };
 }
 
 export async function getCloudAuthDiagnostics(): Promise<CloudAuthDiagnostics> {
-  const ownerId = getActiveOwnerId();
-  const account = getActiveAccount();
-  const secureStorageAvailable = canUseSecurePersistentTokenStorage();
-  const runtimeToken = account ? getRuntimeAccessToken(account.user.id) : null;
   const state = await getActiveCloudAuthState();
+  const ownerId = state.ownerId;
+  const account = state.account;
+  const secureStorageAvailable = state.secureStorageAvailable;
+  const runtimeToken = state.session
+    ? {
+        accessToken: state.session.token,
+        expiresAt: state.session.expiresAt,
+        tokenType: state.session.tokenType,
+      }
+    : account
+    ? getRuntimeAccessToken(account.user.id)
+    : null;
+  const authStatus = account ? getAccountAuthStatus(account.user.id) : emptyAccountAuthStatus();
+  const refreshTokenFound = account
+    ? Boolean(
+        persistentRefreshTokenCache.get(account.user.id)
+        || (account.storage === "persistent" ? await loadCloudToken(account.user.id) : null),
+      )
+    : false;
   return {
     activeOwnerId: shortAccountId(ownerId),
     accountId: account ? shortAccountId(account.user.id) : null,
@@ -1213,12 +1615,14 @@ export async function getCloudAuthDiagnostics(): Promise<CloudAuthDiagnostics> {
     availability: state.availability,
     tokenSource: state.tokenSource,
     secureStorageAvailable,
-    refreshTokenFound: account ? Boolean(persistentRefreshTokenCache.get(account.user.id) || (await loadCloudToken(account.user.id))) : false,
-    refreshSuccess: lastRefreshSuccess,
-    rotatedRefresh: lastRotatedRefresh,
+    persistenceStatus: state.persistenceStatus,
+    persistentStorageError: state.persistentStorageError,
+    refreshTokenFound,
+    refreshSuccess: authStatus.lastRefreshSuccess,
+    rotatedRefresh: authStatus.lastRotatedRefresh,
     accessTokenValid: Boolean(runtimeToken && !isTokenExpiredOrNearExpiry(runtimeToken.expiresAt, 0)),
     accessTokenExpiresAt: runtimeToken?.expiresAt || null,
-    lastAuthErrorCode,
+    lastAuthErrorCode: authStatus.lastAuthErrorCode,
   };
 }
 
@@ -1234,8 +1638,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     refreshTokenLength: session.tokens.refreshToken?.length || 0,
   });
   const secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
-  const storage: "persistent" | "session" =
-    requestedStorage === "persistent" && !secureResult.storedSecurely ? "session" : requestedStorage;
+  const storage: "persistent" | "session" = requestedStorage;
   const account: StoredCloudAccount = {
     user: session.user,
     storage,
@@ -1380,7 +1783,6 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     if (path === "/auth/refresh") {
-      setLastAuthErrorCode(`refresh_http_${response.status}`);
       logAuthLifecycle("refresh response", {
         status: response.status,
         refreshSuccess: false,
@@ -1395,7 +1797,6 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
     });
   }
   if (path === "/auth/refresh") {
-    setLastAuthErrorCode(null);
     logAuthLifecycle("refresh response", {
       status: response.status,
       refreshSuccess: true,
@@ -1456,6 +1857,7 @@ export const cloudAuth = {
   },
 };
 
+// Not a UI source of truth. UI must consume getActiveCloudAuthState() + getAuthUIState().
 export async function verifyStoredSession(ownerId?: string): Promise<StoredCloudSession | null> {
   const state = getStoredAuthState();
   const account = ownerId
@@ -1489,7 +1891,17 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
     if (error instanceof CloudAuthRequestError && error.kind === "auth") {
       setRuntimeAccessToken(session.user.id, null);
       if (session.storage === "persistent") {
-        await deleteCloudToken(session.user.id).catch(() => null);
+        const refreshTokenFound = Boolean(persistentRefreshTokenCache.get(session.user.id) || (await loadCloudToken(session.user.id)));
+        setAccountAuthStatus(session.user.id, {
+          lastAuthErrorCode: error.statusCode ? `verify_http_${error.statusCode}` : "verify_auth",
+          lastRefreshSuccess: false,
+          lastRotatedRefresh: false,
+        });
+        setAccountRuntimeAuthState(session.user.id, {
+          availability: "session_expired",
+          refreshTokenFound,
+          accessTokenValid: false,
+        });
       } else {
         removeAccount(session.user.id);
       }

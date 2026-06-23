@@ -7,6 +7,7 @@ import { AccountPanel } from "../../../components/account/AccountPanel";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
+import packageJson from "../../../package.json";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
@@ -48,11 +49,11 @@ const ONBOARDING_SECTION_KEYS = [
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General", hint: "Estado y accesos" },
   { id: "cuenta", label: "Cuenta", hint: "Multicuentas" },
-  { id: "sync", label: "Sincronizacion", hint: "Manual y automatica" },
-  { id: "datos", label: "Datos y backups", hint: "DB, backups y restore" },
+  { id: "sync", label: "Sincronización", hint: "Manual y automática" },
+  { id: "datos", label: "Datos y backups", hint: "Datos locales y copias" },
   { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
   { id: "actualizaciones", label: "Actualizaciones", hint: "Releases manuales" },
-  { id: "acerca", label: "Acerca de", hint: "Version y novedades" },
+  { id: "acerca", label: "Acerca de", hint: "Versión y novedades" },
 ] as const;
 
 type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
@@ -75,6 +76,18 @@ type AppDiagnostics = {
   db_exists?: boolean;
   frozen?: boolean;
 };
+
+const APP_VERSION = packageJson.version;
+
+function versionMajorMinor(value?: string | null) {
+  const match = String(value || "").trim().match(/^(\d+)\.(\d+)/);
+  return match ? `${match[1]}.${match[2]}` : null;
+}
+
+function areVersionsCompatible(appVersion?: string | null, backendVersion?: string | null) {
+  if (!appVersion || !backendVersion) return true;
+  return versionMajorMinor(appVersion) === versionMajorMinor(backendVersion);
+}
 
 function isSettingsSection(value: string | null): value is SettingsSectionId {
   return SETTINGS_SECTIONS.some((section) => section.id === value);
@@ -141,8 +154,8 @@ export default function ConfiguracionPage() {
       setAutoSyncIntervalMsState(getAutoSyncIntervalMs());
       setLoadError("");
     } catch (e: any) {
-      setLoadError(e?.message || "No se pudo cargar la configuracion.");
-      showError(e?.message || "No se pudo cargar la configuracion.");
+      setLoadError(e?.message || "No se pudo cargar la configuración.");
+      showError(e?.message || "No se pudo cargar la configuración.");
     } finally {
       setLoading(false);
     }
@@ -195,7 +208,7 @@ export default function ConfiguracionPage() {
     try {
       const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
       if (!isTauri) {
-        showError("La restauracion de copia de seguridad esta disponible solo en la app de escritorio.");
+        showError("La restauración de copia de seguridad está disponible solo en la app de escritorio.");
         return;
       }
 
@@ -208,7 +221,7 @@ export default function ConfiguracionPage() {
 
       const path = Array.isArray(selected) ? selected[0] : selected;
       if (!path || !path.toLowerCase().endsWith(".db")) {
-        showError("Debes seleccionar un archivo .db valido.");
+        showError("Debés seleccionar un archivo .db válido.");
         return;
       }
       setSelectedRestorePath(path);
@@ -231,17 +244,17 @@ export default function ConfiguracionPage() {
       const normalized = message.toLowerCase();
       if (
         normalized.includes("sqlite") ||
-        normalized.includes("estructura minima") ||
+        normalized.includes("estructura mínima") ||
         normalized.includes("archivo .db") ||
-        normalized.includes("vacia") ||
+        normalized.includes("vacía") ||
         normalized.includes("no existe") ||
         normalized.includes("no es un archivo")
       ) {
-        showError("No se pudo restaurar la copia de seguridad. Verifica que el archivo sea una copia valida de ScisoNomics.");
-      } else if (normalized.includes("base de datos esta en uso")) {
-        showError("No se pudo restaurar porque tus datos estan en uso. Cerra y volve a abrir ScisoNomics.");
+        showError("No se pudo restaurar la copia de seguridad. Verificá que el archivo sea una copia válida de ScisoNomics.");
+      } else if (normalized.includes("base de datos está en uso")) {
+        showError("No se pudo restaurar porque tus datos están en uso. Cerrá y volvé a abrir ScisoNomics.");
       } else {
-        showError("No se pudo restaurar la copia de seguridad. Intenta nuevamente o elegi otra copia.");
+        showError("No se pudo restaurar la copia de seguridad. Intentá nuevamente o elegí otra copia.");
       }
     } finally {
       setRestoring(false);
@@ -251,15 +264,15 @@ export default function ConfiguracionPage() {
   async function handleManualSync() {
     const session = await getActiveCloudSessionAsync();
     if (!session) {
-      showError("Inicia sesion para sincronizar.");
+      showError("Iniciá sesión para sincronizar.");
       return;
     }
     setSyncingNow(true);
     try {
-      const result = await runManualSync(session.token, session.user.email);
+      const result = await runManualSync(session.user.email);
       await load();
-      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revision.");
-      else showSuccess("Sincronizacion completada.");
+      if (result.rejectedTotal) showError("Algunos datos no pudieron sincronizarse y necesitan revisión.");
+      else showSuccess("Sincronización completada.");
     } catch (error) {
       showError(error instanceof Error ? error.message : "No se pudo sincronizar.");
     } finally {
@@ -272,11 +285,11 @@ export default function ConfiguracionPage() {
     try {
       const result = await getLocalDbIntegrity();
       setLocalIntegrity(result);
-      if (result.status === "healthy") showSuccess("Tus datos locales estan correctos.");
+      if (result.status === "healthy") showSuccess("Tus datos locales están correctos.");
       else if (result.status === "warning") showError("Encontramos datos locales que conviene reparar antes de continuar.");
-      else showError("Tus datos locales requieren reparacion antes de sincronizar.");
+      else showError("Tus datos locales requieren reparación antes de sincronizar.");
     } catch {
-      showError("No pudimos revisar tus datos locales. Cerra y volve a abrir ScisoNomics.");
+      showError("No pudimos revisar tus datos locales. Cerrá y volvé a abrir ScisoNomics.");
     } finally {
       setCheckingLocalIntegrity(false);
     }
@@ -301,12 +314,12 @@ export default function ConfiguracionPage() {
       const result = await repairLocalDb();
       setLocalIntegrity(await getLocalDbIntegrity());
       setBackupState(await api.backups());
-      if (result.ok && result.unresolved_count === 0) showSuccess("Reparacion completada. No se eliminaron datos financieros.");
-      else showError("Creamos un backup, pero algunos problemas requieren revision manual.");
+      if (result.ok && result.unresolved_count === 0) showSuccess("Reparación completada. No se eliminaron datos financieros.");
+      else showError("Creamos un backup, pero algunos problemas requieren revisión manual.");
     } catch {
       setLocalIntegrity(await getLocalDbIntegrity().catch(() => null));
       setBackupState(await api.backups().catch(() => null));
-      showError("Creamos un backup antes de revisar. Algunos problemas requieren revision manual.");
+      showError("Creamos un backup antes de revisar. Algunos problemas requieren revisión manual.");
     } finally {
       setRepairingLocalDb(false);
     }
@@ -314,18 +327,18 @@ export default function ConfiguracionPage() {
 
   function handleAutoSyncToggle(enabled: boolean) {
     if (activeOwner === "local" || !getActiveAccount()) {
-      showError("La sincronizacion automatica requiere una cuenta cloud activa.");
+      showError("La sincronización automática requiere una cuenta cloud activa.");
       return;
     }
     setAutoSyncEnabled(enabled);
     setAutoSyncEnabledState(enabled);
-    showSuccess(enabled ? "Sincronizacion automatica activada." : "Sincronizacion automatica desactivada.");
+    showSuccess(enabled ? "Sincronización automática activada." : "Sincronización automática desactivada.");
   }
 
   function handleAutoSyncIntervalChange(intervalMs: number) {
     setAutoSyncIntervalMs(intervalMs);
     setAutoSyncIntervalMsState(intervalMs);
-    showSuccess("Intervalo de sincronizacion actualizado.");
+    showSuccess("Intervalo de sincronización actualizado.");
   }
 
   const selectedRestoreName = selectedRestorePath ? selectedRestorePath.split(/[/\\]/).pop() || selectedRestorePath : null;
@@ -346,7 +359,7 @@ export default function ConfiguracionPage() {
       showSuccess(successMessage);
     } catch {
       setDiagnosticText(text);
-      showError("No pudimos copiar automaticamente. Te mostramos el texto para copiarlo manualmente.");
+      showError("No pudimos copiar automáticamente. Te mostramos el texto para copiarlo manualmente.");
     }
   }
 
@@ -395,17 +408,22 @@ export default function ConfiguracionPage() {
     : diagnostics?.initializing || diagnostics?.db_status === "degraded"
       ? "Preparando"
       : repairModeActive
-        ? "Requiere revision"
+        ? "Requiere revisión"
         : diagnostics?.database_ready || info?.db_exists
           ? "Lista"
           : "Error";
   const backendVersion = diagnostics?.version || info?.version || "no disponible";
-  const backendVersionMismatch = Boolean(diagnostics?.frozen && backendVersion !== "3.1.0");
+  const backendVersionCompatible = backendVersion === "no disponible" ? null : areVersionsCompatible(APP_VERSION, backendVersion);
+  const backendCompatibilityLabel = backendVersionCompatible == null
+    ? "Sin verificar"
+    : backendVersionCompatible
+      ? "Compatible"
+      : "Requiere actualización";
   const syncLabel = activeOwner === "local"
     ? "Modo local"
     : autoSyncEnabled
-      ? "Sync durante el uso activada"
-      : "Sync al abrir y cerrar";
+      ? "Sincronización durante el uso activada"
+      : "Sincronización al abrir y cerrar";
   const lastSyncLabel = syncOverview?.last_success?.finished_at || getLastAutoSyncAt() || getLastManualSyncAt() || "Sin sincronizaciones registradas";
   const selectedSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) || SETTINGS_SECTIONS[0];
 
@@ -414,22 +432,27 @@ export default function ConfiguracionPage() {
       <div className="space-y-5">
         <div>
           <h3 className="text-2xl font-black">General</h3>
-          <p className="mt-1 text-sm text-slate-400">Estado general y accesos rapidos.</p>
+          <p className="mt-1 text-sm text-slate-400">Estado general y accesos rápidos.</p>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
             <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
-            <p className="text-sm text-slate-400">Version 3.1.0</p>
+            <p className="text-sm text-slate-400">Versión {APP_VERSION}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado</p>
             <p className="mt-2 text-lg font-semibold">{backendLabel}</p>
             <p className="text-sm text-slate-400">Base de datos: {databaseLabel}</p>
           </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Compatibilidad local</p>
+            <p className="mt-2 text-lg font-semibold">{backendCompatibilityLabel}</p>
+            <p className="text-sm text-slate-400">Backend {backendVersion}</p>
+          </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Accesos rapidos</p>
+          <p className="font-semibold">Accesos rápidos</p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <Link className="btn" href="/movimientos">Registrar movimiento</Link>
             <button className="btn-secondary" type="button" onClick={() => selectSection("datos")}>Ver datos locales</button>
@@ -460,8 +483,8 @@ export default function ConfiguracionPage() {
       <div className="space-y-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <h3 className="text-2xl font-black">Sincronizacion</h3>
-            <p className="mt-1 text-sm text-slate-400">La sincronizacion corre solo para la cuenta cloud activa.</p>
+            <h3 className="text-2xl font-black">Sincronización</h3>
+            <p className="mt-1 text-sm text-slate-400">La sincronización funciona solo para la cuenta cloud activa.</p>
           </div>
           <button className="btn" type="button" onClick={handleManualSync} disabled={syncingNow || activeOwner === "local"}>
             {syncingNow ? "Sincronizando..." : "Sincronizar ahora"}
@@ -474,7 +497,7 @@ export default function ConfiguracionPage() {
             <p className="text-sm text-slate-400">{activeSession?.user.email || "Sin cuenta cloud activa"}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Ultima sync</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Última sincronización</p>
             <p className="mt-2 text-sm font-semibold text-slate-200">{lastSyncLabel}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
@@ -485,9 +508,9 @@ export default function ConfiguracionPage() {
         </div>
         <label className={`flex items-center justify-between gap-4 rounded-2xl border border-line bg-slate-950/30 px-4 py-3 text-sm ${activeOwner === "local" ? "opacity-60" : ""}`}>
           <span>
-            <span className="block font-semibold">Sincronizacion automatica mientras usas la app</span>
+            <span className="block font-semibold">Sincronización automática mientras usás la app</span>
             <span className="text-xs text-slate-400">
-              ScisoNomics siempre intenta sincronizar al abrir y cerrar. Esta opcion controla cambios, intervalo y background mientras usas la aplicacion.
+              ScisoNomics siempre intenta sincronizar al abrir y cerrar. Esta opción controla cambios, intervalo y segundo plano mientras usás la aplicación.
             </span>
           </span>
           <input
@@ -501,7 +524,7 @@ export default function ConfiguracionPage() {
         <label className={`flex items-center justify-between gap-4 rounded-2xl border border-line bg-slate-950/30 px-4 py-3 text-sm ${activeOwner === "local" || !autoSyncEnabled ? "opacity-60" : ""}`}>
           <span>
             <span className="block font-semibold">Intervalo en background</span>
-            <span className="text-xs text-slate-400">Se aplica solo a la cuenta cloud activa cuando la sincronizacion durante el uso esta habilitada.</span>
+            <span className="text-xs text-slate-400">Se aplica solo a la cuenta cloud activa cuando la sincronización durante el uso está habilitada.</span>
           </span>
           <select
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
@@ -516,7 +539,7 @@ export default function ConfiguracionPage() {
         </label>
         {autoSyncEnabled ? (
           <p className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 px-4 py-3 text-sm text-cyan-100">
-            Cuando esta activada, ScisoNomics sincroniza tus cambios y consulta cambios remotos de otros dispositivos en segundo plano.
+            Cuando está activada, ScisoNomics sincroniza tus cambios y consulta cambios remotos de otros dispositivos en segundo plano.
           </p>
         ) : null}
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
@@ -528,16 +551,16 @@ export default function ConfiguracionPage() {
                   <span>{table}</span>
                   <strong>{value.pending}</strong>
                 </div>
-                <p className="text-xs text-slate-500">Borrados: {value.deleted_pending} · Missing sync_id: {value.missing_sync_id}</p>
+                <p className="text-xs text-slate-500">Borrados: {value.deleted_pending} · Falta identificador de sincronización: {value.missing_sync_id}</p>
               </div>
-            )) : <p className="text-sm text-slate-400">Sin estado de sincronizacion disponible.</p>}
+            )) : <p className="text-sm text-slate-400">Sin estado de sincronización disponible.</p>}
           </div>
           {syncOverview?.rejected_total ? (
             <p className="mt-3 text-sm text-amber-300">
-              Hay {syncOverview.rejected_total} registros que no pudieron sincronizarse. Ultimo codigo: {syncOverview.latest_rejection?.code || "invalid_payload"}.
+              Hay {syncOverview.rejected_total} registros que no pudieron sincronizarse. Último código: {syncOverview.latest_rejection?.code || "invalid_payload"}.
             </p>
           ) : null}
-          {getLastSyncError() ? <p className="mt-3 text-sm text-amber-300">Ultimo error: {getLastSyncError()}</p> : null}
+          {getLastSyncError() ? <p className="mt-3 text-sm text-amber-300">Último error: {getLastSyncError()}</p> : null}
         </div>
       </div>
     );
@@ -550,10 +573,22 @@ export default function ConfiguracionPage() {
           <h3 className="text-2xl font-black">Datos y backups</h3>
           <p className="mt-1 text-sm text-slate-400">ScisoNomics guarda tus datos principalmente en tu dispositivo.</p>
         </div>
-        <div className="rounded-2xl border border-line bg-slate-950/30 p-4 text-sm">
-          <p><span className="text-slate-500">DB:</span> {databasePath || "No disponible"}</p>
-          <p className="mt-2"><span className="text-slate-500">Carpeta de datos:</span> {dataPath || "No disponible"}</p>
-          <p className="mt-2"><span className="text-slate-500">Backups:</span> {backupsPath || "No disponible"}</p>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Datos locales</p>
+            <p className="mt-2 text-lg font-semibold">{databasePath ? "Disponibles" : "No disponibles"}</p>
+            <p className="mt-1 text-sm text-slate-400">Tu información principal se guarda en este dispositivo.</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Backups</p>
+            <p className="mt-2 text-lg font-semibold">{backupsPath ? "Configurados" : "No disponibles"}</p>
+            <p className="mt-1 text-sm text-slate-400">Podés crear y restaurar copias de seguridad locales.</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Registros</p>
+            <p className="mt-2 text-lg font-semibold">{logsPath ? "Disponibles para soporte" : "No disponibles"}</p>
+            <p className="mt-1 text-sm text-slate-400">Los registros ayudan a soporte si necesitás asistencia.</p>
+          </div>
         </div>
         <p className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
           Restaurar copia de seguridad reemplaza tus datos actuales por los datos de la copia seleccionada.
@@ -564,6 +599,15 @@ export default function ConfiguracionPage() {
           <button className="btn-secondary" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
         </div>
+        <details className="rounded-2xl border border-line bg-slate-950/20 p-4 text-sm">
+          <summary className="cursor-pointer font-semibold text-slate-200">Detalles técnicos</summary>
+          <div className="mt-3 space-y-2 text-slate-400">
+            <p><span className="text-slate-300">Base de datos local:</span> {databasePath || "No disponible"}</p>
+            <p><span className="text-slate-300">Carpeta de datos:</span> {dataPath || "No disponible"}</p>
+            <p><span className="text-slate-300">Carpeta de backups:</span> {backupsPath || "No disponible"}</p>
+            <p><span className="text-slate-300">Carpeta de registros:</span> {logsPath || "No disponible"}</p>
+          </div>
+        </details>
       </div>
     );
   }
@@ -572,22 +616,22 @@ export default function ConfiguracionPage() {
     const integrityLabel = localIntegrity?.status === "healthy"
       ? "Correcto"
       : localIntegrity?.status === "warning"
-        ? "Necesita revision"
+        ? "Necesita revisión"
         : localIntegrity?.status === "critical"
-          ? "Requiere reparacion"
+          ? "Requiere reparación"
           : repairModeActive
-            ? "Requiere reparacion"
+            ? "Requiere reparación"
           : "Sin revisar";
     const integrityTone = localIntegrity?.status === "healthy" ? "text-emerald-300" : localIntegrity || repairModeActive ? "text-amber-300" : "text-slate-300";
     const syncState = localIntegrity?.status === "critical" || repairModeActive
-      ? "Necesita atencion"
+      ? "Necesita atención"
       : syncOverview?.has_pending
         ? "Cambios pendientes"
         : "Sincronizado";
     const integritySummary = localIntegrity?.safe_summary?.[0]
       || diagnostics?.message
       || info?.db_message
-      || "Todavia no revisamos tus datos locales.";
+      || "Todavía no revisamos tus datos locales.";
 
     return (
       <div className="space-y-5">
@@ -602,24 +646,24 @@ export default function ConfiguracionPage() {
             <p className="mt-1 text-sm text-slate-400">{integritySummary}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sincronizacion</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sincronización</p>
             <p className="mt-2 text-lg font-semibold">{syncState}</p>
-            <p className="mt-1 text-sm text-slate-400">Ultima sincronizacion: {lastSyncLabel}</p>
+            <p className="mt-1 text-sm text-slate-400">Última sincronización: {lastSyncLabel}</p>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Ultimo backup</p>
-            <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavia no creaste un backup"}</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Último backup</p>
+            <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavía no creaste un backup"}</p>
             <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente.</p>
           </div>
         </div>
         {localIntegrity?.status === "critical" || repairModeActive ? (
           <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            {diagnostics?.message || info?.db_message || "ScisoNomics abrio en modo reparacion porque tus datos locales necesitan una revision."}
+            {diagnostics?.message || info?.db_message || "ScisoNomics abrió en modo reparación porque tus datos locales necesitan una revisión."}
           </p>
         ) : null}
         {localIntegrity?.status === "warning" ? (
           <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            Encontramos detalles reparables en tus datos locales. Podes crear un backup y ejecutar la reparacion automatica.
+            Encontramos detalles reparables en tus datos locales. Podés crear un backup y ejecutar la reparación automática.
           </p>
         ) : null}
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -649,9 +693,9 @@ export default function ConfiguracionPage() {
           <p className="mt-1 text-sm text-slate-400">Las actualizaciones se descargan manualmente desde GitHub Releases.</p>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Version instalada</p>
-          <p className="mt-2 text-3xl font-black text-cyan-100">3.1.0</p>
-          <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta version. ScisoNomics no descarga ni reemplaza ejecutables automaticamente.</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Versión instalada</p>
+          <p className="mt-2 text-3xl font-black text-cyan-100">{APP_VERSION}</p>
+          <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta versión. ScisoNomics no descarga ni reemplaza ejecutables automáticamente.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" type="button" onClick={handleOpenReleases}>Buscar actualizaciones</button>
@@ -670,10 +714,10 @@ export default function ConfiguracionPage() {
         </div>
         <div className="grid gap-3 lg:grid-cols-2">
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4 text-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Aplicacion</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Aplicación</p>
             <div className="mt-3 space-y-1 text-slate-300">
               <p><strong className="text-white">ScisoNomics</strong></p>
-              <p>Version instalada: 3.1.0</p>
+              <p>Versión instalada: {APP_VERSION}</p>
               <p>Tipo: Local-first</p>
               <p>Stack: Next.js - Tauri - FastAPI - SQLite</p>
             </div>
@@ -685,19 +729,21 @@ export default function ConfiguracionPage() {
               <p>Base de datos: <strong>{databaseLabel}</strong></p>
               <p>Modo: <strong>{currentMode}</strong></p>
               <p>Cuenta activa: <strong>{activeSession?.user.email || "local"}</strong></p>
+              <p>Versión backend: <strong>{backendVersion}</strong></p>
+              <p>Compatibilidad: <strong>{backendCompatibilityLabel}</strong></p>
             </div>
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Novedades de v3.1.0</p>
+          <p className="font-semibold">Novedades de v{APP_VERSION}</p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
-            <li>Sync confiable al abrir y cerrar la aplicacion.</li>
-            <li>Sync durante el uso configurable por cuenta e intervalo.</li>
-            <li>Sync endurecida con snapshot de owner por corrida.</li>
+            <li>Sincronización confiable al abrir y cerrar la aplicación.</li>
+            <li>Sincronización durante el uso configurable por cuenta e intervalo.</li>
+            <li>Sincronización reforzada con snapshot de owner por corrida.</li>
             <li>API local protegida con token de sidecar en app instalada.</li>
             <li>Google Login consume el resultado de polling una sola vez.</li>
-            <li>Verificacion de cuenta mas segura ante errores de red.</li>
-            <li>Migracion legacy de movimientos preservando metadata.</li>
+            <li>Verificación de cuenta más segura ante errores de red.</li>
+            <li>Migración legacy de movimientos preservando metadata.</li>
           </ul>
         </div>
         <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades en modal</button>
@@ -719,11 +765,11 @@ export default function ConfiguracionPage() {
     <section className="space-y-4">
       <header className="card overflow-hidden p-0">
         <div className="border-b border-line bg-slate-950/50 px-5 py-4">
-          <p className="text-xs uppercase tracking-[0.24em] text-cyan-300">Configuracion</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-cyan-300">Configuración</p>
           <div className="mt-2 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-3xl font-black">Centro de configuracion</h2>
-              <p className="mt-1 text-sm text-slate-400">Administra cuenta, sync, datos, diagnostico y actualizaciones desde secciones separadas.</p>
+              <h2 className="text-3xl font-black">Centro de configuración</h2>
+              <p className="mt-1 text-sm text-slate-400">Administrá cuenta, sincronización, datos, seguridad y actualizaciones desde secciones separadas.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <StatusPill value={databaseLabel} />
@@ -734,14 +780,14 @@ export default function ConfiguracionPage() {
       </header>
 
       {loading && !info ? <LoadingSkeleton rows={5} /> : null}
-      {loadError ? <ErrorState title="No se pudieron cargar los datos de configuracion." description={loadError} onRetry={load} /> : null}
+      {loadError ? <ErrorState title="No se pudieron cargar los datos de configuración." description={loadError} onRetry={load} /> : null}
 
       <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
         <aside className="card h-fit p-3">
           <div className="mb-3 px-2">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Secciones</p>
           </div>
-          <nav className="flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible" aria-label="Secciones de configuracion">
+          <nav className="flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible" aria-label="Secciones de configuración">
             {SETTINGS_SECTIONS.map((section) => {
               const active = section.id === activeSection;
               return (
@@ -766,7 +812,7 @@ export default function ConfiguracionPage() {
         <main className="card min-h-[520px] p-5">
           <div className="mb-5 border-b border-line pb-4">
             <div>
-              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Seccion activa</p>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Sección activa</p>
               <h3 className="text-lg font-semibold">{selectedSection.label}</h3>
             </div>
           </div>
@@ -779,10 +825,10 @@ export default function ConfiguracionPage() {
           Esta accion reemplazara tus datos actuales por los datos de la copia seleccionada.
         </p>
         <p className="mt-2 text-sm text-slate-300">
-          Antes de restaurar, ScisoNomics creara automaticamente una copia de seguridad de tus datos actuales.
+          Antes de restaurar, ScisoNomics creará automáticamente una copia de seguridad de tus datos actuales.
         </p>
         <p className="mt-2 text-sm text-slate-300">
-          Luego deberas reiniciar la aplicacion para ver los cambios.
+          Luego deberás reiniciar la aplicación para ver los cambios.
         </p>
         {selectedRestoreName ? (
           <p className="mt-3 rounded-lg bg-slate-800 px-3 py-2 text-xs text-slate-200">
@@ -799,14 +845,14 @@ export default function ConfiguracionPage() {
         </div>
       </Modal>
 
-      <Modal open={releaseNotesOpen} title="Novedades de ScisoNomics 3.1.0" onClose={() => setReleaseNotesOpen(false)}>
+      <Modal open={releaseNotesOpen} title={`Novedades de ScisoNomics ${APP_VERSION}`} onClose={() => setReleaseNotesOpen(false)}>
         <div className="mt-2 space-y-2 text-sm text-slate-300">
-          <p>Esta version se enfoca en estabilizacion, seguridad y hardening de sincronizacion.</p>
+          <p>Esta versión se enfoca en estabilización, seguridad y hardening de sincronización.</p>
           <ul className="list-disc space-y-1 pl-5">
             <li>La app intenta sincronizar siempre al abrir y cerrar si hay una cuenta cloud activa.</li>
-            <li>La sincronizacion durante el uso permite elegir un intervalo por cuenta.</li>
-            <li>La sincronizacion usa owner/token congelados durante toda la corrida.</li>
-            <li>La app no elimina cuentas guardadas por fallas temporales de conexion.</li>
+            <li>La sincronización durante el uso permite elegir un intervalo por cuenta.</li>
+            <li>La sincronización usa owner/token congelados durante toda la corrida.</li>
+            <li>La app no elimina cuentas guardadas por fallas temporales de conexión.</li>
             <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>
             <li>Google Login invalida el resultado de polling tras el primer consumo.</li>
             <li>Se redujo PII en logs cloud y se corrigieron mensajes visibles.</li>
@@ -814,8 +860,8 @@ export default function ConfiguracionPage() {
         </div>
       </Modal>
 
-      <Modal open={!!diagnosticText} title="Diagnostico" onClose={() => setDiagnosticText(null)}>
-        <p className="text-sm text-slate-300">No pudimos copiar automaticamente. Podes copiar este texto manualmente.</p>
+      <Modal open={!!diagnosticText} title="Diagnóstico" onClose={() => setDiagnosticText(null)}>
+        <p className="text-sm text-slate-300">No pudimos copiar automáticamente. Podés copiar este texto manualmente.</p>
         <pre className="mt-3 max-h-80 overflow-auto rounded-xl border border-line bg-slate-950/60 p-3 text-xs text-slate-200">
           {diagnosticText}
         </pre>
