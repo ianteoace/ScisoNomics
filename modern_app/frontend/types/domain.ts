@@ -62,9 +62,19 @@ export type StatsResponse = {
     saldo_inicial: number;
     ingreso: number;
     gasto: number;
+    ahorro?: number;
     balance_final: number;
+    balance?: number;
+    disponible_luego_ahorro?: number;
   };
-  month_totals: { ingreso: number; gasto: number; balance: number };
+  month_totals: {
+    ingreso: number;
+    gasto: number;
+    ahorro?: number;
+    inversion?: number;
+    balance: number;
+    disponible_luego_ahorro?: number;
+  };
   expenses_by_category: Array<{ categoria_id?: number; categoria: string; total: number; movimientos?: number }>;
   trend: Array<{ mes: number; ingresos: number; gastos: number }>;
   planificacion: {

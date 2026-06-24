@@ -1,7 +1,7 @@
 ﻿"use client";
 
 import { useMemo, useState } from "react";
-import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from "recharts";
 
 import { money, monthName } from "../../lib/format";
 import type { Movimiento, StatsResponse } from "../../types/domain";
@@ -13,6 +13,10 @@ import { ClientOnly } from "../ui/ClientOnly";
 import { Modal } from "../ui/Modal";
 
 const palette = ["#00bcd4", "#ff7043", "#7e57c2", "#66bb6a", "#ec407a", "#26a69a", "#ffca28", "#42a5f5", "#ab47bc", "#8d6e63", "#26c6da", "#ef5350"];
+const incomeColor = "#22c55e";
+const expenseColor = "#ef4444";
+const savingsColor = "#0ea5e9";
+const investmentColor = "#a855f7";
 
 export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsResponse | null; monthRows: Movimiento[]; loading: boolean }) {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -20,7 +24,32 @@ export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsRe
   const [modalOpen, setModalOpen] = useState(false);
   const [modalTotal, setModalTotal] = useState(0);
 
-  const activeCategory = selectedCategory || stats?.expenses_by_category?.[0]?.categoria || null;
+  const categoryData = useMemo(
+    () => (stats?.expenses_by_category || []).map((item) => ({
+      categoria_id: item.categoria_id,
+      categoria: item.categoria,
+      name: item.categoria,
+      total: Number(item.total || 0),
+      value: Number(item.total || 0),
+      movimientos: Number(item.movimientos || 0),
+    })),
+    [stats],
+  );
+
+  const trendData = useMemo(
+    () => (stats?.trend || [])
+      .map((item) => ({
+        mes: Number(item.mes || 0),
+        name: monthName(Number(item.mes || 0)),
+        ingresos: Number(item.ingresos || 0),
+        gastos: Number(item.gastos || 0),
+        balance: Number(item.ingresos || 0) - Number(item.gastos || 0),
+      }))
+      .sort((a, b) => a.mes - b.mes),
+    [stats],
+  );
+
+  const activeCategory = selectedCategory || categoryData[0]?.categoria || null;
 
   const selectedByCategory = useMemo(() => {
     if (!activeCategory) return [];
@@ -36,14 +65,34 @@ export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsRe
     );
   }
   if (!stats) return <EmptyState title="Sin estadísticas" hint="No hay datos para este período." ctaLabel="Cambiar filtros" />;
-  const hasData = monthRows.length > 0 || stats.expenses_by_category.length > 0 || stats.month_totals.ingreso > 0 || stats.month_totals.gasto > 0;
+  const totalIngresos = Number(stats.month_totals.ingreso || 0);
+  const totalGastos = Number(stats.month_totals.gasto || 0);
+  const totalAhorro = Number(stats.month_totals.ahorro || 0);
+  const totalInversion = Number(stats.month_totals.inversion || 0);
+  const totalBalance = Number(stats.month_totals.balance || 0);
+  const totalVencido = Number(stats.planificacion.total_vencido || 0);
+  const totalPendiente30Dias = Number(stats.planificacion.total_pendiente_30_dias || 0);
+  const totalPagadoMes = Number(stats.planificacion.total_pagado_mes || 0);
+  const balanceProyectado = Number(stats.planificacion.balance_proyectado_mes || 0);
+  const hasData = monthRows.length > 0
+    || totalIngresos > 0
+    || totalGastos > 0
+    || totalAhorro > 0
+    || totalInversion > 0
+    || categoryData.length > 0
+    || trendData.some((item) => item.ingresos > 0 || item.gastos > 0);
   if (!hasData) return <EmptyState title="Sin estadísticas para este período" hint="No hay movimientos en el período seleccionado." ctaLabel="Cambiar período" />;
 
   const barData = [
-    { nombre: "Ingresos", total: stats.month_totals.ingreso },
-    { nombre: "Gastos", total: stats.month_totals.gasto },
+    { nombre: "Ingresos", total: totalIngresos },
+    { nombre: "Gastos", total: totalGastos },
+    { nombre: "Ahorro", total: totalAhorro },
+    { nombre: "Inversión", total: totalInversion },
   ];
-  const totalExpensesByCategory = stats.expenses_by_category.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const maxBarValue = Math.max(...barData.map((item) => item.total), 1);
+  const totalExpensesByCategory = categoryData.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const hasCategoryChartData = categoryData.some((item) => item.value > 0);
+  const hasTrendChartData = trendData.some((item) => item.ingresos > 0 || item.gastos > 0);
   const piePercentLabel = ({ total }: { total?: number }) => {
     if (!totalExpensesByCategory) return "";
     const percent = ((Number(total || 0) / totalExpensesByCategory) * 100).toFixed(1);
@@ -54,100 +103,185 @@ export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsRe
     <div className="grid gap-4">
       <SectionHeader title="Estadísticas" subtitle="Análisis visual del período seleccionado" />
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard title="Ingresos" value={money(stats.month_totals.ingreso)} tone="income" />
-        <MetricCard title="Gastos" value={money(stats.month_totals.gasto)} tone="expense" />
-        <MetricCard title="Balance" value={money(stats.month_totals.balance)} tone={stats.month_totals.balance >= 0 ? "accent" : "warn"} />
-        <MetricCard title="Categorías con gasto" value={String(stats.expenses_by_category.length)} />
+        <MetricCard title="Ingresos" value={money(totalIngresos)} tone="income" />
+        <MetricCard title="Gastos" value={money(totalGastos)} tone="expense" />
+        <MetricCard title="Balance" value={money(totalBalance)} tone={totalBalance >= 0 ? "accent" : "warn"} />
+        <MetricCard title="Ahorro" value={money(totalAhorro)} />
+        <MetricCard title="Inversión" value={money(totalInversion)} />
+        <MetricCard title="Vencido" value={money(totalVencido)} tone={totalVencido > 0 ? "warn" : "default"} />
+        <MetricCard title="Pendiente 30 días" value={money(totalPendiente30Dias)} />
+        <MetricCard title="Balance proyectado" value={money(balanceProyectado)} tone={balanceProyectado >= 0 ? "accent" : "warn"} />
       </div>
       <div className="grid gap-4 xl:grid-cols-3">
         <section className="card p-4 xl:col-span-1">
-          <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Torta interactiva por categoría</h3>
-          <div className="h-72">
-            <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={stats.expenses_by_category}
-                    dataKey="total"
-                    nameKey="categoria"
-                    outerRadius={100}
-                    label={piePercentLabel}
-                    isAnimationActive={false}
-                    onMouseEnter={(entry: any) => setHoverCategory(entry?.categoria || null)}
-                    onMouseLeave={() => setHoverCategory(null)}
-                    onClick={(entry: any) => {
-                      const category = entry?.categoria || null;
-                      setSelectedCategory(category);
-                      setModalTotal(Number(entry?.total || 0));
-                      setModalOpen(true);
-                    }}
-                  >
-                    {stats.expenses_by_category.map((entry, i) => {
-                      const active = entry.categoria === hoverCategory;
-                      return <Cell key={i} fill={palette[i % palette.length]} style={{ cursor: "pointer" }} stroke={active ? "rgb(var(--text))" : "transparent"} strokeWidth={active ? 2 : 0} opacity={active ? 1 : 0.8} />;
-                    })}
-                  </Pie>
-                  <Tooltip
-                    cursor={false}
-                    formatter={(v: number) => [money(v), "valor"]}
-                    labelFormatter={(label) => `Categoría: ${label}`}
-                    contentStyle={{ borderRadius: 12, border: "1px solid rgb(var(--line))", background: "rgb(var(--card))" }}
-                    itemStyle={{ color: "rgb(var(--text))" }}
-                    labelStyle={{ color: "rgb(var(--text))" }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            </ClientOnly>
+          <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Gastos por categoría</h3>
+          <div className="rounded-lg border border-line p-4">
+            {!hasCategoryChartData ? (
+              <EmptyState title="Sin gastos por categoría" hint="No hay gastos por categoría en este período." ctaLabel="Cambiar período" />
+            ) : (
+              <div className="space-y-3">
+                {categoryData.map((item, index) => {
+                  const active = item.categoria === hoverCategory || item.name === hoverCategory;
+                  const percent = piePercentLabel({ total: item.value });
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      className={`w-full rounded-lg border p-3 text-left transition ${active ? "border-slate-400 dark:border-slate-500" : "border-line"}`}
+                      onMouseEnter={() => setHoverCategory(item.categoria)}
+                      onMouseLeave={() => setHoverCategory(null)}
+                      onClick={() => {
+                        setSelectedCategory(item.categoria);
+                        setModalTotal(Number(item.value || 0));
+                        setModalOpen(true);
+                      }}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="h-3 w-3 rounded-full" style={{ backgroundColor: palette[index % palette.length] }} />
+                          <span className="truncate text-sm">{item.name}</span>
+                        </div>
+                        <span className="text-xs text-slate-500 dark:text-slate-400">{percent}</span>
+                      </div>
+                      <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                        <span>{money(item.value)}</span>
+                        <span>{item.movimientos} mov.</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800">
+                        <div
+                          className="h-2 rounded-full"
+                          style={{
+                            width: `${Math.max(6, totalExpensesByCategory > 0 ? (item.value / totalExpensesByCategory) * 100 : 0)}%`,
+                            backgroundColor: palette[index % palette.length],
+                          }}
+                        />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Categoría activa: <span className="text-cyan-700 dark:text-cyan-300">{activeCategory || "-"}</span></p>
         </section>
 
         <section className="card p-4 xl:col-span-2">
           <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Barras ingresos vs gastos</h3>
-          <div className="h-72">
-            <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" />
-                <XAxis dataKey="nombre" stroke="rgb(var(--muted))" />
-                <YAxis stroke="rgb(var(--muted))" />
-                <Tooltip
-                  cursor={false}
-                  formatter={(v: number) => [money(v), "valor"]}
-                  contentStyle={{ borderRadius: 12, border: "1px solid rgb(var(--line))", background: "rgb(var(--card))" }}
-                  itemStyle={{ color: "rgb(var(--text))" }}
-                  labelStyle={{ color: "rgb(var(--text))" }}
-                />
-                <Bar dataKey="total" radius={8} isAnimationActive={false}>
-                  {barData.map((entry) => <Cell key={entry.nombre} fill={entry.nombre === "Ingresos" ? "rgb(var(--income))" : "rgb(var(--expense))"} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ClientOnly>
+          <div className="rounded-lg border border-line p-4">
+            <div className="space-y-4">
+              {barData.map((entry) => {
+                const color =
+                  entry.nombre === "Ingresos"
+                    ? incomeColor
+                    : entry.nombre === "Gastos"
+                      ? expenseColor
+                      : entry.nombre === "Ahorro"
+                        ? savingsColor
+                        : investmentColor;
+                return (
+                  <div key={entry.nombre}>
+                    <div className="mb-1 flex items-center justify-between gap-3 text-sm">
+                      <span>{entry.nombre}</span>
+                      <span>{money(entry.total)}</span>
+                    </div>
+                    <div className="h-3 rounded-full bg-slate-200 dark:bg-slate-800">
+                      <div
+                        className="h-3 rounded-full"
+                        style={{
+                          width: `${Math.max(6, (entry.total / maxBarValue) * 100)}%`,
+                          backgroundColor: color,
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </section>
       </div>
 
+        <section className="card p-4">
+          <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Línea de balance mensual</h3>
+          <div className="h-72">
+            {!hasTrendChartData ? (
+              <EmptyState title="Sin evolución disponible" hint="No hay evolución disponible para este período." ctaLabel="Cambiar período" />
+            ) : (
+              <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
+                <div className="flex h-full items-center justify-center overflow-x-auto">
+                  <LineChart width={640} height={260} data={trendData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" />
+                    <XAxis dataKey="name" stroke="rgb(var(--muted))" />
+                    <YAxis stroke="rgb(var(--muted))" />
+                  <Tooltip
+                    formatter={(v: number) => [money(v), "valor"]}
+                    labelFormatter={(label) => `Mes: ${label}`}
+                    contentStyle={{ borderRadius: 12, border: "1px solid rgb(var(--line))", background: "rgb(var(--card))" }}
+                    itemStyle={{ color: "rgb(var(--text))" }}
+                    labelStyle={{ color: "rgb(var(--text))" }}
+                    />
+                    <Line type="monotone" dataKey="ingresos" stroke={incomeColor} strokeWidth={2} dot={false} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="gastos" stroke={expenseColor} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </div>
+              </ClientOnly>
+            )}
+          </div>
+          <div className="mt-3 rounded-lg border border-line bg-slate-50/70 p-3 text-xs text-slate-600 dark:bg-slate-900/40 dark:text-slate-300">
+            <p className="font-medium">Debug evolución: {trendData.length}</p>
+            <div className="mt-2 space-y-1">
+              {trendData.filter((item) => item.ingresos > 0 || item.gastos > 0).slice(0, 12).map((item) => (
+                <div key={`trend-${item.mes}`} className="flex items-center justify-between gap-3">
+                  <span>{item.name}</span>
+                  <span>Ing. {money(item.ingresos)} · Gas. {money(item.gastos)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          {hasTrendChartData ? (
+            <div className="mt-3 rounded-lg border border-line p-3">
+              <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">Vista de respaldo</p>
+              <div className="space-y-3">
+                {trendData.filter((item) => item.ingresos > 0 || item.gastos > 0).map((item) => {
+                  const maxValue = Math.max(...trendData.map((entry) => Math.max(entry.ingresos, entry.gastos)), 1);
+                  return (
+                    <div key={`trend-fallback-${item.mes}`} className="space-y-1">
+                      <div className="text-xs font-medium">{item.name}</div>
+                      <div className="space-y-1">
+                        <div>
+                          <div className="mb-1 flex items-center justify-between text-xs">
+                            <span>Ingresos</span>
+                            <span>{money(item.ingresos)}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800">
+                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, (item.ingresos / maxValue) * 100)}%`, backgroundColor: incomeColor }} />
+                          </div>
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center justify-between text-xs">
+                            <span>Gastos</span>
+                            <span>{money(item.gastos)}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800">
+                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, (item.gastos / maxValue) * 100)}%`, backgroundColor: expenseColor }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </section>
+
       <section className="card p-4">
-        <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Línea de balance mensual</h3>
-        <div className="h-72">
-          <ClientOnly fallback={<div className="h-full w-full animate-pulse rounded-lg bg-slate-200 dark:bg-slate-800/40" />}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={stats.trend.map((r) => ({ ...r, balance: r.ingresos - r.gastos }))}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--line))" />
-                <XAxis dataKey="mes" stroke="rgb(var(--muted))" tickFormatter={(m) => monthName(Number(m))} />
-                <YAxis stroke="rgb(var(--muted))" />
-                <Tooltip
-                  formatter={(v: number) => [money(v), "valor"]}
-                  labelFormatter={(m) => `Mes: ${monthName(Number(m))}`}
-                  contentStyle={{ borderRadius: 12, border: "1px solid rgb(var(--line))", background: "rgb(var(--card))" }}
-                  itemStyle={{ color: "rgb(var(--text))" }}
-                  labelStyle={{ color: "rgb(var(--text))" }}
-                />
-                <Line type="monotone" dataKey="balance" stroke="#4ad4c3" strokeWidth={2} dot={false} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </ClientOnly>
+        <h3 className="mb-2 text-sm font-semibold text-slate-700 dark:text-slate-300">Planificación</h3>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard title="Vencido" value={money(totalVencido)} tone={totalVencido > 0 ? "warn" : "default"} />
+          <MetricCard title="Pendiente 30 días" value={money(totalPendiente30Dias)} />
+          <MetricCard title="Pagado del mes" value={money(totalPagadoMes)} />
+          <MetricCard title="Balance proyectado" value={money(balanceProyectado)} tone={balanceProyectado >= 0 ? "accent" : "warn"} />
         </div>
       </section>
 
