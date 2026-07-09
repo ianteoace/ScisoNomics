@@ -27,7 +27,8 @@
   },
   "bundle": {
     "targets": "all",
-    "homepage": "https://github.com/iante/scisonomics",
+    "homepage": "https://github.com/ianteoace/scisonomics/releases",
+    "licenseFile": "LICENSE.txt",
     "copyright": "Copyright © 2026 ScisoNomics",
     "category": "Finance",
     "shortDescription": "Gestión financiera personal local-first.",
