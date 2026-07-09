@@ -217,7 +217,7 @@ Sin perjuicio de los derechos irrenunciables del usuario conforme a la normativa
 
 Para consultas, soporte, solicitudes legales o relacionadas con privacidad, el usuario podrá contactarse a:
 
-[COMPLETAR EMAIL DE SOPORTE]
+scisoftwareco@gmail.com
 
 ============================================================
 SECCIÓN II — POLÍTICA DE PRIVACIDAD
@@ -239,8 +239,8 @@ Cuando corresponda, también podrán ser aplicables normas de defensa del consum
 
 El responsable del tratamiento de datos será:
 
-[COMPLETAR NOMBRE O RAZÓN SOCIAL]
-Contacto: [COMPLETAR EMAIL DE SOPORTE]
+Ian Acevedo
+Contacto: scisoftwareco@gmail.com
 País: República Argentina
 
 4. Datos que puede tratar ScisoNomics
@@ -399,8 +399,7 @@ El usuario podrá ejercer, cuando corresponda, los derechos de acceso, rectifica
 
 Para ejercer estos derechos, el usuario podrá contactarse a:
 
-[COMPLETAR EMAIL DE SOPORTE]
-
+scisoftwareco@gmail.com
 La solicitud podrá requerir verificación de identidad para evitar accesos o eliminaciones no autorizadas.
 
 16. Seguridad de la información
