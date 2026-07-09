@@ -58,7 +58,7 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # expondria superficie interna innecesaria aunque los endpoints tengan token.
 app = FastAPI(
     title="Registro Finanzas API",
-    version="3.1.0",
+    version="3.2.0",
     docs_url=None if _IS_FROZEN else "/docs",
     redoc_url=None if _IS_FROZEN else "/redoc",
     openapi_url=None if _IS_FROZEN else "/openapi.json",

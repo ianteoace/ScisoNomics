@@ -78,6 +78,14 @@ export type CloudAuthDiagnostics = {
   lastAuthErrorCode: string | null;
 };
 
+export type CloudAuthHydrationState = {
+  pending: boolean;
+  inProgress: boolean;
+  hasHydratedThisBoot: boolean;
+  persistentAccounts: number;
+  activeOwnerId: string;
+};
+
 export type AuthUIState = {
   title: string;
   message: string;
@@ -902,6 +910,21 @@ export function getStoredAuthState(): StoredAuthState {
   const merged = readStoredAuthStateSnapshot();
   queueTokenMigration();
   return merged;
+}
+
+export function getCloudAuthHydrationState(): CloudAuthHydrationState {
+  const state = readStoredAuthStateSnapshot();
+  const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent").length;
+  const pending = canUseSecurePersistentTokenStorage()
+    && persistentAccounts > 0
+    && (isHydratingSecureTokens || !hasHydratedSecureTokensThisBoot || lastHydratedAuthStateRevision !== authStateRevision);
+  return {
+    pending,
+    inProgress: isHydratingSecureTokens,
+    hasHydratedThisBoot: hasHydratedSecureTokensThisBoot,
+    persistentAccounts,
+    activeOwnerId: state.activeOwnerId,
+  };
 }
 
 export function saveStoredAuthState(state: StoredAuthState, options: { notify?: boolean } = {}) {

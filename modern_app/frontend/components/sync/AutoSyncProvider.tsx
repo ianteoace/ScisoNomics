@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudSessionAsync, getActiveOwnerId } from "../../services/cloudAuth";
+import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudAuthState, getActiveCloudSessionAsync, getActiveOwnerId, getCloudAuthHydrationState } from "../../services/cloudAuth";
 import {
   DATA_CHANGED_EVENT,
   SYNC_STATE_CHANGED_EVENT,
@@ -22,6 +22,7 @@ const AUTO_SYNC_ERROR_RETRY_MS = 5 * 60 * 1000;
 const APP_CLOSE_SYNC_TIMEOUT_MS = 6000;
 const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS = 10000;
 const APP_CLOSE_SYNC_EVENT = "scisonomics://app-close-sync-requested";
+const STARTUP_AUTH_RECHECK_DELAY_MS = 2000;
 const startupSyncedOwners = new Set<string>();
 type AutoSyncReason = Exclude<SyncReason, "manual">;
 type ExecuteSyncOutcome =
@@ -40,6 +41,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
   const lastAttemptAtRef = useRef(0);
   const lastErrorAtRef = useRef(0);
   const startupSyncFailedOwnersRef = useRef(new Set<string>());
+  const startupHydrationRetriesRef = useRef(new Map<string, number>());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -133,16 +135,48 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       startupTimerRef.current = setTimeout(() => {
         startupTimerRef.current = null;
         if (startupSyncedOwners.has(ownerId)) return;
-        void executeSync("app_start", true).then((outcome) => {
-          if (outcome === "success" || outcome === "skipped_no_session" || outcome === "skipped_db_critical") {
-            startupSyncedOwners.add(ownerId);
-            startupSyncFailedOwnersRef.current.delete(ownerId);
+        const hydrationState = getCloudAuthHydrationState();
+        void getActiveCloudAuthState().then((authState) => {
+          const retryCount = startupHydrationRetriesRef.current.get(ownerId) || 0;
+
+          if (hydrationState.pending && authState.availability !== "active" && retryCount < 1) {
+            startupHydrationRetriesRef.current.set(ownerId, retryCount + 1);
+            scheduleAppStart(STARTUP_AUTH_RECHECK_DELAY_MS);
             return;
           }
-          startupSyncFailedOwnersRef.current.add(ownerId);
-          if (getActiveOwnerId() === ownerId && outcome === "failed") {
-            scheduleAppStart(STARTUP_SYNC_RETRY_MS);
+
+          if (authState.availability !== "active") {
+            console.info("[auto-sync] skipped", {
+              reason: authState.availability === "local" ? "local_mode" : authState.availability === "none" ? "no_account" : authState.availability,
+              ownerId: `${ownerId.slice(0, 6)}...`,
+              requiresRelogin: authState.requiresRelogin,
+            });
           }
+
+          return executeSync("app_start", true).then((outcome) => {
+            startupHydrationRetriesRef.current.delete(ownerId);
+            if (outcome === "success" || outcome === "skipped_no_session" || outcome === "skipped_db_critical") {
+              startupSyncedOwners.add(ownerId);
+              startupSyncFailedOwnersRef.current.delete(ownerId);
+              return;
+            }
+            startupSyncFailedOwnersRef.current.add(ownerId);
+            if (getActiveOwnerId() === ownerId && outcome === "failed") {
+              scheduleAppStart(STARTUP_SYNC_RETRY_MS);
+            }
+          }).catch((error) => {
+            console.warn("[auto-sync] execute failed", {
+              reason: "app_start",
+              ownerId: `${ownerId.slice(0, 6)}...`,
+              errorType: error instanceof Error ? error.name : typeof error,
+            });
+          });
+        }).catch((error) => {
+          console.warn("[auto-sync] execute failed", {
+            reason: "startup_check",
+            ownerId: `${ownerId.slice(0, 6)}...`,
+            errorType: error instanceof Error ? error.name : typeof error,
+          });
         });
       }, delay);
     };
@@ -198,6 +232,9 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
       lastErrorNotifiedRef.current = false;
       lastErrorAtRef.current = 0;
       startupSyncFailedOwnersRef.current.clear();
+      const activeOwnerId = getActiveOwnerId();
+      startupSyncedOwners.delete(activeOwnerId);
+      startupHydrationRetriesRef.current.delete(activeOwnerId);
       resetInterval();
       scheduleAppStart();
     };

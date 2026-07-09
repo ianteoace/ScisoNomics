@@ -32,7 +32,7 @@ import { API_URL, getLocalRequestHeaders } from "../../../services/http";
 import type { BackupState, SettingsInfo } from "../../../types/domain";
 
 const ONBOARDING_REOPEN_EVENT = "scisonomics:open-onboarding-guides";
-const RELEASES_URL = "https://github.com/iante/scisonomics/releases";
+const RELEASES_URL = "https://github.com/ianteoace/scisonomics/releases";
 const ONBOARDING_SECTION_KEYS = [
   "scisonomics_onboarding_inicio_seen",
   "scisonomics_onboarding_movimientos_seen",
@@ -523,8 +523,8 @@ export default function ConfiguracionPage() {
         </label>
         <label className={`flex items-center justify-between gap-4 rounded-2xl border border-line bg-slate-950/30 px-4 py-3 text-sm ${activeOwner === "local" || !autoSyncEnabled ? "opacity-60" : ""}`}>
           <span>
-            <span className="block font-semibold">Intervalo en background</span>
-            <span className="text-xs text-slate-400">Se aplica solo a la cuenta cloud activa cuando la sincronización durante el uso está habilitada.</span>
+            <span className="block font-semibold">Frecuencia de sincronización</span>
+            <span className="text-xs text-slate-400">Cada cuánto ScisoNomics intenta actualizar tus datos automáticamente mientras usás la app.</span>
           </span>
           <select
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
@@ -532,6 +532,8 @@ export default function ConfiguracionPage() {
             onChange={(event) => handleAutoSyncIntervalChange(Number(event.target.value))}
             disabled={activeOwner === "local" || !autoSyncEnabled || syncingNow}
           >
+            <option value={1 * 60 * 1000}>Cada 1 minuto</option>
+            <option value={5 * 60 * 1000}>Cada 5 minutos</option>
             <option value={10 * 60 * 1000}>Cada 10 minutos</option>
             <option value={15 * 60 * 1000}>Cada 15 minutos</option>
             <option value={30 * 60 * 1000}>Cada 30 minutos</option>

@@ -15,6 +15,13 @@ const AUTO_SYNC_ENABLED_KEY = "scisonomics_auto_sync_enabled";
 const AUTO_SYNC_BY_OWNER_KEY = "scisonomics_auto_sync_enabled_by_owner_v1";
 const AUTO_SYNC_INTERVAL_BY_OWNER_KEY = "scisonomics_auto_sync_interval_by_owner_v1";
 const DEFAULT_AUTO_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+const ALLOWED_AUTO_SYNC_INTERVALS_MS = [
+  1 * 60 * 1000,
+  5 * 60 * 1000,
+  10 * 60 * 1000,
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+] as const;
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const LOG_PREFIX = "[manual-sync]";
 const CLOUD_HEALTH_TIMEOUT_MS = 8_000;
@@ -440,7 +447,7 @@ function readAutoSyncIntervalsByOwner(): Record<string, number> {
   const sanitized: Record<string, number> = {};
   for (const [ownerId, value] of Object.entries(parsed || {})) {
     const interval = Number(value);
-    if (ownerId && Number.isFinite(interval) && interval >= 60_000) sanitized[ownerId] = interval;
+    if (ownerId && Number.isFinite(interval) && interval >= 60_000) sanitized[ownerId] = normalizeAutoSyncIntervalMs(interval);
   }
   try {
     if (typeof window !== "undefined" && JSON.stringify(parsed || {}) !== JSON.stringify(sanitized)) {
@@ -451,6 +458,21 @@ function readAutoSyncIntervalsByOwner(): Record<string, number> {
     // El saneamiento defensivo no debe bloquear la app.
   }
   return sanitized;
+}
+
+function normalizeAutoSyncIntervalMs(intervalMs: number) {
+  if (!Number.isFinite(intervalMs) || intervalMs < 60_000) return DEFAULT_AUTO_SYNC_INTERVAL_MS;
+  if ((ALLOWED_AUTO_SYNC_INTERVALS_MS as readonly number[]).includes(intervalMs)) return intervalMs;
+  let closest = DEFAULT_AUTO_SYNC_INTERVAL_MS;
+  let smallestDelta = Number.POSITIVE_INFINITY;
+  for (const allowed of ALLOWED_AUTO_SYNC_INTERVALS_MS) {
+    const delta = Math.abs(intervalMs - allowed);
+    if (delta < smallestDelta) {
+      smallestDelta = delta;
+      closest = allowed;
+    }
+  }
+  return closest;
 }
 
 function getCloudTimeoutMs(path: string, metadata: {
@@ -1121,7 +1143,7 @@ export function getAutoSyncIntervalMs() {
     if (owner === "local") return DEFAULT_AUTO_SYNC_INTERVAL_MS;
     const parsed = readAutoSyncIntervalsByOwner();
     const value = Number(parsed[owner]);
-    return Number.isFinite(value) && value >= 60_000 ? value : DEFAULT_AUTO_SYNC_INTERVAL_MS;
+    return Number.isFinite(value) && value >= 60_000 ? normalizeAutoSyncIntervalMs(value) : DEFAULT_AUTO_SYNC_INTERVAL_MS;
   } catch {
     return DEFAULT_AUTO_SYNC_INTERVAL_MS;
   }
@@ -1133,7 +1155,7 @@ export function setAutoSyncIntervalMs(intervalMs: number) {
     const owner = getActiveOwnerId();
     if (owner === "local") return;
     const parsed = readAutoSyncIntervalsByOwner();
-    parsed[owner] = intervalMs;
+    parsed[owner] = normalizeAutoSyncIntervalMs(intervalMs);
     window.localStorage.setItem(AUTO_SYNC_INTERVAL_BY_OWNER_KEY, JSON.stringify(parsed));
   } catch {
     // La preferencia no debe bloquear el modo local.

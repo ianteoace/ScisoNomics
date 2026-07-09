@@ -227,52 +227,6 @@ export function EstadisticasView({ stats, monthRows, loading }: { stats: StatsRe
               </ClientOnly>
             )}
           </div>
-          <div className="mt-3 rounded-lg border border-line bg-slate-50/70 p-3 text-xs text-slate-600 dark:bg-slate-900/40 dark:text-slate-300">
-            <p className="font-medium">Debug evolución: {trendData.length}</p>
-            <div className="mt-2 space-y-1">
-              {trendData.filter((item) => item.ingresos > 0 || item.gastos > 0).slice(0, 12).map((item) => (
-                <div key={`trend-${item.mes}`} className="flex items-center justify-between gap-3">
-                  <span>{item.name}</span>
-                  <span>Ing. {money(item.ingresos)} · Gas. {money(item.gastos)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          {hasTrendChartData ? (
-            <div className="mt-3 rounded-lg border border-line p-3">
-              <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">Vista de respaldo</p>
-              <div className="space-y-3">
-                {trendData.filter((item) => item.ingresos > 0 || item.gastos > 0).map((item) => {
-                  const maxValue = Math.max(...trendData.map((entry) => Math.max(entry.ingresos, entry.gastos)), 1);
-                  return (
-                    <div key={`trend-fallback-${item.mes}`} className="space-y-1">
-                      <div className="text-xs font-medium">{item.name}</div>
-                      <div className="space-y-1">
-                        <div>
-                          <div className="mb-1 flex items-center justify-between text-xs">
-                            <span>Ingresos</span>
-                            <span>{money(item.ingresos)}</span>
-                          </div>
-                          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800">
-                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, (item.ingresos / maxValue) * 100)}%`, backgroundColor: incomeColor }} />
-                          </div>
-                        </div>
-                        <div>
-                          <div className="mb-1 flex items-center justify-between text-xs">
-                            <span>Gastos</span>
-                            <span>{money(item.gastos)}</span>
-                          </div>
-                          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-800">
-                            <div className="h-2 rounded-full" style={{ width: `${Math.max(4, (item.gastos / maxValue) * 100)}%`, backgroundColor: expenseColor }} />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
         </section>
 
       <section className="card p-4">

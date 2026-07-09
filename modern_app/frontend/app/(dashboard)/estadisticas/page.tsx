@@ -1,22 +1,28 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { EstadisticasView } from "../../../components/views/EstadisticasView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
+import { monthName } from "../../../lib/format";
 import { api } from "../../../services/api";
 import type { Movimiento, MovimientosResponse, StatsResponse } from "../../../types/domain";
 
 export default function EstadisticasPage() {
+  const now = useMemo(() => new Date(), []);
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+
   const { setSaldoActual, setTopbarPeriodLabelOverride } = useDashboardUi();
   const { showError } = useToast();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [rows, setRows] = useState<Movimiento[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [periodo, setPeriodo] = useState("mes_actual");
+  const [selectedMonth, setSelectedMonth] = useState(currentMonth);
+  const [selectedYear, setSelectedYear] = useState(currentYear);
   const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
@@ -24,50 +30,32 @@ export default function EstadisticasPage() {
     (async () => {
       setLoading(true);
       try {
-        const now = new Date();
-        const { targets, currentMonth, currentYear } = buildTargetsByPeriod(periodo, now);
-        let allRows: Movimiento[] = [];
-        let statsData: StatsResponse | null = null;
-        let usedStatsFallback = false;
-        if (periodo === "mes_actual") {
-          const { stats, movimientos, statsFallbackUsed } = await loadTargetData({ month: currentMonth, year: currentYear });
-          allRows = movimientos.rows;
-          statsData = normalizeStatsResponse(stats, movimientos.rows);
-          usedStatsFallback = statsFallbackUsed || statsData === null;
-        } else {
-          const results: Array<{ stats: StatsResponse | null; movimientos: MovimientosResponse; statsFallbackUsed: boolean }> = [];
-          for (const target of targets) {
-            if (cancelled) return;
-            results.push(await loadTargetData(target));
-          }
-          allRows = results.flatMap((r) => r.movimientos.rows);
-          const validStats = results
-            .map((r) => normalizeStatsResponse(r.stats, r.movimientos.rows))
-            .filter((value): value is StatsResponse => Boolean(value));
-          usedStatsFallback = results.some((r) => r.statsFallbackUsed) || validStats.length !== results.length;
-          statsData = validStats.length === results.length
-            ? mergeStats(validStats)
-            : buildStatsFallbackFromRows(allRows);
-        }
+        const { stats: rawStats, movimientos, statsFallbackUsed } = await loadStatsForPeriod(selectedMonth, selectedYear);
         if (cancelled) return;
-        if (!statsData) {
-          statsData = buildStatsFallbackFromRows(allRows);
+
+        let normalizedStats = normalizeStatsResponse(rawStats, movimientos.rows);
+        let usedStatsFallback = statsFallbackUsed || normalizedStats === null;
+
+        if (!normalizedStats) {
+          normalizedStats = buildStatsFallbackFromRows(movimientos.rows);
           usedStatsFallback = true;
         }
-        setStats(statsData);
-        setRows(allRows);
+
+        setStats(normalizedStats);
+        setRows(movimientos.rows);
         setSaldoActual(0);
         setLoadError("");
+
         if (usedStatsFallback) {
           console.warn("Estadísticas cargadas con fallback local.", {
-            periodo,
-            rows: allRows.length,
-            targets: targets.length,
+            month: selectedMonth,
+            year: selectedYear,
+            rows: movimientos.rows.length,
           });
         }
       } catch (e: any) {
         if (!cancelled) {
-          console.error("Error cargando estadísticas", { periodo, error: e });
+          console.error("Error cargando estadísticas", { month: selectedMonth, year: selectedYear, error: e });
           setLoadError(e.message || "No se pudieron cargar los datos.");
           showError("No se pudieron cargar las estadísticas. Intentá nuevamente.");
         }
@@ -75,10 +63,14 @@ export default function EstadisticasPage() {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [setSaldoActual, showError, periodo, retryNonce]);
 
-  const periodLabel = getPeriodLabel(periodo);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedMonth, selectedYear, retryNonce, setSaldoActual, showError]);
+
+  const periodLabel = `${monthName(selectedMonth)} ${selectedYear}`;
+  const yearOptions = getSelectableYears(currentYear);
 
   useEffect(() => {
     setTopbarPeriodLabelOverride(periodLabel);
@@ -87,48 +79,56 @@ export default function EstadisticasPage() {
 
   return (
     <div className="space-y-4">
-      <div className="panel grid gap-2 p-3 md:grid-cols-2">
-        <select className="input" value={periodo} onChange={(e) => setPeriodo(e.target.value)}>
-          <option value="mes_actual">Mes actual</option>
-          <option value="ultimos_3_meses">Últimos 3 meses</option>
-          <option value="ultimos_6_meses">Últimos 6 meses</option>
-          <option value="anio_actual">Año actual</option>
-        </select>
-        <div className="rounded-lg border border-line px-3 py-2 text-sm text-slate-600 dark:text-slate-300">
+      <div className="panel grid gap-3 p-3 md:grid-cols-[1fr_1fr_auto]">
+        <label className="space-y-1 text-sm">
+          <span className="text-slate-600 dark:text-slate-300">Mes</span>
+          <select className="input" value={selectedMonth} onChange={(e) => setSelectedMonth(Number(e.target.value))}>
+            {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+              <option key={month} value={month}>
+                {monthName(month)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="space-y-1 text-sm">
+          <span className="text-slate-600 dark:text-slate-300">Año</span>
+          <select className="input" value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}>
+            {yearOptions.map((year) => (
+              <option key={year} value={year}>
+                {year}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="flex items-end">
+          <button
+            type="button"
+            className="btn-secondary w-full md:w-auto"
+            onClick={() => {
+              setSelectedMonth(currentMonth);
+              setSelectedYear(currentYear);
+            }}
+          >
+            Mes actual
+          </button>
+        </div>
+
+        <div className="rounded-lg border border-line px-3 py-2 text-sm text-slate-600 dark:text-slate-300 md:col-span-3">
           Período seleccionado: <strong>{periodLabel}</strong>
         </div>
       </div>
+
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={() => setRetryNonce((value) => value + 1)} /> : null}
       {!loading && !loadError && shouldShowEmptyStatsState(stats, rows) ? (
-        <ErrorState title="No hay movimientos suficientes para generar estadísticas de este período." description="Probá con otro período o cargá nuevos movimientos." />
+        <ErrorState title="No hay movimientos suficientes para generar estadísticas de este período." description="Probá con otro mes o cargá nuevos movimientos." />
       ) : null}
       {!loadError ? (
         <EstadisticasView stats={stats} monthRows={rows} loading={loading} />
       ) : null}
     </div>
   );
-}
-
-function buildPeriods(month: number, year: number, count: number) {
-  const out: Array<{ month: number; year: number }> = [];
-  let m = month;
-  let y = year;
-  for (let i = 0; i < count; i += 1) {
-    out.push({ month: m, year: y });
-    m -= 1;
-    if (m < 1) {
-      m = 12;
-      y -= 1;
-    }
-  }
-  return out;
-}
-
-function buildYearToDatePeriods(currentMonth: number, currentYear: number) {
-  return Array.from({ length: currentMonth }, (_, index) => ({
-    month: currentMonth - index,
-    year: currentYear,
-  }));
 }
 
 async function retryAsync<T>(fn: () => Promise<T>, retries: number): Promise<T> {
@@ -144,26 +144,26 @@ async function retryAsync<T>(fn: () => Promise<T>, retries: number): Promise<T> 
   throw lastError;
 }
 
-async function loadTargetData(target: { month: number; year: number }): Promise<{
+async function loadStatsForPeriod(month: number, year: number): Promise<{
   stats: StatsResponse | null;
   movimientos: MovimientosResponse;
   statsFallbackUsed: boolean;
 }> {
   const movimientos = await retryAsync(
-    () => api.movimientos(target.month, target.year, "todos", ""),
+    () => api.movimientos(month, year, "todos", ""),
     2,
   ).catch((error) => {
-    throw createStatsLoadError("movimientos", target, error);
+    throw createStatsLoadError("movimientos", { month, year }, error);
   });
 
   const stats = await retryAsync(
-    () => api.stats(target.month, target.year),
+    () => api.stats(month, year),
     2,
   ).catch((error) => {
     console.error("Error cargando resumen de estadísticas local", {
       endpoint: "/estadisticas",
-      month: target.month,
-      year: target.year,
+      month,
+      year,
       error,
     });
     return null;
@@ -179,6 +179,10 @@ async function loadTargetData(target: { month: number; year: number }): Promise<
 function createStatsLoadError(request: "movimientos" | "estadisticas", target: { month: number; year: number }, error: unknown) {
   const message = error instanceof Error ? error.message : "No se pudieron cargar los datos del período.";
   return new Error(`[${request}] ${target.month}/${target.year}: ${message}`);
+}
+
+function getSelectableYears(currentYear: number) {
+  return Array.from({ length: 7 }, (_, index) => currentYear - 3 + index).sort((a, b) => b - a);
 }
 
 function normalizeStatsResponse(rawStats: StatsResponse | null, rows: Movimiento[]): StatsResponse | null {
@@ -238,15 +242,13 @@ function normalizeStatsResponse(rawStats: StatsResponse | null, rows: Movimiento
     return buildStatsFallbackFromRows(rows);
   }
 
-  const normalizedStats: StatsResponse = {
+  return {
     summary,
     month_totals: monthTotals,
     expenses_by_category: expensesByCategory,
     trend,
     planificacion,
   };
-
-  return normalizedStats;
 }
 
 function shouldShowEmptyStatsState(stats: StatsResponse | null, rows: Movimiento[]) {
@@ -318,66 +320,4 @@ function buildStatsFallbackFromRows(rows: Movimiento[]): StatsResponse {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function mergeStats(items: StatsResponse[]): StatsResponse {
-  const monthTotals = items.reduce(
-    (acc, s) => {
-      acc.ingreso += s.month_totals.ingreso;
-      acc.gasto += s.month_totals.gasto;
-      acc.ahorro += Number(s.month_totals.ahorro || 0);
-      acc.inversion += Number(s.month_totals.inversion || 0);
-      acc.balance += s.month_totals.balance;
-      acc.disponible_luego_ahorro += Number(s.month_totals.disponible_luego_ahorro || 0);
-      return acc;
-    },
-    { ingreso: 0, gasto: 0, ahorro: 0, inversion: 0, balance: 0, disponible_luego_ahorro: 0 },
-  );
-
-  const byCategory = new Map<string, { categoria: string; total: number; movimientos: number }>();
-  for (const s of items) {
-    for (const c of s.expenses_by_category) {
-      const current = byCategory.get(c.categoria) || { categoria: c.categoria, total: 0, movimientos: 0 };
-      current.total += c.total;
-      current.movimientos += c.movimientos || 0;
-      byCategory.set(c.categoria, current);
-    }
-  }
-
-  const trend = items.flatMap((s) => s.trend);
-  return {
-    summary: items[0]?.summary || { saldo_inicial: 0, ingreso: 0, gasto: 0, ahorro: 0, balance_final: 0, balance: 0, disponible_luego_ahorro: 0 },
-    month_totals: monthTotals,
-    expenses_by_category: Array.from(byCategory.values()).sort((a, b) => b.total - a.total),
-    trend,
-    planificacion: items[0]?.planificacion || {
-      total_pendiente_30_dias: 0,
-      total_vencido: 0,
-      total_pagado_mes: 0,
-      balance_proyectado_mes: 0,
-    },
-  };
-}
-
-function buildTargetsByPeriod(periodo: string, now: Date) {
-  const currentMonth = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
-  if (periodo === "mes_actual") {
-    return { targets: [{ month: currentMonth, year: currentYear }], currentMonth, currentYear };
-  }
-  if (periodo === "ultimos_3_meses") {
-    return { targets: buildPeriods(currentMonth, currentYear, 3), currentMonth, currentYear };
-  }
-  if (periodo === "ultimos_6_meses") {
-    return { targets: buildPeriods(currentMonth, currentYear, 6), currentMonth, currentYear };
-  }
-  return { targets: buildYearToDatePeriods(currentMonth, currentYear), currentMonth, currentYear };
-}
-
-function getPeriodLabel(periodo: string) {
-  if (periodo === "mes_actual") return "Mes actual";
-  if (periodo === "ultimos_3_meses") return "Últimos 3 meses";
-  if (periodo === "ultimos_6_meses") return "Últimos 6 meses";
-  if (periodo === "anio_actual") return "Año actual";
-  return "Período";
 }
