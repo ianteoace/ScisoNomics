@@ -23,6 +23,7 @@ import {
   type CloudUser,
   type StoredCloudAccount,
 } from "../../services/cloudAuth";
+import { getCachedEntitlements, loadEntitlements } from "../../services/entitlements";
 
 type SidebarItem = {
   href: string;
@@ -54,6 +55,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [addAccountOpen, setAddAccountOpen] = useState(false);
+  const [hasPremiumAccess, setHasPremiumAccess] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -64,14 +66,18 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         setAccountUser(null);
         setAccountAvailability("local");
         setActiveOwnerId(getActiveOwnerId());
+        setHasPremiumAccess(false);
         return;
       }
 
       const authState = await getActiveCloudAuthState();
       const activeAccount = authState.account;
-      setActiveOwnerId(getActiveOwnerId());
+      const ownerId = getActiveOwnerId();
+      setActiveOwnerId(ownerId);
       setAccounts(getStoredAccounts());
       setAccountAvailability(authState.availability);
+      const entitlements = await loadEntitlements({ force: true, ownerId }).catch(() => getCachedEntitlements(ownerId));
+      setHasPremiumAccess(entitlements.plan === "premium" && ["active", "trialing"].includes(entitlements.status));
       if (!activeAccount) {
         setAccountUser(null);
         return;
@@ -135,6 +141,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       setActiveOwnerId(getActiveOwnerId());
       setAccountUser(null);
       setAccountAvailability("local");
+      setHasPremiumAccess(false);
       setAccounts(getStoredAccounts());
       setAccountMenuOpen(false);
       return;
@@ -149,8 +156,11 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       const authState = await getActiveCloudAuthState();
       setAccountUser(authState.account?.user || null);
       setAccountAvailability(authState.availability);
+      const entitlements = await loadEntitlements({ force: true, ownerId }).catch(() => getCachedEntitlements(ownerId));
+      setHasPremiumAccess(entitlements.plan === "premium" && ["active", "trialing"].includes(entitlements.status));
     } catch {
       setAccountAvailability("unknown_error");
+      setHasPremiumAccess(false);
     }
   }
 
@@ -285,7 +295,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 {!collapsed ? (
                   <span className="flex min-w-0 items-center gap-2">
                     <span>{item.label}</span>
-                    {item.premium ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Premium</span> : null}
+                    {item.premium && !hasPremiumAccess ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Premium</span> : null}
                   </span>
                 ) : null}
               </Link>

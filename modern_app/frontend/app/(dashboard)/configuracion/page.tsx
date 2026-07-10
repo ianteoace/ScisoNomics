@@ -433,6 +433,7 @@ export default function ConfiguracionPage() {
 
   function renderGeneralSection() {
     const planLabel = entitlements?.plan === "premium" ? "Premium" : "Free";
+    const premiumActive = entitlements?.plan === "premium" && ["active", "trialing"].includes(entitlements?.status || "");
     const subscriptionLabel = entitlements?.status === "trialing"
       ? "Activa"
       : entitlements?.status === "past_due"
@@ -483,17 +484,24 @@ export default function ConfiguracionPage() {
             <div>
               <p className="font-semibold">ScisoNomics Premium</p>
               <p className="mt-1 text-sm text-slate-400">
-                {entitlements?.plan === "premium"
-                  ? "Tu cuenta tiene habilitadas las funciones Premium de ScisoNomics."
+                {premiumActive
+                  ? "Tu plan Premium está activo."
                   : "Premium desbloquea Presupuestos, Metas de ahorro, Gastos fijos y Planificación."}
               </p>
               <p className="mt-2 text-sm text-slate-300">
                 Funciones incluidas: {includedFeatures.length ? includedFeatures.map((item) => item.label).join(", ") : "solo funciones Free"}
               </p>
+              {premiumActive ? (
+                <p className="mt-3 inline-flex rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
+                  Ya sos Premium
+                </p>
+              ) : null}
             </div>
-            <button className="btn" type="button" onClick={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}>
-              Actualizar a Premium
-            </button>
+            {!premiumActive ? (
+              <button className="btn" type="button" onClick={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}>
+                Actualizar a Premium
+              </button>
+            ) : null}
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
