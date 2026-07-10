@@ -1,9 +1,9 @@
 SCISONOMICS
 TÉRMINOS Y CONDICIONES DE USO Y POLÍTICA DE PRIVACIDAD
 
-Última actualización: 09 de Julio de 2026
-Titular / Desarrollador: Ian Acevedo
-Contacto de soporte: scisoftwareco@gmail.com
+Última actualización: 10/07/2026
+Autor / Desarrollador: Ian Acevedo
+Contacto de soporte: [scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
 País de operación principal: República Argentina
 
 IMPORTANTE: Al instalar, acceder o utilizar ScisoNomics, declarás haber leído, comprendido y aceptado estos Términos y Condiciones de Uso y esta Política de Privacidad. Si no estás de acuerdo con alguno de sus puntos, no instales ni utilices la aplicación.
@@ -43,7 +43,74 @@ d. alterar, descompilar, modificar, copiar o distribuir la aplicación de manera
 e. interferir con la seguridad, disponibilidad o funcionamiento de la aplicación o de sus servicios asociados;
 f. utilizar la aplicación para actividades ilegales, fraudulentas o no autorizadas.
 
-5. Responsabilidad sobre la información cargada
+5. Modalidad Free y Premium
+
+ScisoNomics puede ofrecer distintas modalidades de uso, incluyendo un plan gratuito denominado “Free” y un plan pago denominado “Premium”.
+
+El plan Free puede permitir el uso de funciones básicas, tales como registro de movimientos, categorías, inicio, estadísticas básicas y otras funciones que ScisoNomics defina como gratuitas.
+
+El plan Premium puede desbloquear funciones adicionales, incluyendo, entre otras:
+
+a. Presupuestos;
+b. Metas de ahorro;
+c. Gastos fijos;
+d. Planificación;
+e. funciones avanzadas que pudieran incorporarse en el futuro.
+
+Las funciones incluidas en cada plan podrán variar con el tiempo, siempre procurando informar al usuario cuando existan cambios relevantes.
+
+6. Suscripción Premium
+
+El acceso a funciones Premium puede requerir una suscripción activa, pago, activación manual, período de prueba o cualquier otra modalidad comercial que ScisoNomics implemente.
+
+Mientras no exista integración automática de pagos, ScisoNomics podrá activar manualmente el acceso Premium a determinados usuarios, cuentas de prueba, usuarios autorizados o usuarios que hayan completado un proceso comercial por fuera de la aplicación.
+
+En el futuro, ScisoNomics podrá integrar proveedores de pago externos para gestionar suscripciones, pagos, renovaciones, cancelaciones, facturación o estados de cuenta.
+
+7. Estado de la suscripción
+
+El acceso Premium podrá depender del estado de la suscripción o autorización de uso.
+
+Los estados posibles pueden incluir, entre otros:
+
+a. activo;
+b. período de prueba;
+c. pago pendiente;
+d. vencido;
+e. cancelado;
+f. expirado.
+
+Si la suscripción se encuentra vencida, cancelada, expirada o con pago pendiente, ScisoNomics podrá limitar el acceso a funciones Premium.
+
+8. Cambios de plan, cancelación y vencimiento
+
+El usuario podrá solicitar cambios de plan, cancelación o modificación de su suscripción mediante los canales disponibles.
+
+La cancelación o vencimiento de una suscripción podrá impedir crear, editar o eliminar información dentro de funciones Premium, sin que ello implique necesariamente la eliminación automática de datos existentes.
+
+ScisoNomics podrá permitir que los usuarios Free visualicen determinados datos Premium existentes en modo solo lectura, sin posibilidad de crear, modificar o eliminar registros asociados a funciones Premium.
+
+9. Funciones Premium y modo solo lectura
+
+Si el usuario deja de tener acceso Premium, ScisoNomics podrá conservar visible cierta información previamente creada en funciones Premium, en modo solo lectura, para evitar pérdida abrupta de acceso a datos personales.
+
+Sin embargo, ScisoNomics podrá bloquear acciones como crear, editar, eliminar, programar, modificar o sincronizar ciertos elementos Premium hasta que el usuario recupere una suscripción activa o autorización válida.
+
+10. Precios y disponibilidad comercial
+
+Los precios, promociones, períodos de prueba, beneficios, alcance del plan Premium y medios de pago podrán variar.
+
+ScisoNomics podrá modificar precios o condiciones comerciales en el futuro. En caso de cambios relevantes que afecten una suscripción activa, se procurará informar al usuario mediante un canal razonable.
+
+11. Proveedores de pago
+
+ScisoNomics podrá utilizar proveedores externos de pago, tales como plataformas de cobro, procesadores de tarjetas, billeteras virtuales u otros servicios.
+
+Cuando se utilice un proveedor externo, el pago podrá estar sujeto a los términos, políticas de privacidad, comisiones, reglas, procesos de validación, contracargos y disponibilidad de dicho proveedor.
+
+ScisoNomics no almacenará datos completos de tarjetas de crédito o débito si el procesamiento se realiza mediante proveedores externos. En esos casos, dichos datos serán tratados por el proveedor de pago conforme a sus propias políticas.
+
+12. Responsabilidad sobre la información cargada
 
 El usuario es el único responsable de la exactitud, integridad, actualización, carga, modificación, eliminación, interpretación y uso de la información que ingrese en ScisoNomics.
 
@@ -51,7 +118,7 @@ ScisoNomics no verifica la veracidad de los movimientos, categorías, presupuest
 
 El usuario reconoce que cualquier resultado, estadística, balance, cálculo, gráfico o reporte generado por la aplicación depende de los datos ingresados por él mismo.
 
-6. No asesoramiento financiero, contable, impositivo ni legal
+13. No asesoramiento financiero, contable, impositivo ni legal
 
 ScisoNomics es una herramienta tecnológica de organización y visualización de información financiera personal.
 
@@ -61,7 +128,7 @@ Los reportes, estadísticas, balances, categorías, presupuestos, sugerencias vi
 
 Toda decisión financiera, económica, contable, impositiva, legal, de inversión, ahorro, gasto o administración patrimonial tomada por el usuario será exclusiva responsabilidad del usuario.
 
-7. Funcionamiento local y sincronización cloud
+14. Funcionamiento local y sincronización cloud
 
 ScisoNomics puede almacenar información localmente en el dispositivo del usuario.
 
@@ -71,7 +138,7 @@ La sincronización puede depender de factores externos, tales como conexión a i
 
 ScisoNomics no garantiza que la sincronización sea instantánea, ininterrumpida, libre de errores o disponible en todo momento.
 
-8. Backups, reparación y recuperación de datos
+15. Backups, reparación y recuperación de datos
 
 ScisoNomics puede incluir funciones de backup, exportación, reparación, sincronización o recuperación de información.
 
@@ -79,7 +146,7 @@ Sin embargo, el usuario reconoce que ninguna función de backup, reparación o s
 
 El usuario es responsable de conservar copias de seguridad adicionales cuando lo considere necesario.
 
-9. Cuenta de usuario
+16. Cuenta de usuario
 
 Algunas funciones de ScisoNomics pueden requerir una cuenta de usuario.
 
@@ -93,7 +160,7 @@ e. informar cualquier uso no autorizado o sospecha de vulneración de su cuenta.
 
 Toda actividad realizada desde la cuenta del usuario se presumirá realizada por él, salvo prueba en contrario.
 
-10. Función “Recordar sesión”
+17. Función “Recordar sesión”
 
 ScisoNomics puede ofrecer una función para recordar la sesión del usuario.
 
@@ -103,7 +170,7 @@ El usuario entiende que la disponibilidad de esta función puede depender de com
 
 Si el almacenamiento seguro no se encuentra disponible o falla, la aplicación puede solicitar al usuario iniciar sesión nuevamente.
 
-11. Actualizaciones y compatibilidad
+18. Actualizaciones y compatibilidad
 
 ScisoNomics podrá recibir actualizaciones destinadas a corregir errores, mejorar seguridad, modificar funciones, ajustar compatibilidad, optimizar rendimiento, mejorar sincronización o agregar nuevas capacidades.
 
@@ -111,7 +178,7 @@ Algunas versiones anteriores de la aplicación podrían dejar de ser compatibles
 
 El usuario acepta que puede ser necesario actualizar la aplicación para continuar utilizando ciertas funcionalidades.
 
-12. Disponibilidad del servicio
+19. Disponibilidad del servicio
 
 ScisoNomics se proporciona según disponibilidad técnica.
 
@@ -119,7 +186,7 @@ No se garantiza que la aplicación o sus servicios cloud estén disponibles de m
 
 Podrán existir interrupciones por mantenimiento, errores técnicos, fallas de terceros, problemas de conectividad, actualizaciones, incidentes de seguridad, cambios de infraestructura o causas de fuerza mayor.
 
-13. Seguridad
+20. Seguridad
 
 ScisoNomics adopta medidas razonables para proteger la información del usuario, incluyendo mecanismos de almacenamiento local, autenticación, sincronización y comunicación segura cuando corresponda.
 
@@ -127,7 +194,7 @@ Sin embargo, ningún sistema informático puede garantizar seguridad absoluta.
 
 El usuario reconoce que existen riesgos inherentes al uso de software, internet, sistemas operativos, dispositivos personales, redes y servicios externos.
 
-14. Propiedad intelectual
+21. Propiedad intelectual
 
 ScisoNomics, incluyendo su nombre, diseño, interfaz, código, estructura, textos, gráficos, marca, logotipos, componentes, documentación, funcionalidades y demás elementos asociados, pertenece a sus titulares, desarrolladores o licenciantes, según corresponda.
 
@@ -135,7 +202,7 @@ El usuario recibe una licencia limitada, personal, revocable, no exclusiva, no t
 
 El usuario no adquiere derechos de propiedad sobre la aplicación, su código o sus elementos protegidos.
 
-15. Restricciones sobre la aplicación
+22. Restricciones sobre la aplicación
 
 Salvo autorización expresa, el usuario no podrá:
 
@@ -146,17 +213,17 @@ d. eliminar avisos de propiedad intelectual;
 e. usar la aplicación para desarrollar productos competidores mediante copia sustancial;
 f. vulnerar mecanismos de seguridad o autenticación.
 
-16. Servicios de terceros
+23. Servicios de terceros
 
-ScisoNomics puede utilizar servicios, librerías, plataformas, servidores, infraestructura, sistemas operativos, servicios de autenticación, almacenamiento, hosting, analítica técnica o herramientas de terceros.
+ScisoNomics puede utilizar servicios, librerías, plataformas, servidores, infraestructura, sistemas operativos, servicios de autenticación, almacenamiento, hosting, analítica técnica, pagos, soporte u otros servicios de terceros.
 
 El uso de esos servicios puede estar sujeto a sus propios términos, políticas de privacidad, condiciones técnicas y disponibilidad.
 
 ScisoNomics no controla ni garantiza de manera absoluta el funcionamiento de servicios externos.
 
-17. Limitación de responsabilidad
+24. Limitación de responsabilidad
 
-En la máxima medida permitida por la normativa aplicable, ScisoNomics, sus desarrolladores, titulares, colaboradores o proveedores no serán responsables por:
+En la máxima medida permitida por la normativa aplicable, ScisoNomics, su autor, desarrollador, colaboradores o proveedores no serán responsables por:
 
 a. pérdidas económicas;
 b. decisiones financieras tomadas por el usuario;
@@ -167,21 +234,22 @@ f. fallas del dispositivo, sistema operativo, red o servicios externos;
 g. incompatibilidades;
 h. daños indirectos, incidentales, especiales, punitivos o consecuentes;
 i. imposibilidad de uso de la aplicación;
-j. uso indebido o no autorizado por parte del usuario o terceros.
+j. uso indebido o no autorizado por parte del usuario o terceros;
+k. cancelación, vencimiento o falta de disponibilidad de funciones Premium por falta de pago, error de proveedor externo o estado de suscripción inválido.
 
 Nada de lo dispuesto en estos términos limitará derechos irrenunciables que pudieran corresponder al usuario conforme a la normativa aplicable.
 
-18. Garantías
+25. Garantías
 
 ScisoNomics se ofrece “tal como está” y “según disponibilidad”.
 
 No se otorgan garantías expresas o implícitas de funcionamiento ininterrumpido, ausencia de errores, adecuación a un propósito particular, exactitud absoluta de reportes, disponibilidad permanente, recuperación completa de datos o compatibilidad con todos los entornos.
 
-19. Suspensión o interrupción de funciones
+26. Suspensión o interrupción de funciones
 
-ScisoNomics podrá suspender, limitar o modificar funciones de la aplicación o servicios asociados cuando sea necesario por razones técnicas, legales, de seguridad, mantenimiento, abuso, fraude, incompatibilidad, discontinuidad del servicio o fuerza mayor.
+ScisoNomics podrá suspender, limitar o modificar funciones de la aplicación o servicios asociados cuando sea necesario por razones técnicas, legales, de seguridad, mantenimiento, abuso, fraude, incompatibilidad, discontinuidad del servicio, falta de pago, vencimiento de suscripción o fuerza mayor.
 
-20. Eliminación de cuenta y datos
+27. Eliminación de cuenta y datos
 
 El usuario podrá solicitar la eliminación de su cuenta o de datos asociados mediante los canales de contacto disponibles.
 
@@ -189,7 +257,7 @@ La eliminación de datos cloud no necesariamente elimina automáticamente datos 
 
 La eliminación de datos estará sujeta a validación de identidad, requisitos técnicos, legales y plazos razonables de procesamiento.
 
-21. Soporte
+28. Soporte
 
 ScisoNomics podrá ofrecer canales de soporte para consultas, errores o solicitudes.
 
@@ -197,7 +265,7 @@ El soporte puede requerir información técnica, capturas, logs, versión de la 
 
 El soporte no garantiza resolución inmediata ni cobertura de todos los escenarios.
 
-22. Modificaciones de estos términos
+29. Modificaciones de estos términos
 
 Estos Términos y Condiciones podrán actualizarse.
 
@@ -205,7 +273,7 @@ En caso de cambios relevantes, se procurará informar al usuario mediante la apl
 
 El uso continuado de la aplicación luego de la actualización implica aceptación de los términos modificados.
 
-23. Ley aplicable y jurisdicción
+30. Ley aplicable y jurisdicción
 
 Estos términos se rigen por las leyes de la República Argentina.
 
@@ -213,11 +281,11 @@ Cuando corresponda, serán aplicables las normas de defensa del consumidor, prot
 
 Sin perjuicio de los derechos irrenunciables del usuario conforme a la normativa aplicable, cualquier controversia será sometida a los tribunales competentes de la República Argentina.
 
-24. Contacto
+31. Contacto
 
 Para consultas, soporte, solicitudes legales o relacionadas con privacidad, el usuario podrá contactarse a:
 
-scisoftwareco@gmail.com
+[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
 
 ============================================================
 SECCIÓN II — POLÍTICA DE PRIVACIDAD
@@ -240,7 +308,7 @@ Cuando corresponda, también podrán ser aplicables normas de defensa del consum
 El responsable del tratamiento de datos será:
 
 Ian Acevedo
-Contacto: scisoftwareco@gmail.com
+Contacto: [scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
 País: República Argentina
 
 4. Datos que puede tratar ScisoNomics
@@ -272,7 +340,16 @@ b. Datos financieros ingresados por el usuario:
 * saldos;
 * estadísticas generadas a partir de esos datos.
 
-c. Datos técnicos:
+c. Datos de plan, suscripción o facturación:
+
+* plan Free o Premium;
+* estado de suscripción;
+* fechas de activación, vencimiento o cancelación;
+* identificadores internos de suscripción;
+* datos necesarios para validar acceso a funciones Premium;
+* información básica necesaria para soporte o administración comercial.
+
+d. Datos técnicos:
 
 * versión de la aplicación;
 * versión del backend local;
@@ -284,7 +361,7 @@ c. Datos técnicos:
 * identificadores técnicos de sincronización;
 * información necesaria para seguridad, reparación o soporte.
 
-d. Datos locales:
+e. Datos locales:
 
 * base de datos local;
 * backups locales;
@@ -292,7 +369,15 @@ d. Datos locales:
 * archivos de logs;
 * tokens o credenciales técnicas almacenadas mediante mecanismos seguros del sistema operativo, cuando corresponda.
 
-5. Datos especialmente sensibles
+5. Datos de pago
+
+Si ScisoNomics integra pagos mediante proveedores externos, los datos de pago podrán ser tratados por dichos proveedores conforme a sus propias políticas de privacidad y términos.
+
+ScisoNomics podrá recibir y almacenar información limitada relacionada con el estado del pago o suscripción, como identificadores de cliente, identificadores de suscripción, estado del pago, fecha de vencimiento, fecha de renovación o estado de cancelación.
+
+ScisoNomics no almacenará datos completos de tarjeta de crédito o débito cuando el procesamiento se realice mediante proveedores externos.
+
+6. Datos especialmente sensibles
 
 ScisoNomics no está diseñada para solicitar datos sensibles en los términos de la normativa aplicable, tales como datos de salud, origen racial o étnico, opiniones políticas, convicciones religiosas, afiliación sindical, datos biométricos, datos genéticos u otros datos sensibles.
 
@@ -300,7 +385,7 @@ El usuario deberá evitar ingresar datos sensibles en campos libres, notas, nomb
 
 Si el usuario decide ingresar información sensible por iniciativa propia, lo hará bajo su exclusiva responsabilidad.
 
-6. Finalidades del tratamiento
+7. Finalidades del tratamiento
 
 Los datos podrán ser tratados para las siguientes finalidades:
 
@@ -311,21 +396,25 @@ d. permitir sincronización cloud entre dispositivos;
 e. autenticar al usuario;
 f. recordar sesión cuando el usuario lo solicite;
 g. realizar backups, restauración o reparación de datos;
-h. prevenir errores, abusos, fraudes o accesos no autorizados;
-i. brindar soporte técnico;
-j. mejorar estabilidad, seguridad y compatibilidad;
-k. cumplir obligaciones legales o requerimientos válidos de autoridad competente.
+h. validar el plan Free o Premium del usuario;
+i. habilitar, limitar o bloquear funciones Premium según corresponda;
+j. gestionar suscripciones, pagos, vencimientos, cancelaciones o estados comerciales cuando corresponda;
+k. prevenir errores, abusos, fraudes o accesos no autorizados;
+l. brindar soporte técnico;
+m. mejorar estabilidad, seguridad y compatibilidad;
+n. cumplir obligaciones legales o requerimientos válidos de autoridad competente.
 
-7. Base legal o fundamento del tratamiento
+8. Base legal o fundamento del tratamiento
 
 El tratamiento de datos se basa en:
 
 a. el consentimiento del usuario al instalar, registrarse o utilizar la aplicación;
 b. la necesidad de ejecutar el servicio solicitado por el usuario;
 c. el cumplimiento de obligaciones legales aplicables;
-d. el interés legítimo en mantener seguridad, prevenir abusos, corregir errores y mejorar el funcionamiento de la aplicación, siempre que no prevalezcan derechos del usuario.
+d. el interés legítimo en mantener seguridad, prevenir abusos, corregir errores y mejorar el funcionamiento de la aplicación, siempre que no prevalezcan derechos del usuario;
+e. la gestión de la relación comercial o contractual cuando existan funciones Premium o suscripción.
 
-8. Almacenamiento local
+9. Almacenamiento local
 
 ScisoNomics puede almacenar información en el dispositivo del usuario.
 
@@ -337,11 +426,12 @@ c. backups;
 d. logs;
 e. preferencias;
 f. datos técnicos de sesión;
-g. credenciales técnicas o tokens almacenados mediante mecanismos seguros del sistema operativo, cuando corresponda.
+g. credenciales técnicas o tokens almacenados mediante mecanismos seguros del sistema operativo, cuando corresponda;
+h. cache local del estado del plan o funciones habilitadas.
 
 El usuario entiende que los datos locales pueden permanecer en su dispositivo incluso si se desinstala la aplicación, salvo que el desinstalador, el sistema operativo o el usuario los eliminen expresamente.
 
-9. Sincronización cloud
+10. Sincronización cloud
 
 Si el usuario utiliza una cuenta cloud o funciones de sincronización, determinados datos podrán ser enviados a servidores externos para permitir respaldo, continuidad, recuperación o sincronización entre dispositivos.
 
@@ -349,7 +439,7 @@ La información sincronizada puede incluir movimientos, categorías, presupuesto
 
 El usuario puede optar por no utilizar funciones cloud cuando la aplicación lo permita, utilizando funcionalidades locales.
 
-10. Tokens y credenciales técnicas
+11. Tokens y credenciales técnicas
 
 Para mantener sesiones y permitir sincronización, ScisoNomics puede utilizar tokens de acceso, refresh tokens u otros identificadores técnicos.
 
@@ -359,7 +449,7 @@ Estos datos técnicos no deben ser compartidos por el usuario.
 
 ScisoNomics no recomienda almacenar credenciales fuera de los mecanismos previstos por la aplicación.
 
-11. Logs y diagnóstico
+12. Logs y diagnóstico
 
 ScisoNomics puede generar logs técnicos para diagnosticar errores, mejorar estabilidad y brindar soporte.
 
@@ -367,7 +457,7 @@ Los logs pueden incluir información técnica sobre errores, estado de sincroniz
 
 Se procurará evitar incluir información financiera sensible en logs, pero el usuario deberá tener precaución al compartir archivos de diagnóstico con soporte.
 
-12. Backups
+13. Backups
 
 ScisoNomics puede generar o permitir generar backups locales.
 
@@ -377,15 +467,15 @@ El usuario es responsable de proteger, almacenar, copiar, eliminar o compartir e
 
 Si el usuario comparte un backup con terceros, lo hace bajo su responsabilidad.
 
-13. Conservación de datos
+14. Conservación de datos
 
-Los datos se conservarán mientras sean necesarios para el funcionamiento de la aplicación, la cuenta del usuario, la sincronización, soporte, cumplimiento legal o hasta que el usuario solicite su eliminación, cuando corresponda.
+Los datos se conservarán mientras sean necesarios para el funcionamiento de la aplicación, la cuenta del usuario, la sincronización, soporte, cumplimiento legal, gestión de plan o suscripción, o hasta que el usuario solicite su eliminación cuando corresponda.
 
 Los datos almacenados localmente podrán permanecer en el dispositivo hasta que el usuario los elimine o hasta que la aplicación, sistema operativo o herramientas de desinstalación los remuevan.
 
-Ciertos datos técnicos o logs podrán conservarse durante períodos razonables para seguridad, soporte o auditoría técnica.
+Ciertos datos técnicos, comerciales o logs podrán conservarse durante períodos razonables para seguridad, soporte, auditoría técnica, cumplimiento legal o gestión de pagos.
 
-14. Eliminación de datos
+15. Eliminación de datos
 
 El usuario podrá solicitar la eliminación de datos cloud o cuenta mediante el canal de contacto indicado.
 
@@ -393,16 +483,17 @@ La eliminación estará sujeta a verificación de identidad, condiciones técnic
 
 La eliminación de datos cloud no garantiza eliminación automática de datos locales, backups, exportaciones o copias creadas por el usuario.
 
-15. Derechos del titular de datos
+16. Derechos del titular de datos
 
 El usuario podrá ejercer, cuando corresponda, los derechos de acceso, rectificación, actualización, supresión y demás derechos reconocidos por la normativa aplicable en materia de protección de datos personales.
 
 Para ejercer estos derechos, el usuario podrá contactarse a:
 
-scisoftwareco@gmail.com
+[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+
 La solicitud podrá requerir verificación de identidad para evitar accesos o eliminaciones no autorizadas.
 
-16. Seguridad de la información
+17. Seguridad de la información
 
 ScisoNomics adopta medidas razonables de seguridad técnica y organizativa para proteger la información del usuario.
 
@@ -412,71 +503,71 @@ Sin embargo, ningún sistema puede garantizar seguridad absoluta.
 
 El usuario debe proteger su dispositivo, sistema operativo, cuenta, credenciales y backups.
 
-17. Transferencias y proveedores
+18. Transferencias y proveedores
 
-ScisoNomics puede utilizar proveedores de infraestructura, hosting, autenticación, almacenamiento, sincronización, distribución, analítica técnica, soporte u otros servicios necesarios para operar la aplicación.
+ScisoNomics puede utilizar proveedores de infraestructura, hosting, autenticación, almacenamiento, sincronización, distribución, pagos, analítica técnica, soporte u otros servicios necesarios para operar la aplicación.
 
 Estos proveedores podrán tratar información únicamente en la medida necesaria para prestar dichos servicios.
 
 Cuando corresponda, se procurará utilizar proveedores con medidas razonables de seguridad y protección de datos.
 
-18. Transferencias internacionales
+19. Transferencias internacionales
 
 Algunos servicios o proveedores utilizados por ScisoNomics podrían encontrarse fuera de la República Argentina.
 
 En esos casos, la información podría ser transferida o tratada en otras jurisdicciones, de acuerdo con la finalidad del servicio y la normativa aplicable.
 
-19. Confidencialidad
+20. Confidencialidad
 
 ScisoNomics no venderá los datos personales del usuario a anunciantes.
 
-La información del usuario no será compartida con terceros para fines ajenos al funcionamiento, soporte, seguridad, cumplimiento legal o prestación de servicios asociados, salvo consentimiento del usuario u obligación legal.
+La información del usuario no será compartida con terceros para fines ajenos al funcionamiento, soporte, seguridad, cumplimiento legal, gestión de suscripción o prestación de servicios asociados, salvo consentimiento del usuario u obligación legal.
 
-20. Publicidad y marketing
+21. Publicidad y marketing
 
 ScisoNomics no utilizará la información financiera personal del usuario para vender publicidad personalizada basada en sus movimientos, gastos, ingresos o datos financieros, salvo que en el futuro se informe expresamente y se solicite el consentimiento correspondiente cuando sea necesario.
 
-21. Analítica
+22. Analítica
 
 La aplicación podrá incorporar analítica técnica para conocer errores, rendimiento, uso general de funcionalidades o estabilidad.
 
 Cuando se utilice analítica, se procurará limitar la información recopilada a lo necesario para mejorar el servicio y evitar incluir información financiera personal detallada.
 
-22. Datos de menores
+23. Datos de menores
 
 ScisoNomics no está dirigida específicamente a menores de edad.
 
 Si una persona menor utiliza la aplicación, deberá hacerlo bajo autorización y responsabilidad de sus padres, tutores o representantes legales.
 
-23. Decisiones automatizadas
+24. Decisiones automatizadas
 
 ScisoNomics puede generar cálculos, estadísticas, balances, alertas o reportes de forma automática en función de la información cargada por el usuario.
 
 Estas funciones tienen carácter informativo y no constituyen decisiones automatizadas con efectos legales, financieros, crediticios o profesionales sobre el usuario.
 
-24. Exactitud de los datos
+25. Exactitud de los datos
 
 El usuario es responsable de mantener actualizada y correcta la información que ingresa.
 
 ScisoNomics no garantiza que los cálculos, balances o reportes sean correctos si los datos cargados por el usuario son incompletos, incorrectos, duplicados, desactualizados o mal categorizados.
 
-25. Incidentes de seguridad
+26. Incidentes de seguridad
 
 En caso de detectar un incidente de seguridad que pudiera afectar datos personales del usuario, se procurará adoptar medidas razonables para investigar, mitigar y comunicar el incidente cuando corresponda conforme a la normativa aplicable.
 
-26. Cambios en esta Política de Privacidad
+27. Cambios en esta Política de Privacidad
 
-Esta Política de Privacidad podrá actualizarse para reflejar cambios legales, técnicos, operativos o funcionales.
+Esta Política de Privacidad podrá actualizarse para reflejar cambios legales, técnicos, operativos, comerciales o funcionales.
 
 En caso de modificaciones relevantes, se procurará informar al usuario mediante la aplicación, instalador, sitio web, email u otro canal razonable.
 
-27. Contacto para privacidad
+28. Contacto para privacidad
 
 Para consultas, solicitudes o reclamos relacionados con privacidad y protección de datos personales, el usuario podrá contactarse a:
 
-scisoftwareco@gmail.com
+[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
 
-28. Autoridad de control
+29. Autoridad de control
 
 En la República Argentina, la autoridad de control en materia de protección de datos personales es la Agencia de Acceso a la Información Pública, o el organismo que en el futuro la reemplace.
 
@@ -494,6 +585,8 @@ c. acepta el uso de la aplicación bajo estas condiciones;
 d. comprende que ScisoNomics no brinda asesoramiento financiero, contable, impositivo, legal ni de inversión;
 e. comprende que es responsable por la información que ingresa y por las decisiones que tome en base a ella;
 f. comprende que la aplicación puede almacenar datos localmente y, si utiliza cuenta cloud, sincronizar datos con servidores externos;
-g. comprende que puede solicitar información, acceso, rectificación o eliminación de datos conforme a la normativa aplicable.
+g. comprende que algunas funciones pueden formar parte de un plan Premium o estar sujetas a suscripción, pago, activación manual o autorización comercial;
+h. comprende que la falta de pago, vencimiento, cancelación o ausencia de autorización Premium puede limitar funciones de la aplicación;
+i. comprende que puede solicitar información, acceso, rectificación o eliminación de datos conforme a la normativa aplicable.
 
 Si no acepta estas condiciones, no debe instalar ni utilizar ScisoNomics.
