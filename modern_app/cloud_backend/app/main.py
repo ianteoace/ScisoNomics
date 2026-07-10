@@ -27,7 +27,7 @@ from .auth import (
     verify_password,
 )
 from .db import connect, get_database_engine, init_db
-from .schemas import AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest, UserOut
+from .schemas import AdminBillingEntitlementsUpdateIn, BillingEntitlementsOut, BillingFeaturesOut, AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest, UserOut
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -230,6 +230,21 @@ def _require_debug_endpoints_enabled() -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+def _admin_billing_enabled() -> bool:
+    return os.getenv("SCISONOMICS_ENABLE_ADMIN_BILLING", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_admin_billing_access(admin_token: str | None) -> None:
+    if not _admin_billing_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    expected = os.getenv("SCISONOMICS_ADMIN_TOKEN", "").strip()
+    provided = str(admin_token or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin billing token no configurado.")
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Acceso administrativo inválido.")
+
+
 def row_to_user(row) -> UserOut:
     return UserOut(
         id=row["id"],
@@ -238,6 +253,90 @@ def row_to_user(row) -> UserOut:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _normalize_plan(value: Any) -> str:
+    plan = str(value or "").strip().lower()
+    return "premium" if plan == "premium" else "free"
+
+
+def _normalize_subscription_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"active", "trialing", "past_due", "canceled", "expired"}:
+        return status
+    return "active"
+
+
+def _billing_features_for_plan(plan: str, status: str) -> BillingFeaturesOut:
+    premium_enabled = plan == "premium" and status in {"active", "trialing"}
+    return BillingFeaturesOut(
+        budgets=premium_enabled,
+        saving_goals=premium_enabled,
+        fixed_expenses=premium_enabled,
+        planning=premium_enabled,
+    )
+
+
+def _entitlements_from_user_row(row) -> BillingEntitlementsOut:
+    plan = _normalize_plan(row["plan"] if "plan" in row.keys() else None)
+    status = _normalize_subscription_status(row["subscription_status"] if "subscription_status" in row.keys() else None)
+    expires_at = row["subscription_expires_at"] if "subscription_expires_at" in row.keys() else None
+    normalized_expires_at = str(expires_at).strip() if expires_at is not None else ""
+    return BillingEntitlementsOut(
+        plan=plan,
+        status=status,
+        features=_billing_features_for_plan(plan, status),
+        expires_at=normalized_expires_at or None,
+    )
+
+
+def _admin_update_user_entitlements(
+    conn,
+    *,
+    email: str,
+    plan: str,
+    subscription_status: str,
+    subscription_expires_at: str | None,
+    now: str,
+):
+    normalized_email = normalize_email(email)
+    if not EMAIL_RE.match(normalized_email):
+        raise HTTPException(status_code=422, detail="Ingresa un email valido.")
+    normalized_plan = _normalize_plan(plan)
+    normalized_status = _normalize_subscription_status(subscription_status)
+    expires_at = str(subscription_expires_at or "").strip() or None
+    if expires_at and parse_sync_datetime(expires_at) is None:
+        raise HTTPException(status_code=422, detail="subscription_expires_at invalido.")
+
+    row = conn.execute(
+        """
+        SELECT id, email, plan, subscription_status, subscription_expires_at
+        FROM users
+        WHERE LOWER(TRIM(email)) = ?
+        LIMIT 1
+        """,
+        (normalized_email,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    conn.execute(
+        """
+        UPDATE users
+        SET plan = ?, subscription_status = ?, subscription_expires_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (normalized_plan, normalized_status, expires_at, now, row["id"]),
+    )
+    updated = conn.execute(
+        """
+        SELECT id, email, plan, subscription_status, subscription_expires_at
+        FROM users
+        WHERE id = ?
+        """,
+        (row["id"],),
+    ).fetchone()
+    return updated
 
 
 def _google_config() -> tuple[str, str, str]:
@@ -759,6 +858,43 @@ def login(payload: LoginRequest, request: Request):
 @app.get("/auth/me")
 def me(user: UserOut = Depends(get_current_user)):
     return {"ok": True, "user_id": user.id, **user.dict()}
+
+
+@app.get("/billing/entitlements", response_model=BillingEntitlementsOut)
+def billing_entitlements(user: UserOut = Depends(get_current_user)):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT plan, subscription_status, subscription_expires_at FROM users WHERE id = ?",
+            (user.id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    return _entitlements_from_user_row(row)
+
+
+@app.post("/admin/billing/entitlements/by-email", response_model=BillingEntitlementsOut)
+def admin_set_billing_entitlements_by_email(
+    payload: AdminBillingEntitlementsUpdateIn,
+    x_scisonomics_admin_token: str | None = Header(default=None),
+):
+    _require_admin_billing_access(x_scisonomics_admin_token)
+    now = now_iso()
+    with connect() as conn:
+        updated = _admin_update_user_entitlements(
+            conn,
+            email=payload.email,
+            plan=payload.plan,
+            subscription_status=payload.subscription_status,
+            subscription_expires_at=payload.subscription_expires_at,
+            now=now,
+        )
+    _logger.info(
+        "[admin-billing] updated email=%s plan=%s status=%s",
+        mask_email(payload.email),
+        _normalize_plan(payload.plan),
+        _normalize_subscription_status(payload.subscription_status),
+    )
+    return _entitlements_from_user_row(updated)
 
 
 @app.post("/auth/refresh", response_model=AuthResponse)

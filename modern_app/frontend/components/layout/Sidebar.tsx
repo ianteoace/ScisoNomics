@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
 import { BarChart3, CalendarClock, Check, ChevronDown, ChevronLeft, ChevronRight, CircleUserRound, CreditCard, Flag, LayoutDashboard, List, Plus, Settings, Tags, Wallet } from "lucide-react";
 import { motion } from "framer-motion";
@@ -23,17 +24,24 @@ import {
   type StoredCloudAccount,
 } from "../../services/cloudAuth";
 
-const items = [
+type SidebarItem = {
+  href: string;
+  label: string;
+  icon: ComponentType<{ size?: number | string; className?: string }>;
+  premium?: boolean;
+};
+
+const items: readonly SidebarItem[] = [
   { href: "/dashboard", label: "Inicio", icon: LayoutDashboard },
   { href: "/movimientos", label: "Movimientos", icon: List },
   { href: "/categorias", label: "Categorías", icon: Tags },
-  { href: "/gastos-fijos", label: "Gastos fijos", icon: CreditCard },
-  { href: "/planificacion", label: "Planificación", icon: CalendarClock },
+  { href: "/gastos-fijos", label: "Gastos fijos", icon: CreditCard, premium: true },
+  { href: "/planificacion", label: "Planificación", icon: CalendarClock, premium: true },
   { href: "/calendario", label: "Calendario", icon: CalendarClock },
-  { href: "/presupuestos", label: "Presupuestos", icon: Wallet },
+  { href: "/presupuestos", label: "Presupuestos", icon: Wallet, premium: true },
   { href: "/estadisticas", label: "Estadísticas", icon: BarChart3 },
   { href: "/reporte-mensual", label: "Reporte", icon: BarChart3 },
-  { href: "/metas", label: "Metas", icon: Flag },
+  { href: "/metas", label: "Metas", icon: Flag, premium: true },
   { href: "/configuracion", label: "Configuración", icon: Settings },
 ] as const;
 
@@ -274,7 +282,12 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 title={item.label}
               >
                 <Icon size={16} />
-                {!collapsed ? item.label : null}
+                {!collapsed ? (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span>{item.label}</span>
+                    {item.premium ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Premium</span> : null}
+                  </span>
+                ) : null}
               </Link>
             </motion.div>
           );

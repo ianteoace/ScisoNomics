@@ -7,9 +7,11 @@ import { EmptyState } from "../../../components/ui/EmptyState";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
+import { PremiumGate } from "../../../components/ui/PremiumGate";
 import { useToast } from "../../../hooks/useToast";
 import { money, parseCurrencyInput } from "../../../lib/format";
 import { api } from "../../../services/api";
+import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { MetaAhorro } from "../../../types/domain";
 
 type MetaForm = {
@@ -33,6 +35,7 @@ const EMPTY_FORM: MetaForm = {
 export default function MetasPage() {
   const { showError, showSuccess } = useToast();
   const [rows, setRows] = useState<MetaAhorro[]>([]);
+  const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [openForm, setOpenForm] = useState(false);
@@ -46,7 +49,9 @@ export default function MetasPage() {
     setLoading(true);
     try {
       const data = await api.metas();
+      const loadedEntitlements = await loadEntitlements({ force: true });
       setRows(Array.isArray(data) ? data : []);
+      setEntitlements(loadedEntitlements);
       setLoadError("");
     } catch (e: any) {
       setLoadError(e.message || "No se pudieron cargar las metas.");
@@ -61,6 +66,7 @@ export default function MetasPage() {
   }, []);
 
   const hasRows = useMemo(() => rows.length > 0, [rows]);
+  const premiumEnabled = canUseFeature("saving_goals", entitlements);
   const resumen = useMemo(() => {
     const activas = rows.filter((m) => m.estado === "activa");
     const totalObjetivo = activas.reduce((acc, m) => acc + Number(m.monto_objetivo || 0), 0);
@@ -79,12 +85,20 @@ export default function MetasPage() {
   }, [rows]);
 
   function openCreate() {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     setEditing(null);
     setForm(EMPTY_FORM);
     setOpenForm(true);
   }
 
   function openEdit(meta: MetaAhorro) {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     setEditing(meta);
     setForm({
       nombre: meta.nombre,
@@ -99,6 +113,10 @@ export default function MetasPage() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     const nombre = form.nombre.trim();
     if (!nombre) {
       showError("El nombre de la meta es obligatorio.");
@@ -145,6 +163,10 @@ export default function MetasPage() {
   }
 
   async function removeMeta() {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     if (!confirmDeleteId) return;
     try {
       await api.deleteMeta(confirmDeleteId);
@@ -157,6 +179,10 @@ export default function MetasPage() {
   }
 
   async function changeState(meta: MetaAhorro, estado: "activa" | "pausada" | "completada") {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     try {
       await api.updateMeta(meta.id, {
         nombre: meta.nombre,
@@ -178,7 +204,7 @@ export default function MetasPage() {
       <header className="card p-5">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-xl font-bold">Metas de ahorro</h2>
-          <button className="btn" onClick={openCreate}>Crear meta</button>
+          {premiumEnabled ? <button className="btn" onClick={openCreate}>Crear meta</button> : null}
         </div>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           Seguimiento de avance para alcanzar tus objetivos de ahorro.
@@ -205,6 +231,10 @@ export default function MetasPage() {
         </div>
       ) : null}
 
+      <PremiumGate
+        enabled={premiumEnabled}
+        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+      >
       <section className="card p-5 space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-lg font-semibold">Detalle de metas</h3>
@@ -216,9 +246,9 @@ export default function MetasPage() {
       {!loading && !hasRows ? (
         <EmptyState
           title="No hay metas de ahorro creadas."
-          hint="Creá una meta para empezar a seguir tu progreso."
-          ctaLabel="Crear meta"
-          onAction={openCreate}
+          hint={premiumEnabled ? "Creá una meta para empezar a seguir tu progreso." : "No tenés metas de ahorro guardadas para esta cuenta."}
+          ctaLabel={premiumEnabled ? "Crear meta" : undefined}
+          onAction={premiumEnabled ? openCreate : undefined}
         />
       ) : null}
 
@@ -250,21 +280,24 @@ export default function MetasPage() {
                     <div className={`h-2 rounded ${state.barClass}`} style={{ width: `${visualPct}%` }} />
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <button className="btn-secondary" onClick={() => openEdit(m)}>Editar</button>
-                  <button className="btn-secondary" onClick={() => setConfirmDeleteId(m.id)}>Eliminar</button>
-                  {m.estado !== "completada" ? <button className="btn-secondary" onClick={() => changeState(m, "completada")}>Marcar completada</button> : null}
-                  {m.estado === "activa" ? <button className="btn-secondary" onClick={() => changeState(m, "pausada")}>Pausar</button> : null}
-                  {m.estado === "pausada" ? <button className="btn-secondary" onClick={() => changeState(m, "activa")}>Reactivar</button> : null}
-                </div>
+                {premiumEnabled ? (
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button className="btn-secondary" onClick={() => openEdit(m)}>Editar</button>
+                    <button className="btn-secondary" onClick={() => setConfirmDeleteId(m.id)}>Eliminar</button>
+                    {m.estado !== "completada" ? <button className="btn-secondary" onClick={() => changeState(m, "completada")}>Marcar completada</button> : null}
+                    {m.estado === "activa" ? <button className="btn-secondary" onClick={() => changeState(m, "pausada")}>Pausar</button> : null}
+                    {m.estado === "pausada" ? <button className="btn-secondary" onClick={() => changeState(m, "activa")}>Reactivar</button> : null}
+                  </div>
+                ) : null}
               </article>
             );
           })}
         </div>
       ) : null}
       </section>
+      </PremiumGate>
 
-      <Modal open={openForm} title={title} onClose={() => setOpenForm(false)}>
+      <Modal open={premiumEnabled && openForm} title={title} onClose={() => setOpenForm(false)}>
         <form className="grid gap-2" onSubmit={submit}>
           <label className="text-xs text-muted">Nombre de la meta</label>
           <input className="input" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} required />

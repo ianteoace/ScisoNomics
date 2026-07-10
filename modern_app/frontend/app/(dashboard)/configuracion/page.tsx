@@ -12,6 +12,7 @@ import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
+import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -108,6 +109,7 @@ export default function ConfiguracionPage() {
   const [syncOverview, setSyncOverview] = useState<SyncOverview | null>(null);
   const [localIntegrity, setLocalIntegrity] = useState<LocalDbIntegrityResult | null>(null);
   const [backupState, setBackupState] = useState<BackupState | null>(null);
+  const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [restoring, setRestoring] = useState(false);
@@ -146,10 +148,12 @@ export default function ConfiguracionPage() {
         getLocalDbIntegrity().catch(() => null),
         api.backups().catch(() => null),
       ]);
+      const entitlementsResult = await loadEntitlements({ force: true }).catch(() => null);
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
       setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
       setBackupState(backupsResult);
+      setEntitlements(entitlementsResult);
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setAutoSyncIntervalMsState(getAutoSyncIntervalMs());
       setLoadError("");
@@ -428,13 +432,31 @@ export default function ConfiguracionPage() {
   const selectedSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) || SETTINGS_SECTIONS[0];
 
   function renderGeneralSection() {
+    const planLabel = entitlements?.plan === "premium" ? "Premium" : "Free";
+    const subscriptionLabel = entitlements?.status === "trialing"
+      ? "Activa"
+      : entitlements?.status === "past_due"
+        ? "Requiere pago"
+        : entitlements?.status === "canceled"
+          ? "Cancelada"
+          : entitlements?.status === "expired"
+            ? "Vencida"
+            : entitlements?.plan === "premium"
+              ? "Activa"
+              : "Sin suscripción";
+    const includedFeatures = [
+      { key: "budgets", label: "Presupuestos" },
+      { key: "saving_goals", label: "Metas de ahorro" },
+      { key: "fixed_expenses", label: "Gastos fijos" },
+      { key: "planning", label: "Planificación" },
+    ].filter((item) => entitlements?.features?.[item.key as keyof BillingEntitlements["features"]]);
     return (
       <div className="space-y-5">
         <div>
           <h3 className="text-2xl font-black">General</h3>
           <p className="mt-1 text-sm text-slate-400">Estado general y accesos rápidos.</p>
         </div>
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-4">
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
             <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
@@ -449,6 +471,29 @@ export default function ConfiguracionPage() {
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Compatibilidad local</p>
             <p className="mt-2 text-lg font-semibold">{backendCompatibilityLabel}</p>
             <p className="text-sm text-slate-400">Backend {backendVersion}</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Plan</p>
+            <p className="mt-2 text-lg font-semibold">{planLabel}</p>
+            <p className="text-sm text-slate-400">Estado: {subscriptionLabel}</p>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="font-semibold">ScisoNomics Premium</p>
+              <p className="mt-1 text-sm text-slate-400">
+                {entitlements?.plan === "premium"
+                  ? "Tu cuenta tiene habilitadas las funciones Premium de ScisoNomics."
+                  : "Premium desbloquea Presupuestos, Metas de ahorro, Gastos fijos y Planificación."}
+              </p>
+              <p className="mt-2 text-sm text-slate-300">
+                Funciones incluidas: {includedFeatures.length ? includedFeatures.map((item) => item.label).join(", ") : "solo funciones Free"}
+              </p>
+            </div>
+            <button className="btn" type="button" onClick={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}>
+              Actualizar a Premium
+            </button>
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">

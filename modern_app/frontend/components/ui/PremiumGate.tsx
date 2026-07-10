@@ -19,13 +19,15 @@ export function PremiumGate({
 }) {
   if (enabled) return <>{children}</>;
   return (
-    <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4">
-      <p className="text-sm font-semibold text-amber-100">{title}</p>
-      <p className="mt-1 text-sm text-amber-200/90">{description}</p>
-      <button className="btn mt-3" type="button" onClick={onUpgrade}>
-        {actionLabel}
-      </button>
-      {children ? <div className="mt-4">{children}</div> : null}
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4">
+        <p className="text-sm font-semibold text-amber-100">{title}</p>
+        <p className="mt-1 text-sm text-amber-200/90">{description}</p>
+        <button className="btn mt-3" type="button" onClick={onUpgrade}>
+          {actionLabel}
+        </button>
+      </div>
+      {children ? <div>{children}</div> : null}
     </div>
   );
 }

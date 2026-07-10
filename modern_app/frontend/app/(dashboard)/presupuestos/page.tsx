@@ -8,10 +8,12 @@ import { EmptyState } from "../../../components/ui/EmptyState";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
+import { PremiumGate } from "../../../components/ui/PremiumGate";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { money, monthName, parseCurrencyInput, yearOptions } from "../../../lib/format";
 import { api } from "../../../services/api";
+import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { Categoria, Presupuesto } from "../../../types/domain";
 
 export default function PresupuestosPage() {
@@ -20,6 +22,7 @@ export default function PresupuestosPage() {
   const { showError, showSuccess } = useToast();
   const [rows, setRows] = useState<Presupuesto[]>([]);
   const [cats, setCats] = useState<Categoria[]>([]);
+  const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [open, setOpen] = useState(false);
@@ -32,9 +35,10 @@ export default function PresupuestosPage() {
 
   async function load() {
     setLoading(true);
-    const [p, c] = await Promise.all([api.presupuestos(month, year), api.categorias("gasto")]);
+    const [p, c, e] = await Promise.all([api.presupuestos(month, year), api.categorias("gasto"), loadEntitlements({ force: true })]);
     setRows(Array.isArray(p) ? p : []);
     setCats(Array.isArray(c) ? c : []);
+    setEntitlements(e);
     setLoadError("");
     setLoading(false);
   }
@@ -57,6 +61,7 @@ export default function PresupuestosPage() {
   }, [router]);
 
   const usedPairs = useMemo(() => new Set(rows.map((r) => `${r.categoria_id}-${r.mes}-${r.anio}`)), [rows]);
+  const premiumEnabled = canUseFeature("budgets", entitlements);
   const summary = useMemo(() => {
     if (!rows.length) return null;
     const totalPresupuestado = rows.reduce((acc, r) => acc + Number(r.monto_presupuestado || 0), 0);
@@ -68,6 +73,10 @@ export default function PresupuestosPage() {
   }, [rows]);
 
   function openCreate() {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     setEditing(null);
     setCategoriaId(0);
     setMes(month);
@@ -77,6 +86,10 @@ export default function PresupuestosPage() {
   }
 
   function openEdit(row: Presupuesto) {
+    if (!premiumEnabled) {
+      showError("Esta función está disponible en ScisoNomics Premium.");
+      return;
+    }
     setEditing(row);
     setCategoriaId(row.categoria_id);
     setMes(row.mes);
@@ -87,6 +100,7 @@ export default function PresupuestosPage() {
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (!premiumEnabled) return showError("Esta función está disponible en ScisoNomics Premium.");
     if (!categoriaId) return showError("Selecciona una categoria.");
     if (!mes || !anio) return showError("Selecciona mes y ano.");
     const trimmed = monto.trim();
@@ -106,6 +120,7 @@ export default function PresupuestosPage() {
   }
 
   async function remove(id: number) {
+    if (!premiumEnabled) return showError("Esta función está disponible en ScisoNomics Premium.");
     try {
       await api.deletePresupuesto(id);
       showSuccess("Presupuesto eliminado");
@@ -120,7 +135,7 @@ export default function PresupuestosPage() {
       <header className="card p-5">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-xl font-bold">Presupuestos por categoría</h2>
-          <button className="btn" onClick={openCreate}>Crear presupuesto</button>
+          {premiumEnabled ? <button className="btn" onClick={openCreate}>Crear presupuesto</button> : null}
         </div>
         <p className="text-sm text-slate-500 dark:text-slate-400">
           Seguimiento de gasto vs presupuesto mensual con alertas por categoría.
@@ -146,6 +161,10 @@ export default function PresupuestosPage() {
         </div>
       ) : null}
 
+      <PremiumGate
+        enabled={premiumEnabled}
+        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+      >
       <section className="card p-5">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-lg font-semibold">Detalle por categoría</h3>
@@ -153,17 +172,19 @@ export default function PresupuestosPage() {
       </div>
 
       {loadError ? <ErrorState title="No se pudieron cargar los datos." description={loadError} onRetry={load} /> : null}
-      {rows.length === 0 && !loading ? <EmptyState title="Sin presupuestos" hint="Crea tu primer presupuesto mensual por categoría." ctaLabel="Crear presupuesto" onAction={openCreate} /> : null}
+      {rows.length === 0 && !loading ? <EmptyState title="Sin presupuestos" hint={premiumEnabled ? "Creá tu primer presupuesto mensual por categoría." : "No tenés presupuestos guardados para esta cuenta."} ctaLabel={premiumEnabled ? "Crear presupuesto" : undefined} onAction={premiumEnabled ? openCreate : undefined} /> : null}
 
       <div className={`mt-4 space-y-2 ${loading ? "hidden" : ""}`}>
         {rows.map((r) => (
           <div key={r.id} className="rounded-xl border border-line p-4">
             <div className="flex items-center justify-between">
               <strong>{r.categoria}</strong>
-              <div className="flex gap-2">
-                <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
-                <button className="btn-secondary" onClick={() => setConfirmId(r.id)}>Eliminar</button>
-              </div>
+              {premiumEnabled ? (
+                <div className="flex gap-2">
+                  <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
+                  <button className="btn-secondary" onClick={() => setConfirmId(r.id)}>Eliminar</button>
+                </div>
+              ) : null}
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Período: {monthName(r.mes)} {r.anio}</p>
             <p className="mt-2 text-sm">Presupuestado: <strong>{money(r.monto_presupuestado)}</strong></p>
@@ -182,8 +203,9 @@ export default function PresupuestosPage() {
         ))}
       </div>
       </section>
+      </PremiumGate>
 
-      <Modal open={open} title={editing ? "Editar presupuesto" : "Crear presupuesto"} onClose={() => setOpen(false)}>
+      <Modal open={premiumEnabled && open} title={editing ? "Editar presupuesto" : "Crear presupuesto"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={save}>
           <label className="text-xs text-slate-400">Categoria</label>
           <select className="input" value={categoriaId} onChange={(e) => setCategoriaId(Number(e.target.value))} required>

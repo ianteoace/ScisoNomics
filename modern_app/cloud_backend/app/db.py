@@ -226,6 +226,14 @@ def _ensure_refresh_token_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "cloud_refresh_tokens", "device_name", "TEXT")
 
 
+def _ensure_billing_columns(conn: CloudConnection) -> None:
+    _ensure_column(conn, "users", "plan", "TEXT")
+    _ensure_column(conn, "users", "subscription_status", "TEXT")
+    _ensure_column(conn, "users", "subscription_expires_at", "TEXT")
+    conn.execute("UPDATE users SET plan = COALESCE(NULLIF(plan, ''), 'free')")
+    conn.execute("UPDATE users SET subscription_status = COALESCE(NULLIF(subscription_status, ''), 'active')")
+
+
 def _init_sqlite() -> None:
     with connect() as conn:
         conn.execute(
@@ -235,6 +243,9 @@ def _init_sqlite() -> None:
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 display_name TEXT,
+                plan TEXT DEFAULT 'free',
+                subscription_status TEXT DEFAULT 'active',
+                subscription_expires_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -463,6 +474,7 @@ def _init_sqlite() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
+        _ensure_billing_columns(conn)
         _ensure_cloud_sync_schema(conn)
 
 
@@ -475,6 +487,9 @@ def _init_postgres() -> None:
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 display_name TEXT,
+                plan TEXT DEFAULT 'free',
+                subscription_status TEXT DEFAULT 'active',
+                subscription_expires_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -693,4 +708,5 @@ def _init_postgres() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
+        _ensure_billing_columns(conn)
         _ensure_cloud_sync_schema(conn)

@@ -51,7 +51,7 @@ from .deps import (
     start_database_initialization,
 )
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
-from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
+from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, BillingEntitlementsCacheIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # La documentacion interactiva ayuda en desarrollo, pero en la app instalada
@@ -112,6 +112,26 @@ app.add_middleware(
 )
 
 
+class PremiumRequiredError(Exception):
+    def __init__(self, feature: str):
+        self.feature = feature
+        self.code = "premium_required"
+        self.message = "Esta función está disponible en ScisoNomics Premium."
+        super().__init__(self.message)
+
+
+@app.exception_handler(PremiumRequiredError)
+async def premium_required_exception_handler(request: Request, exc: PremiumRequiredError):
+    return JSONResponse(
+        status_code=402,
+        content={
+            "code": exc.code,
+            "feature": exc.feature,
+            "message": exc.message,
+        },
+    )
+
+
 @app.middleware("http")
 async def owner_context_middleware(request: Request, call_next):
     if request.method != "OPTIONS" and not _is_public_path(request.url.path):
@@ -167,6 +187,86 @@ def _service_value_error(exc: ValueError, resource_label: str = "El recurso") ->
     if "no existe o no pertenece a la cuenta activa" in str(exc).lower():
         return HTTPException(status_code=404, detail=f"{resource_label} no se encontro o no pertenece a la cuenta activa.")
     return HTTPException(status_code=400, detail=str(exc))
+
+
+PREMIUM_FEATURE_KEYS = ("budgets", "saving_goals", "fixed_expenses", "planning")
+PREMIUM_FEATURE_LABELS = {
+    "budgets": "presupuestos",
+    "saving_goals": "metas de ahorro",
+    "fixed_expenses": "gastos fijos",
+    "planning": "planificacion",
+}
+
+
+def _default_entitlements() -> dict[str, Any]:
+    return {
+        "plan": "free",
+        "status": "active",
+        "features": {
+            "budgets": False,
+            "saving_goals": False,
+            "fixed_expenses": False,
+            "planning": False,
+        },
+        "expires_at": None,
+    }
+
+
+def _normalize_entitlements_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    data = _default_entitlements()
+    if not isinstance(payload, dict):
+        return data
+    plan = str(payload.get("plan") or "").strip().lower()
+    status = str(payload.get("status") or "").strip().lower()
+    if plan in {"free", "premium"}:
+        data["plan"] = plan
+    if status in {"active", "trialing", "past_due", "canceled", "expired"}:
+        data["status"] = status
+    features = payload.get("features")
+    if isinstance(features, dict):
+        normalized_features: dict[str, bool] = {}
+        for feature in PREMIUM_FEATURE_KEYS:
+            normalized_features[feature] = bool(features.get(feature))
+        data["features"] = normalized_features
+    expires_at = payload.get("expires_at")
+    data["expires_at"] = str(expires_at).strip() if expires_at not in {None, ""} else None
+    return data
+
+
+def _entitlements_config_key(owner: str) -> str:
+    return f"cloud_entitlements:{owner}"
+
+
+def _read_local_entitlements(conn: sqlite3.Connection, owner: str) -> dict[str, Any]:
+    raw = _config_get(conn, _entitlements_config_key(owner))
+    if not raw:
+        return _default_entitlements()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return _default_entitlements()
+    return _normalize_entitlements_payload(parsed if isinstance(parsed, dict) else None)
+
+
+def _write_local_entitlements(conn: sqlite3.Connection, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_entitlements_payload(payload)
+    _config_set(conn, _entitlements_config_key(owner), json.dumps(normalized, ensure_ascii=True, separators=(",", ":")))
+    return normalized
+
+
+def _premium_required_error(feature: str) -> PremiumRequiredError:
+    return PremiumRequiredError(feature)
+
+
+def _require_premium_feature(feature: str) -> None:
+    owner = _current_owner()
+    if owner == LOCAL_OWNER_ID:
+        raise _premium_required_error(feature)
+    with closing(Database(WEB_DB_PATH).connect()) as conn:
+        entitlements = _read_local_entitlements(conn, owner)
+    features = entitlements.get("features") if isinstance(entitlements.get("features"), dict) else {}
+    if not bool(features.get(feature)):
+        raise _premium_required_error(feature)
 
 
 def _category_constraint_http_error(constraint: str) -> HTTPException:
@@ -570,6 +670,7 @@ def list_gastos_fijos(service: FinanceService = Depends(get_service)):
 
 @app.post("/gastos-fijos")
 def create_gasto_fijo(payload: GastoFijoIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("fixed_expenses")
     try:
         service.create_gasto_fijo(GastoFijoInput(**payload.model_dump()))
         return {"ok": True}
@@ -581,6 +682,7 @@ def create_gasto_fijo(payload: GastoFijoIn, service: FinanceService = Depends(ge
 
 @app.put("/gastos-fijos/{gasto_id}")
 def update_gasto_fijo(gasto_id: int, payload: GastoFijoIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("fixed_expenses")
     try:
         service.update_gasto_fijo(gasto_id, GastoFijoInput(**payload.model_dump()))
         return {"ok": True}
@@ -592,6 +694,7 @@ def update_gasto_fijo(gasto_id: int, payload: GastoFijoIn, service: FinanceServi
 
 @app.delete("/gastos-fijos/{gasto_id}")
 def delete_gasto_fijo(gasto_id: int, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("fixed_expenses")
     try:
         service.delete_gasto_fijo(gasto_id)
         return {"ok": True}
@@ -614,6 +717,7 @@ def list_gastos_programados(
 
 @app.post("/gastos-programados")
 def create_gasto_programado(payload: GastoProgramadoIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("planning")
     try:
         service.create_gasto_programado(GastoProgramadoInput(**payload.model_dump()))
         return {"ok": True}
@@ -625,6 +729,7 @@ def create_gasto_programado(payload: GastoProgramadoIn, service: FinanceService 
 
 @app.put("/gastos-programados/{gasto_id}")
 def update_gasto_programado(gasto_id: int, payload: GastoProgramadoIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("planning")
     try:
         service.update_gasto_programado(gasto_id, GastoProgramadoInput(**payload.model_dump()))
         return {"ok": True}
@@ -636,6 +741,7 @@ def update_gasto_programado(gasto_id: int, payload: GastoProgramadoIn, service: 
 
 @app.delete("/gastos-programados/{gasto_id}")
 def delete_gasto_programado(gasto_id: int, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("planning")
     try:
         service.delete_gasto_programado(gasto_id)
         return {"ok": True}
@@ -647,6 +753,7 @@ def delete_gasto_programado(gasto_id: int, service: FinanceService = Depends(get
 
 @app.post("/gastos-programados/{gasto_id}/marcar-pagado")
 def marcar_pagado(gasto_id: int, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("planning")
     try:
         return service.marcar_gasto_programado_pagado(gasto_id)
     except Exception as exc:
@@ -795,6 +902,7 @@ def list_presupuestos(month: int = Query(..., ge=1, le=12), year: int = Query(..
 
 @app.post("/presupuestos")
 def upsert_presupuesto(payload: PresupuestoIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("budgets")
     try:
         service.create_or_update_presupuesto(PresupuestoInput(**payload.model_dump()))
         return {"ok": True}
@@ -804,6 +912,7 @@ def upsert_presupuesto(payload: PresupuestoIn, service: FinanceService = Depends
 
 @app.delete("/presupuestos/{presupuesto_id}")
 def delete_presupuesto(presupuesto_id: int, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("budgets")
     try:
         service.delete_presupuesto(presupuesto_id)
         return {"ok": True}
@@ -1226,6 +1335,25 @@ def local_session_context(service: FinanceService = Depends(get_service)):
         "local_claimable_total": local_claimable_total,
         "visible_data": visible_data,
     }
+
+
+@app.get("/billing/entitlements")
+def get_local_billing_entitlements(service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    owner = _current_owner()
+    with service.db.connect() as conn:
+        entitlements = _read_local_entitlements(conn, owner)
+    return {"ok": True, "owner": owner, **entitlements}
+
+
+@app.post("/billing/entitlements/cache")
+async def cache_local_billing_entitlements(request: Request, service: FinanceService = Depends(get_service)):
+    ensure_app_data_initialized()
+    payload = BillingEntitlementsCacheIn(**(await request.json()))
+    owner = _current_owner()
+    with service.db.connect() as conn:
+        normalized = _write_local_entitlements(conn, owner, payload.model_dump())
+    return {"ok": True, "owner": owner, **normalized}
 
 
 @app.post("/local-session/claim-local-data")
@@ -4005,6 +4133,7 @@ def list_metas(service: FinanceService = Depends(get_service)):
 
 @app.post("/metas")
 def create_meta(payload: MetaAhorroIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("saving_goals")
     try:
         service.create_meta_ahorro(MetaAhorroInput(**payload.model_dump()))
         return {"ok": True}
@@ -4014,6 +4143,7 @@ def create_meta(payload: MetaAhorroIn, service: FinanceService = Depends(get_ser
 
 @app.put("/metas/{meta_id}")
 def update_meta(meta_id: int, payload: MetaAhorroIn, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("saving_goals")
     try:
         service.update_meta_ahorro(meta_id, MetaAhorroInput(**payload.model_dump()))
         return {"ok": True}
@@ -4023,6 +4153,7 @@ def update_meta(meta_id: int, payload: MetaAhorroIn, service: FinanceService = D
 
 @app.delete("/metas/{meta_id}")
 def delete_meta(meta_id: int, service: FinanceService = Depends(get_service)):
+    _require_premium_feature("saving_goals")
     try:
         service.delete_meta_ahorro(meta_id)
         return {"ok": True}

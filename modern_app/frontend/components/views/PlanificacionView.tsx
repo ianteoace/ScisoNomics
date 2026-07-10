@@ -15,6 +15,7 @@ export function PlanificacionView({
   rows,
   categories,
   loading,
+  canEdit = true,
   onCreate,
   onUpdate,
   onDelete,
@@ -23,6 +24,7 @@ export function PlanificacionView({
   rows: GastoProgramado[];
   categories: Categoria[];
   loading: boolean;
+  canEdit?: boolean;
   onCreate: (payload: any) => Promise<void>;
   onUpdate: (id: number, payload: any) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -87,12 +89,12 @@ export function PlanificacionView({
           <select className="input w-48" value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="todos">Todos</option><option value="pendiente">Pendientes</option><option value="pagado">Pagados</option><option value="cancelado">Cancelados</option>
           </select>
-          <button className="btn" onClick={openCreate}>Crear planificacion</button>
+          {canEdit ? <button className="btn" onClick={openCreate}>Crear planificación</button> : null}
         </div>
       } />
 
       {loading ? <LoadingSkeleton rows={7} /> : null}
-      {filtered.length === 0 && !loading ? <EmptyState title="Sin planificacion" hint="Crea tu primer gasto programado." ctaLabel="Crear planificacion" onAction={openCreate} /> : null}
+      {filtered.length === 0 && !loading ? <EmptyState title="Sin planificación" hint={canEdit ? "Creá tu primer gasto programado." : "No tenés gastos programados guardados para esta cuenta."} ctaLabel={canEdit ? "Crear planificación" : undefined} onAction={canEdit ? openCreate : undefined} /> : null}
 
       <div className={`table-wrap ${loading ? "hidden" : ""}`}>
         <table className="table-modern w-full text-sm">
@@ -104,14 +106,22 @@ export function PlanificacionView({
                 <td><span className={`rounded-full px-2 py-1 text-xs ${stateClass(r)}`}>{r.estado}</span></td>
                 <td><Badge>{r.categoria}</Badge></td><td>{r.descripcion}</td><td className="text-right text-rose-300">{money(r.monto_estimado)}</td>
                 <td>{r.es_recurrente ? <Badge tone="warn">{r.frecuencia}</Badge> : "-"}</td>
-                <td className="py-2"><div className="flex justify-end gap-2"><button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>{r.estado === "pendiente" ? <button className="btn-secondary" onClick={() => onMarkPaid(r.id)}>Marcar pagado</button> : null}<button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button></div></td>
+                <td className="py-2">
+                  {canEdit ? (
+                    <div className="flex justify-end gap-2">
+                      <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
+                      {r.estado === "pendiente" ? <button className="btn-secondary" onClick={() => onMarkPaid(r.id)}>Marcar pagado</button> : null}
+                      <button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button>
+                    </div>
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <Modal open={open} title={selected ? "Editar planificacion" : "Crear planificacion"} onClose={() => setOpen(false)}>
+      <Modal open={canEdit && open} title={selected ? "Editar planificación" : "Crear planificación"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={submit}>
           <label className="text-xs text-slate-400">Descripcion</label>
           <input className="input" placeholder="Descripcion" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} required />

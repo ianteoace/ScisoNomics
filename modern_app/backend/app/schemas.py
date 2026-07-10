@@ -81,3 +81,17 @@ class BackupFrequencyIn(BaseModel):
 
 class BackupRestorePathIn(BaseModel):
     source_path: str
+
+
+class PremiumFeaturesIn(BaseModel):
+    budgets: bool = False
+    saving_goals: bool = False
+    fixed_expenses: bool = False
+    planning: bool = False
+
+
+class BillingEntitlementsCacheIn(BaseModel):
+    plan: Literal["free", "premium"] = "free"
+    status: Literal["active", "trialing", "past_due", "canceled", "expired"] = "active"
+    features: PremiumFeaturesIn = Field(default_factory=PremiumFeaturesIn)
+    expires_at: str | None = None

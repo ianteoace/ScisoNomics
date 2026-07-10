@@ -3,6 +3,9 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+FeatureKey = str
+
+
 class RegisterRequest(BaseModel):
     email: str
     password: str
@@ -37,3 +40,24 @@ class RefreshRequest(BaseModel):
 
 class LogoutRequest(BaseModel):
     refresh_token: str
+
+
+class BillingFeaturesOut(BaseModel):
+    budgets: bool
+    saving_goals: bool
+    fixed_expenses: bool
+    planning: bool
+
+
+class BillingEntitlementsOut(BaseModel):
+    plan: str
+    status: str
+    features: BillingFeaturesOut
+    expires_at: str | None = None
+
+
+class AdminBillingEntitlementsUpdateIn(BaseModel):
+    email: str
+    plan: str
+    subscription_status: str
+    subscription_expires_at: str | None = None

@@ -14,6 +14,7 @@ export function GastosFijosView({
   rows,
   categories,
   loading,
+  canEdit = true,
   onCreate,
   onUpdate,
   onDelete,
@@ -21,6 +22,7 @@ export function GastosFijosView({
   rows: GastoFijo[];
   categories: Categoria[];
   loading?: boolean;
+  canEdit?: boolean;
   onCreate: (payload: any) => Promise<void>;
   onUpdate: (id: number, payload: any) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
@@ -105,9 +107,9 @@ export function GastosFijosView({
       </div>
 
       <section className="card p-5">
-      <SectionHeader title="Gastos fijos" subtitle="Plantillas mensuales de egresos" right={<button className="btn" onClick={openCreate}>Crear gasto fijo</button>} />
+      <SectionHeader title="Gastos fijos" subtitle="Plantillas mensuales de egresos" right={canEdit ? <button className="btn" onClick={openCreate}>Crear gasto fijo</button> : undefined} />
 
-      {!loading && rows.length === 0 ? <EmptyState title="No hay gastos fijos cargados." hint="Creá tu primer gasto fijo mensual." ctaLabel="Crear gasto fijo" onAction={openCreate} /> : null}
+      {!loading && rows.length === 0 ? <EmptyState title="No hay gastos fijos cargados." hint={canEdit ? "Creá tu primer gasto fijo mensual." : "No tenés gastos fijos guardados para esta cuenta."} ctaLabel={canEdit ? "Crear gasto fijo" : undefined} onAction={canEdit ? openCreate : undefined} /> : null}
 
       <div className={`grid gap-3 lg:grid-cols-2 ${loading ? "hidden" : ""}`}>
         {sortedRows.map((r) => (
@@ -126,17 +128,19 @@ export function GastosFijosView({
             <p className="text-sm">Vencimiento: <strong>Día {r.dia_vencimiento}</strong> de cada mes</p>
             <p className="text-sm">Frecuencia: <strong>{(r as any).frecuencia || "Mensual"}</strong></p>
             <p className={`text-xs ${r.statusTone}`}>{r.statusDescription}</p>
-            <div className="pt-1 flex justify-end gap-2">
-              <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
-              <button className="btn-secondary" onClick={() => toggle(r)}>{r.activo ? "Desactivar" : "Activar"}</button>
-              <button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button>
-            </div>
+            {canEdit ? (
+              <div className="pt-1 flex justify-end gap-2">
+                <button className="btn-secondary" onClick={() => openEdit(r)}>Editar</button>
+                <button className="btn-secondary" onClick={() => toggle(r)}>{r.activo ? "Desactivar" : "Activar"}</button>
+                <button className="btn-secondary" onClick={() => onDelete(r.id)}>Eliminar</button>
+              </div>
+            ) : null}
           </article>
         ))}
       </div>
       </section>
 
-      <Modal open={open} title={selected ? "Editar gasto fijo" : "Crear gasto fijo"} onClose={() => setOpen(false)}>
+      <Modal open={canEdit && open} title={selected ? "Editar gasto fijo" : "Crear gasto fijo"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={submit}>
           <label className="text-xs text-slate-400">Categoria</label>
           <select className="input" value={form.categoria_id} onChange={(e) => setForm({ ...form, categoria_id: Number(e.target.value) })} required>
