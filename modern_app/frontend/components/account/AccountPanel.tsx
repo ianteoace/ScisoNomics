@@ -16,12 +16,14 @@ import {
   getActiveOwnerId,
   getCloudAuthTokens,
   getStoredAccounts,
+  isEmailVerificationRequiredResponse,
   isCloudAuthConfigured,
   logoutAccount,
   removeAccount,
   switchActiveOwner,
   addOrUpdateAccount,
   type CloudSessionAvailability,
+  type EmailVerificationRequiredResponse,
   type StoredCloudAccount,
   type CloudUser,
 } from "../../services/cloudAuth";
@@ -49,6 +51,7 @@ import {
 import { PasswordInput } from "../ui/PasswordInput";
 
 type Mode = "login" | "register";
+type PendingVerification = EmailVerificationRequiredResponse & { source: Mode };
 
 const inputClass =
   "w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
@@ -91,6 +94,9 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
+  const [verification, setVerification] = useState<PendingVerification | null>(null);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [resendAvailableIn, setResendAvailableIn] = useState(0);
   const hasCheckedSessionRef = useRef(false);
   const sessionAvailable = sessionAvailability === "active";
 
@@ -101,6 +107,32 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setRegisterEmail("");
     setRegisterPassword("");
     setRepeatPassword("");
+    setVerificationCode("");
+  }
+
+  async function completeVerifiedLogin(response: Awaited<ReturnType<typeof cloudAuth.verifyEmail>>, successMessage: string) {
+    const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
+    const authState = await getActiveCloudAuthState();
+    setTokenMode(authState.account?.storage || null);
+    setSessionAvailability(authState.availability);
+    setUser(authState.account?.user || response.user);
+    setAccounts(getStoredAccounts());
+    setActiveOwnerId(response.user.id);
+    setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
+    setShowAddAccount(false);
+    setVerification(null);
+    clearAuthForms();
+    if (remember && !stored.secureResult.storedSecurely) {
+      showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+    }
+    showSuccess(successMessage);
+  }
+
+  function enterVerification(response: EmailVerificationRequiredResponse, source: Mode) {
+    setVerification({ ...response, source });
+    setVerificationCode("");
+    setResendAvailableIn(response.resend_available_in || 0);
+    showSuccess("Te enviamos un código de verificación por correo.");
   }
 
   function refreshAuthState() {
@@ -157,6 +189,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       cancelled = true;
     };
   }, [configured]);
+
+  useEffect(() => {
+    if (!verification || resendAvailableIn <= 0) return;
+    const timer = window.setTimeout(() => setResendAvailableIn((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [verification, resendAvailableIn]);
 
 async function handleClearLocalSession() {
     const activeSession = getActiveAccount();
@@ -255,6 +293,10 @@ async function handleClearLocalSession() {
     console.info("[auth] login submit", JSON.stringify({ mode: "login", remember }));
     try {
       const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
+      if (isEmailVerificationRequiredResponse(response)) {
+        enterVerification(response, "login");
+        return;
+      }
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       const authState = await getActiveCloudAuthState();
       setTokenMode(authState.account?.storage || null);
@@ -292,6 +334,10 @@ async function handleClearLocalSession() {
         email: registerEmail,
         password: registerPassword,
       });
+      if (isEmailVerificationRequiredResponse(response)) {
+        enterVerification(response, "register");
+        return;
+      }
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       const authState = await getActiveCloudAuthState();
       setTokenMode(authState.account?.storage || null);
@@ -309,6 +355,43 @@ async function handleClearLocalSession() {
     } catch (error) {
       console.error("Error creando cuenta:", error);
       showError(error instanceof Error ? error.message : "No se pudo crear la cuenta.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!verification || submitting) return;
+    const code = verificationCode.replace(/\D/g, "");
+    if (code.length !== 6) {
+      showError("Ingresá el código de 6 dígitos.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const response = await cloudAuth.verifyEmail({ verification_token: verification.verification_token, code });
+      await completeVerifiedLogin(response, verification.source === "register" ? "Cuenta verificada." : "Sesión iniciada.");
+    } catch (error) {
+      console.error("Error verificando email:", error);
+      showError(error instanceof Error ? error.message : "No se pudo verificar el código.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResendVerificationCode() {
+    if (!verification || submitting || resendAvailableIn > 0) return;
+    setSubmitting(true);
+    try {
+      const response = await cloudAuth.resendEmailVerification({ verification_token: verification.verification_token });
+      setVerification({ ...response, source: verification.source });
+      setVerificationCode("");
+      setResendAvailableIn(response.resend_available_in || 60);
+      showSuccess("Te enviamos un nuevo código.");
+    } catch (error) {
+      console.error("Error reenviando código:", error);
+      showError(error instanceof Error ? error.message : "No se pudo reenviar el código.");
     } finally {
       setSubmitting(false);
     }
@@ -886,7 +969,59 @@ async function handleClearLocalSession() {
       ) : (
         <section className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="card p-6 lg:p-8">
-            {mode === "login" ? (
+            {verification ? (
+              <>
+                <div className="text-center">
+                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Verificación de email</p>
+                  <h3 className="mt-2 text-3xl font-bold">Confirmá tu correo</h3>
+                  <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
+                    Ingresá el código de 6 dígitos que enviamos a {verification.email}.
+                  </p>
+                </div>
+
+                <form className="mt-6 space-y-4" onSubmit={handleVerifyEmail}>
+                  <label className="block text-sm">
+                    Código de verificación
+                    <input
+                      className={`${inputClass} mt-1 text-center text-lg tracking-[0.4em]`}
+                      inputMode="numeric"
+                      maxLength={6}
+                      pattern="[0-9]{6}"
+                      value={verificationCode}
+                      onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      required
+                      disabled={submitting}
+                    />
+                  </label>
+                  <button className="btn w-full justify-center" type="submit" disabled={submitting || verificationCode.length !== 6}>
+                    {submitting ? "Confirmando..." : "Confirmar"}
+                  </button>
+                </form>
+
+                <div className="mt-5 flex flex-col gap-3 text-center text-sm text-slate-500 dark:text-slate-400">
+                  <button
+                    className="font-semibold text-sky-600 hover:underline disabled:text-slate-400 disabled:no-underline dark:text-sky-300"
+                    type="button"
+                    onClick={handleResendVerificationCode}
+                    disabled={submitting || resendAvailableIn > 0}
+                  >
+                    {resendAvailableIn > 0 ? `Reenviar código en ${resendAvailableIn}s` : "Reenviar código"}
+                  </button>
+                  <button
+                    className="font-semibold text-slate-600 hover:underline dark:text-slate-300"
+                    type="button"
+                    onClick={() => {
+                      setVerification(null);
+                      setVerificationCode("");
+                      setMode("login");
+                    }}
+                    disabled={submitting}
+                  >
+                    Volver al login
+                  </button>
+                </div>
+              </>
+            ) : mode === "login" ? (
               <>
                 <div className="text-center">
                   <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">ScisoNomics</p>

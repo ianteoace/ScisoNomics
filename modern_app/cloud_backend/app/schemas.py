@@ -25,6 +25,15 @@ class UserOut(BaseModel):
     updated_at: str
 
 
+class EmailVerificationRequiredOut(BaseModel):
+    status: str = "verification_required"
+    code: str = "email_verification_required"
+    email: str
+    verification_token: str
+    verification_expires_in: int
+    resend_available_in: int
+
+
 class AuthResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -32,6 +41,15 @@ class AuthResponse(BaseModel):
     expires_in: int
     token: str | None = None
     user: UserOut
+
+
+class VerifyEmailRequest(BaseModel):
+    verification_token: str
+    code: str
+
+
+class ResendEmailVerificationRequest(BaseModel):
+    verification_token: str
 
 
 class RefreshRequest(BaseModel):

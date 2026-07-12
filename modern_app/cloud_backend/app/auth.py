@@ -46,6 +46,14 @@ def get_access_token_expires_in() -> int:
     return get_token_expiration_minutes() * 60
 
 
+def get_email_verification_token_expires_in() -> int:
+    raw = os.getenv("SCISONOMICS_EMAIL_VERIFICATION_TOKEN_EXPIRE_MINUTES", "15")
+    try:
+        return max(5, int(raw)) * 60
+    except ValueError:
+        return 15 * 60
+
+
 def get_refresh_token_expiration_days() -> int:
     raw = os.getenv("SCISONOMICS_REFRESH_TOKEN_EXPIRE_DAYS", "30")
     try:
@@ -108,6 +116,17 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     return f"{signing_input}.{_b64url_encode(signature)}"
 
 
+def create_email_verification_token(subject: str, *, purpose: str = "signup") -> str:
+    return create_access_token(
+        subject,
+        {
+            "type": "email_verification",
+            "purpose": purpose,
+            "exp": int(time.time()) + get_email_verification_token_expires_in(),
+        },
+    )
+
+
 def decode_access_token(token: str) -> dict[str, Any]:
     try:
         header_raw, payload_raw, signature_raw = token.split(".", 2)
@@ -123,6 +142,13 @@ def decode_access_token(token: str) -> dict[str, Any]:
     payload = json.loads(_b64url_decode(payload_raw).decode("utf-8"))
     if int(payload.get("exp", 0)) < int(time.time()):
         raise ValueError("Sesion expirada.")
+    return payload
+
+
+def decode_email_verification_token(token: str, *, purpose: str = "signup") -> dict[str, Any]:
+    payload = decode_access_token(token)
+    if payload.get("type") != "email_verification" or payload.get("purpose") != purpose:
+        raise ValueError("Token de verificacion invalido.")
     return payload
 
 

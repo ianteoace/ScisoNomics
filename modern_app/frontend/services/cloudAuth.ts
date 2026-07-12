@@ -15,6 +15,17 @@ export type CloudAuthResponse = {
   user: CloudUser;
 };
 
+export type EmailVerificationRequiredResponse = {
+  status: "verification_required";
+  code: "email_verification_required";
+  email: string;
+  verification_token: string;
+  verification_expires_in: number;
+  resend_available_in: number;
+};
+
+export type CloudAuthRegisterOrLoginResponse = CloudAuthResponse | EmailVerificationRequiredResponse;
+
 export type StoredCloudAccount = {
   user: CloudUser;
   addedAt: string;
@@ -118,6 +129,10 @@ class CloudAuthRequestError extends Error {
     this.statusCode = options.statusCode ?? null;
     this.kind = options.kind || "unknown";
   }
+}
+
+export function isEmailVerificationRequiredResponse(response: CloudAuthRegisterOrLoginResponse): response is EmailVerificationRequiredResponse {
+  return (response as EmailVerificationRequiredResponse).status === "verification_required";
 }
 
 type PersistedCloudAccount = StoredCloudAccount & { token?: string | null };
@@ -1836,6 +1851,13 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    const detail = body?.detail;
+    const detailMessage =
+      typeof detail === "string"
+        ? detail
+        : typeof detail?.message === "string"
+          ? detail.message
+          : "No se pudo completar la acción.";
     if (path === "/auth/refresh") {
       logAuthLifecycle("refresh response", {
         status: response.status,
@@ -1843,9 +1865,9 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
       });
     }
     if (response.status === 401 || response.status === 403) {
-      throw new CloudAuthRequestError("Sesión inválida o vencida.", { statusCode: response.status, kind: "auth" });
+      throw new CloudAuthRequestError(detailMessage, { statusCode: response.status, kind: "auth" });
     }
-    throw new CloudAuthRequestError(typeof body?.detail === "string" ? body.detail : "No se pudo completar la acción.", {
+    throw new CloudAuthRequestError(detailMessage, {
       statusCode: response.status,
       kind: response.status >= 500 ? "server" : "unknown",
     });
@@ -1861,7 +1883,14 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
 
 export const cloudAuth = {
   register: async (input: { email: string; password: string; display_name?: string | null }) => {
-    const response = await cloudRequest<CloudAuthResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
+    const response = await cloudRequest<CloudAuthRegisterOrLoginResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
+    if (isEmailVerificationRequiredResponse(response)) {
+      logAuthLifecycle("register verification required", {
+        email: response.email,
+        expiresIn: response.verification_expires_in,
+      });
+      return response;
+    }
     logAuthLifecycle("register response", {
       accountId: shortAccountId(response.user.id),
       accessTokenPresent: Boolean(response.access_token),
@@ -1871,7 +1900,14 @@ export const cloudAuth = {
     return response;
   },
   login: async (input: { email: string; password: string }) => {
-    const response = await cloudRequest<CloudAuthResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) });
+    const response = await cloudRequest<CloudAuthRegisterOrLoginResponse>("/auth/login", { method: "POST", body: JSON.stringify(input) });
+    if (isEmailVerificationRequiredResponse(response)) {
+      logAuthLifecycle("login verification required", {
+        email: response.email,
+        expiresIn: response.verification_expires_in,
+      });
+      return response;
+    }
     logAuthLifecycle("login response", {
       accountId: shortAccountId(response.user.id),
       accessTokenPresent: Boolean(response.access_token),
@@ -1880,6 +1916,10 @@ export const cloudAuth = {
     });
     return response;
   },
+  verifyEmail: (input: { verification_token: string; code: string }) =>
+    cloudRequest<CloudAuthResponse>("/auth/verify-email", { method: "POST", body: JSON.stringify(input) }),
+  resendEmailVerification: (input: { verification_token: string }) =>
+    cloudRequest<EmailVerificationRequiredResponse>("/auth/resend-email-verification", { method: "POST", body: JSON.stringify(input) }),
   refresh: (refreshToken: string) =>
     cloudRequest<CloudAuthResponse>("/auth/refresh", { method: "POST", body: JSON.stringify({ refresh_token: refreshToken }) }),
   me: (token: string) =>

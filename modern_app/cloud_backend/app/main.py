@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+import hashlib
+import hmac
 import json
 import logging
 import math
 import os
 import re
 import secrets
+import smtplib
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
@@ -19,8 +23,10 @@ from fastapi.responses import HTMLResponse
 from .auth import (
     create_entitlement_token,
     create_access_token,
+    create_email_verification_token,
     create_refresh_token,
     decode_access_token,
+    decode_email_verification_token,
     get_access_token_expires_in,
     get_jwt_secret,
     get_refresh_token_expiration_days,
@@ -30,7 +36,20 @@ from .auth import (
     verify_password,
 )
 from .db import connect, get_database_engine, init_db
-from .schemas import AdminBillingEntitlementsUpdateIn, BillingEntitlementsOut, BillingFeaturesOut, AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest, UserOut
+from .schemas import (
+    AdminBillingEntitlementsUpdateIn,
+    BillingEntitlementsOut,
+    BillingFeaturesOut,
+    AuthResponse,
+    EmailVerificationRequiredOut,
+    LoginRequest,
+    LogoutRequest,
+    RefreshRequest,
+    RegisterRequest,
+    ResendEmailVerificationRequest,
+    UserOut,
+    VerifyEmailRequest,
+)
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -73,6 +92,7 @@ app.add_middleware(
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+VERIFICATION_CODE_RE = re.compile(r"^\d{6}$")
 
 
 @app.on_event("startup")
@@ -146,6 +166,187 @@ def short_identifier(value: str) -> str:
     if len(clean) <= 8:
         return "***"
     return f"{clean[:4]}...{clean[-4:]}"
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def email_verification_ttl_seconds() -> int:
+    return _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1) * 60
+
+
+def email_verification_resend_seconds() -> int:
+    return _env_int("SCISONOMICS_EMAIL_RESEND_SECONDS", 60, 10)
+
+
+def email_verification_max_resends_per_hour() -> int:
+    return _env_int("SCISONOMICS_EMAIL_MAX_RESENDS_PER_HOUR", 5, 1)
+
+
+def _seconds_until(value: str | None, *, default: int = 0) -> int:
+    target = parse_sync_datetime(value)
+    if target is None:
+        return default
+    return max(0, int((target - datetime.now(timezone.utc)).total_seconds()))
+
+
+def _email_verification_error(status_code: int, code: str, message: str, **extra: Any) -> HTTPException:
+    detail = {"code": code, "message": message, **extra}
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _generate_verification_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _hash_verification_code(user_id: str, purpose: str, code: str) -> str:
+    secret = get_jwt_secret().encode("utf-8")
+    message = f"{user_id}:{purpose}:{code}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _email_provider() -> str:
+    provider = os.getenv("SCISONOMICS_EMAIL_PROVIDER", "").strip().lower()
+    if provider:
+        return provider
+    return "console" if os.getenv("SCISONOMICS_ENV", "development").strip().lower() != "production" else ""
+
+
+def send_verification_email(email: str, code: str) -> None:
+    provider = _email_provider()
+    sender = os.getenv("SCISONOMICS_EMAIL_FROM", "").strip()
+    ttl_minutes = _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1)
+    body = (
+        "ScisoNomics\n\n"
+        f"Tu codigo de verificacion es: {code}\n\n"
+        f"Este codigo vence en {ttl_minutes} minutos. Si no creaste una cuenta, podes ignorar este mensaje.\n\n"
+        "Soporte: scisoftwareco@gmail.com"
+    )
+
+    if provider in {"console", "memory", "fake"}:
+        if os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production":
+            raise RuntimeError("Proveedor de email dev-only deshabilitado en produccion.")
+        if os.getenv("SCISONOMICS_EMAIL_DEV_LOG_CODES", "").strip().lower() in {"1", "true", "yes", "on"}:
+            _logger.info("[email-verification] dev code email=%s code=%s", mask_email(email), code)
+        _DEV_EMAIL_OUTBOX.append({"email": email, "code": code, "body": body})
+        return
+
+    if provider == "smtp":
+        host = os.getenv("SCISONOMICS_SMTP_HOST", "").strip()
+        port = _env_int("SCISONOMICS_SMTP_PORT", 587, 1)
+        username = os.getenv("SCISONOMICS_SMTP_USERNAME", "").strip()
+        password = os.getenv("SCISONOMICS_SMTP_PASSWORD", "")
+        use_tls = os.getenv("SCISONOMICS_SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no", "off"}
+        if not host or not sender:
+            raise RuntimeError("SMTP no esta configurado.")
+        message = EmailMessage()
+        message["Subject"] = "Tu codigo de verificacion de ScisoNomics"
+        message["From"] = sender
+        message["To"] = email
+        message.set_content(body)
+        with smtplib.SMTP(host, port, timeout=15) as smtp:
+            if use_tls:
+                smtp.starttls()
+            if username or password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+        return
+
+    raise RuntimeError("Proveedor de email no configurado.")
+
+
+_DEV_EMAIL_OUTBOX: list[dict[str, str]] = []
+
+
+def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> EmailVerificationRequiredOut:
+    code = _generate_verification_code()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=email_verification_ttl_seconds())).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        UPDATE email_verification_codes
+        SET invalidated_at = COALESCE(invalidated_at, ?)
+        WHERE user_id = ? AND purpose = 'signup' AND consumed_at IS NULL AND invalidated_at IS NULL
+        """,
+        (now, user_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO email_verification_codes
+            (user_id, purpose, code_hash, expires_at, attempts, max_attempts, consumed_at, created_at, last_sent_at, invalidated_at)
+        VALUES (?, 'signup', ?, ?, 0, 5, NULL, ?, ?, NULL)
+        """,
+        (user_id, _hash_verification_code(user_id, "signup", code), expires_at, now, now),
+    )
+    try:
+        send_verification_email(email, code)
+    except Exception as exc:
+        _logger.warning("[email-verification] delivery failed email=%s error_type=%s", mask_email(email), type(exc).__name__)
+        raise _email_verification_error(503, "email_delivery_failed", "No pudimos enviar el codigo de verificacion.") from exc
+    return _verification_required_response(user_id=user_id, email=email, expires_at=expires_at)
+
+
+def _verification_required_response(*, user_id: str, email: str, expires_at: str | None = None) -> EmailVerificationRequiredOut:
+    return EmailVerificationRequiredOut(
+        email=mask_email(email),
+        verification_token=create_email_verification_token(user_id, purpose="signup"),
+        verification_expires_in=_seconds_until(expires_at, default=email_verification_ttl_seconds()),
+        resend_available_in=email_verification_resend_seconds(),
+    )
+
+
+def _active_signup_code(conn, user_id: str):
+    return conn.execute(
+        """
+        SELECT id, user_id, purpose, code_hash, expires_at, attempts, max_attempts, consumed_at, created_at, last_sent_at, invalidated_at
+        FROM email_verification_codes
+        WHERE user_id = ? AND purpose = 'signup' AND consumed_at IS NULL AND invalidated_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+
+
+def _resend_limit_reached(conn, user_id: str) -> bool:
+    window_start = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS total
+        FROM email_verification_codes
+        WHERE user_id = ? AND purpose = 'signup' AND created_at >= ?
+        """,
+        (user_id, window_start),
+    ).fetchone()
+    # La primera generacion no es un reenvio; se permiten N reenvios adicionales.
+    return int(row["total"] or 0) >= (email_verification_max_resends_per_hour() + 1)
+
+
+def _verification_user_from_token(conn, verification_token: str):
+    try:
+        payload = decode_email_verification_token(verification_token, purpose="signup")
+    except ValueError as exc:
+        raise _email_verification_error(401, "verification_token_invalid", "La verificacion vencio o no es valida.") from exc
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        raise _email_verification_error(401, "verification_token_invalid", "La verificacion vencio o no es valida.")
+    row = conn.execute(
+        "SELECT id, email, display_name, created_at, updated_at, email_verified, email_verified_at FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        raise _email_verification_error(401, "verification_token_invalid", "La verificacion vencio o no es valida.")
+    return row
+
+
+def _email_is_verified(row) -> bool:
+    try:
+        return bool(row["email_verified"])
+    except Exception:
+        return True
 
 
 def _issue_auth_response(
@@ -437,6 +638,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
     email = normalize_email(original_email)
     display_name = str(profile.get("name") or "").strip() or None
     avatar_url = str(profile.get("picture") or "").strip() or None
+    google_email_verified = bool(profile.get("email_verified", True))
     if not google_sub or not EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Google no devolvio un perfil valido.")
     _logger.info("[google-auth] callback profile google_sub=%s email=%s", short_identifier(google_sub), mask_email(email))
@@ -467,10 +669,13 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
         conn.execute(
             """
             UPDATE users
-            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google',
+                email_verified = CASE WHEN ? THEN 1 ELSE COALESCE(email_verified, 0) END,
+                email_verified_at = CASE WHEN ? THEN COALESCE(email_verified_at, ?) ELSE email_verified_at END,
+                updated_at = ?
             WHERE id = ?
             """,
-            (email, google_sub, display_name, avatar_url, now, email_row["id"]),
+            (email, google_sub, display_name, avatar_url, google_email_verified, google_email_verified, now, now, email_row["id"]),
         )
         updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (email_row["id"],)).fetchone()
         return row_to_user(updated)
@@ -487,10 +692,13 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
         conn.execute(
             """
             UPDATE users
-            SET email = ?, display_name = COALESCE(?, display_name), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            SET email = ?, display_name = COALESCE(?, display_name), avatar_url = ?, auth_provider = 'google',
+                email_verified = CASE WHEN ? THEN 1 ELSE COALESCE(email_verified, 0) END,
+                email_verified_at = CASE WHEN ? THEN COALESCE(email_verified_at, ?) ELSE email_verified_at END,
+                updated_at = ?
             WHERE id = ?
             """,
-            (email, display_name, avatar_url, now, google_row["id"]),
+            (email, display_name, avatar_url, google_email_verified, google_email_verified, now, now, google_row["id"]),
         )
         updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (google_row["id"],)).fetchone()
         return row_to_user(updated)
@@ -507,10 +715,13 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
         conn.execute(
             """
             UPDATE users
-            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google', updated_at = ?
+            SET email = ?, google_sub = ?, display_name = COALESCE(display_name, ?), avatar_url = ?, auth_provider = 'google',
+                email_verified = CASE WHEN ? THEN 1 ELSE COALESCE(email_verified, 0) END,
+                email_verified_at = CASE WHEN ? THEN COALESCE(email_verified_at, ?) ELSE email_verified_at END,
+                updated_at = ?
             WHERE id = ?
             """,
-            (email, google_sub, display_name, avatar_url, now, email_row["id"]),
+            (email, google_sub, display_name, avatar_url, google_email_verified, google_email_verified, now, now, email_row["id"]),
         )
         updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (email_row["id"],)).fetchone()
         return row_to_user(updated)
@@ -526,10 +737,10 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
     )
     conn.execute(
         """
-        INSERT INTO users (id, email, password_hash, display_name, google_sub, avatar_url, auth_provider, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?)
+        INSERT INTO users (id, email, password_hash, display_name, google_sub, avatar_url, auth_provider, email_verified, email_verified_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?, ?, ?)
         """,
-        (user_id, email, "", display_name, google_sub, avatar_url, now, now),
+        (user_id, email, "", display_name, google_sub, avatar_url, 1 if google_email_verified else 0, now if google_email_verified else None, now, now),
     )
     created = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (user_id,)).fetchone()
     return row_to_user(created)
@@ -830,11 +1041,13 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
         raise HTTPException(status_code=401, detail="Sesion no valida.")
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
+            "SELECT id, email, display_name, created_at, updated_at, email_verified FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+    if not _email_is_verified(row):
+        raise HTTPException(status_code=403, detail={"code": "email_verification_required", "message": "Confirma tu email para continuar."})
     return row_to_user(row)
 
 
@@ -879,7 +1092,7 @@ def ready():
     }
 
 
-@app.post("/auth/register", response_model=AuthResponse)
+@app.post("/auth/register", response_model=AuthResponse | EmailVerificationRequiredOut)
 def register(payload: RegisterRequest, request: Request):
     email = validate_credentials(payload.email, payload.password)
     user_id = str(uuid4())
@@ -890,8 +1103,8 @@ def register(payload: RegisterRequest, request: Request):
         with connect() as conn:
             conn.execute(
                 """
-                INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO users (id, email, password_hash, display_name, email_verified, email_verified_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
                 """,
                 (user_id, email, hash_password(payload.password), display_name, timestamp, timestamp),
             )
@@ -899,34 +1112,107 @@ def register(payload: RegisterRequest, request: Request):
                 "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
                 (user_id,),
             ).fetchone()
+            return _create_signup_verification(conn, user_id=user_id, email=email, now=timestamp)
     except Exception as exc:
         message = str(exc).lower()
         if "unique" in message or "duplicate key" in message:
             raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese email.") from exc
         raise
 
-    user = row_to_user(row)
-    device_id, device_name = _extract_device_context(request)
-    with connect() as conn:
-        return _issue_auth_response(conn, user, now=timestamp, device_id=device_id, device_name=device_name)
 
-
-@app.post("/auth/login", response_model=AuthResponse)
+@app.post("/auth/login", response_model=AuthResponse | EmailVerificationRequiredOut)
 def login(payload: LoginRequest, request: Request):
     email = normalize_email(payload.email)
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, display_name, created_at, updated_at FROM users WHERE LOWER(TRIM(email)) = ?",
+            "SELECT id, email, password_hash, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
             (email,),
         ).fetchone()
 
     if row is None or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
 
+    if not _email_is_verified(row):
+        now = now_iso()
+        with connect() as conn:
+            code_row = _active_signup_code(conn, row["id"])
+            if code_row is None or _seconds_until(code_row["expires_at"]) <= 0:
+                return _create_signup_verification(conn, user_id=row["id"], email=row["email"], now=now)
+            return _verification_required_response(user_id=row["id"], email=row["email"], expires_at=code_row["expires_at"])
+
     user = row_to_user(row)
     device_id, device_name = _extract_device_context(request)
     with connect() as conn:
         return _issue_auth_response(conn, user, now=now_iso(), device_id=device_id, device_name=device_name)
+
+
+@app.post("/auth/verify-email", response_model=AuthResponse)
+def verify_email(payload: VerifyEmailRequest, request: Request):
+    raw_code = str(payload.code or "").strip()
+    code = re.sub(r"\D", "", raw_code)
+    if not VERIFICATION_CODE_RE.match(code):
+        raise _email_verification_error(422, "invalid_verification_code", "Ingresa el codigo de 6 digitos.")
+    now = now_iso()
+    device_id, device_name = _extract_device_context(request)
+    with connect() as conn:
+        user_row = _verification_user_from_token(conn, payload.verification_token)
+        if _email_is_verified(user_row):
+            raise _email_verification_error(409, "email_already_verified", "El email ya fue verificado.")
+        code_row = _active_signup_code(conn, user_row["id"])
+        if code_row is None:
+            raise _email_verification_error(410, "verification_code_expired", "El codigo vencio. Pedi uno nuevo.")
+        if _seconds_until(code_row["expires_at"]) <= 0:
+            conn.execute("UPDATE email_verification_codes SET invalidated_at = COALESCE(invalidated_at, ?) WHERE id = ?", (now, code_row["id"]))
+            conn.commit()
+            raise _email_verification_error(410, "verification_code_expired", "El codigo vencio. Pedi uno nuevo.")
+        attempts = int(code_row["attempts"] or 0)
+        max_attempts = int(code_row["max_attempts"] or 5)
+        if attempts >= max_attempts:
+            conn.execute("UPDATE email_verification_codes SET invalidated_at = COALESCE(invalidated_at, ?) WHERE id = ?", (now, code_row["id"]))
+            conn.commit()
+            raise _email_verification_error(429, "verification_attempts_exceeded", "Se agotaron los intentos. Pedi un codigo nuevo.")
+        expected_hash = str(code_row["code_hash"] or "")
+        received_hash = _hash_verification_code(user_row["id"], "signup", code)
+        if not hmac.compare_digest(expected_hash, received_hash):
+            next_attempts = attempts + 1
+            invalidated_at = now if next_attempts >= max_attempts else None
+            conn.execute(
+                "UPDATE email_verification_codes SET attempts = ?, invalidated_at = COALESCE(invalidated_at, ?) WHERE id = ?",
+                (next_attempts, invalidated_at, code_row["id"]),
+            )
+            conn.commit()
+            if next_attempts >= max_attempts:
+                raise _email_verification_error(429, "verification_attempts_exceeded", "Se agotaron los intentos. Pedi un codigo nuevo.")
+            raise _email_verification_error(
+                400,
+                "invalid_verification_code",
+                "El codigo no es correcto.",
+                attempts_remaining=max(0, max_attempts - next_attempts),
+            )
+        conn.execute("UPDATE email_verification_codes SET consumed_at = ? WHERE id = ?", (now, code_row["id"]))
+        conn.execute("UPDATE users SET email_verified = 1, email_verified_at = ?, updated_at = ? WHERE id = ?", (now, now, user_row["id"]))
+        updated = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (user_row["id"],)).fetchone()
+        return _issue_auth_response(conn, row_to_user(updated), now=now, device_id=device_id, device_name=device_name)
+
+
+@app.post("/auth/resend-email-verification", response_model=EmailVerificationRequiredOut)
+def resend_email_verification(payload: ResendEmailVerificationRequest):
+    now = now_iso()
+    with connect() as conn:
+        user_row = _verification_user_from_token(conn, payload.verification_token)
+        if _email_is_verified(user_row):
+            raise _email_verification_error(409, "email_already_verified", "El email ya fue verificado.")
+        code_row = _active_signup_code(conn, user_row["id"])
+        if code_row is not None:
+            last_sent = parse_sync_datetime(code_row["last_sent_at"])
+            if last_sent is not None:
+                elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+                wait = email_verification_resend_seconds() - int(elapsed)
+                if wait > 0:
+                    raise _email_verification_error(429, "verification_resend_too_soon", "Espera antes de pedir otro codigo.", retry_after=wait)
+        if _resend_limit_reached(conn, user_row["id"]):
+            raise _email_verification_error(429, "verification_resend_limit_exceeded", "Pediste demasiados codigos. Intenta mas tarde.")
+        return _create_signup_verification(conn, user_id=user_row["id"], email=user_row["email"], now=now)
 
 
 @app.get("/auth/me")
@@ -982,11 +1268,13 @@ def refresh_session(payload: RefreshRequest, request: Request):
         row, token_hash = _lookup_refresh_token(conn, refresh_token)
         row = _validate_refresh_token_row(row, now=now)
         user_row = conn.execute(
-            "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
+            "SELECT id, email, display_name, created_at, updated_at, email_verified FROM users WHERE id = ?",
             (row["user_id"],),
         ).fetchone()
         if not user_row:
             raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+        if not _email_is_verified(user_row):
+            raise HTTPException(status_code=403, detail={"code": "email_verification_required", "message": "Confirma tu email para continuar."})
         user = row_to_user(user_row)
         response = _issue_auth_response(
             conn,

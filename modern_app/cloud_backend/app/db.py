@@ -86,6 +86,11 @@ class CloudConnection:
             sql = _convert_placeholders(sql)
         return self._conn.execute(sql, params)
 
+    def commit(self) -> None:
+        if self._conn is None:
+            raise RuntimeError("Conexion cloud no inicializada.")
+        self._conn.commit()
+
 
 def connect() -> CloudConnection:
     return CloudConnection()
@@ -213,6 +218,10 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "users", "google_sub", "TEXT")
     _ensure_column(conn, "users", "avatar_url", "TEXT")
     _ensure_column(conn, "users", "auth_provider", "TEXT")
+    _ensure_column(conn, "users", "email_verified", "INTEGER")
+    _ensure_column(conn, "users", "email_verified_at", "TEXT")
+    # Cuentas existentes se consideran verificadas para no bloquear usuarios previos a esta migracion.
+    conn.execute("UPDATE users SET email_verified = 1, email_verified_at = COALESCE(email_verified_at, updated_at, created_at) WHERE email_verified IS NULL")
     if conn.engine == "sqlite":
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL AND google_sub <> ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
@@ -232,6 +241,31 @@ def _ensure_billing_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "users", "subscription_expires_at", "TEXT")
     conn.execute("UPDATE users SET plan = COALESCE(NULLIF(plan, ''), 'free')")
     conn.execute("UPDATE users SET subscription_status = COALESCE(NULLIF(subscription_status, ''), 'active')")
+
+
+def _ensure_email_verification_schema(conn: CloudConnection) -> None:
+    id_type = "INTEGER PRIMARY KEY AUTOINCREMENT" if conn.engine == "sqlite" else "SERIAL PRIMARY KEY"
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS email_verification_codes (
+            id {id_type},
+            user_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 5,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL,
+            last_sent_at TEXT NOT NULL,
+            invalidated_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+    _ensure_column(conn, "email_verification_codes", "invalidated_at", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_verification_user_purpose ON email_verification_codes(user_id, purpose)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_email_verification_expires ON email_verification_codes(expires_at)")
 
 
 def _init_sqlite() -> None:
@@ -475,6 +509,7 @@ def _init_sqlite() -> None:
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_billing_columns(conn)
+        _ensure_email_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)
 
 
@@ -709,4 +744,5 @@ def _init_postgres() -> None:
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_billing_columns(conn)
+        _ensure_email_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)

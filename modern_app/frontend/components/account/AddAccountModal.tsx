@@ -4,12 +4,22 @@ import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
-import { DEFAULT_REMEMBER_CLOUD_ACCOUNT, addOrUpdateAccount, cloudAuth, getCloudAuthTokens, getStoredAccounts, isCloudAuthConfigured } from "../../services/cloudAuth";
+import {
+  DEFAULT_REMEMBER_CLOUD_ACCOUNT,
+  addOrUpdateAccount,
+  cloudAuth,
+  getCloudAuthTokens,
+  getStoredAccounts,
+  isCloudAuthConfigured,
+  isEmailVerificationRequiredResponse,
+  type EmailVerificationRequiredResponse,
+} from "../../services/cloudAuth";
 import { Modal } from "../ui/Modal";
 import { PasswordInput } from "../ui/PasswordInput";
 
 const inputClass =
   "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
+type PendingVerification = EmailVerificationRequiredResponse & { source: "login" | "register" };
 
 export function AddAccountModal({
   open,
@@ -31,6 +41,9 @@ export function AddAccountModal({
   const [submitting, setSubmitting] = useState(false);
   const [googleWaiting, setGoogleWaiting] = useState(false);
   const [error, setError] = useState("");
+  const [verification, setVerification] = useState<PendingVerification | null>(null);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [resendAvailableIn, setResendAvailableIn] = useState(0);
   const googleCancelledRef = useRef(false);
   const googlePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -43,6 +56,9 @@ export function AddAccountModal({
     setRemember(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
     setGoogleWaiting(false);
     setError("");
+    setVerification(null);
+    setVerificationCode("");
+    setResendAvailableIn(0);
   }
 
   function closeModal() {
@@ -65,6 +81,25 @@ export function AddAccountModal({
     return () => cancelGooglePolling();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!verification || resendAvailableIn <= 0) return;
+    const timer = window.setTimeout(() => setResendAvailableIn((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [verification, resendAvailableIn]);
+
+  async function completeVerifiedLogin(response: Awaited<ReturnType<typeof cloudAuth.verifyEmail>>) {
+    const accountsBefore = getStoredAccounts();
+    const existed = accountsBefore.some((account) => account.user.id === response.user.id);
+    const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
+    resetForm();
+    onClose();
+    onAccountAdded?.();
+    if (remember && !stored.secureResult.storedSecurely) {
+      showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
+    }
+    showSuccess(verification?.source === "register" ? "Cuenta verificada y agregada correctamente." : existed ? "Cuenta actualizada y activada." : "Cuenta agregada correctamente.");
+  }
 
   async function openExternalUrl(url: string) {
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
@@ -144,6 +179,13 @@ export function AddAccountModal({
         mode === "register"
           ? await cloudAuth.register({ email, password, display_name: displayName || null })
           : await cloudAuth.login({ email, password });
+      if (isEmailVerificationRequiredResponse(response)) {
+        setVerification({ ...response, source: mode });
+        setVerificationCode("");
+        setResendAvailableIn(response.resend_available_in || 0);
+        showSuccess("Te enviamos un código de verificación por correo.");
+        return;
+      }
       const existed = accountsBefore.some((account) => account.user.id === response.user.id);
       const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
       resetForm();
@@ -167,9 +209,98 @@ export function AddAccountModal({
     }
   }
 
+  async function handleVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!verification || submitting) return;
+    const code = verificationCode.replace(/\D/g, "");
+    if (code.length !== 6) {
+      setError("Ingresá el código de 6 dígitos.");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await cloudAuth.verifyEmail({ verification_token: verification.verification_token, code });
+      await completeVerifiedLogin(response);
+    } catch (err) {
+      console.error("No se pudo verificar el email:", err);
+      const message = err instanceof Error ? err.message : "No se pudo verificar el código.";
+      setError(message);
+      showError(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleResendVerificationCode() {
+    if (!verification || submitting || resendAvailableIn > 0) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const response = await cloudAuth.resendEmailVerification({ verification_token: verification.verification_token });
+      setVerification({ ...response, source: verification.source });
+      setVerificationCode("");
+      setResendAvailableIn(response.resend_available_in || 60);
+      showSuccess("Te enviamos un nuevo código.");
+    } catch (err) {
+      console.error("No se pudo reenviar el código:", err);
+      const message = err instanceof Error ? err.message : "No se pudo reenviar el código.";
+      setError(message);
+      showError(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
-    <Modal open={open} title={mode === "register" ? "Crear cuenta" : "Agregar cuenta"} onClose={closeModal} size="md">
-      <form className="space-y-4" onSubmit={handleSubmit}>
+    <Modal open={open} title={verification ? "Confirmá tu correo" : mode === "register" ? "Crear cuenta" : "Agregar cuenta"} onClose={closeModal} size="md">
+      <form className="space-y-4" onSubmit={verification ? handleVerifyEmail : handleSubmit}>
+        {verification ? (
+          <>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Ingresá el código de 6 dígitos que enviamos a {verification.email}.
+            </p>
+            {error ? (
+              <div className="rounded-xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">
+                {error}
+              </div>
+            ) : null}
+            <label className="block text-sm">
+              Código de verificación
+              <input
+                className={`${inputClass} text-center text-lg tracking-[0.4em]`}
+                inputMode="numeric"
+                maxLength={6}
+                pattern="[0-9]{6}"
+                value={verificationCode}
+                onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                required
+                disabled={submitting}
+              />
+            </label>
+            <button className="btn-secondary w-full justify-center" type="button" onClick={handleResendVerificationCode} disabled={submitting || resendAvailableIn > 0}>
+              {resendAvailableIn > 0 ? `Reenviar código en ${resendAvailableIn}s` : "Reenviar código"}
+            </button>
+            <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={() => {
+                  setVerification(null);
+                  setVerificationCode("");
+                  setMode("login");
+                }}
+                disabled={submitting}
+              >
+                Volver al login
+              </button>
+              <button className="btn" type="submit" disabled={submitting || verificationCode.length !== 6}>
+                {submitting ? "Confirmando..." : "Confirmar"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         <p className="text-sm text-slate-500 dark:text-slate-400">
           {mode === "register"
             ? "Creá una cuenta opcional para usarla en este dispositivo y cambiar rápidamente entre cuentas."
@@ -282,6 +413,8 @@ export function AddAccountModal({
             {submitting ? "Procesando..." : mode === "register" ? "Crear cuenta y agregar" : "Iniciar sesión y agregar cuenta"}
           </button>
         </div>
+          </>
+        )}
       </form>
     </Modal>
   );
