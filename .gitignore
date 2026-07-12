@@ -66,3 +66,10 @@ tmp_export_manual.xlsx
 tmp_export_sidecar.xlsx
 tmp_localappdata_migtest/
 tmp_localappdata_test/
+
+# Claves privadas y secretos
+*.pem
+*.key
+.scisonomics-secrets/
+**/.scisonomics-secrets/
+entitlements_private.pem
