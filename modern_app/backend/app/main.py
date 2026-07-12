@@ -5,17 +5,22 @@ from pathlib import Path
 from tempfile import gettempdir, mkdtemp
 from typing import Any, Literal
 from contextlib import closing
+import base64
+import binascii
 import csv
 import hmac
 import io
 import json
 import logging
+import math
 import os
 import socket
 import sys
 import threading
 import time
 from uuid import uuid4
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 import sqlite3
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -41,6 +46,9 @@ from finance_app.services import (
 )
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
 from openpyxl import load_workbook
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 from .deps import (
     ensure_app_data_initialized,
@@ -196,6 +204,19 @@ PREMIUM_FEATURE_LABELS = {
     "fixed_expenses": "gastos fijos",
     "planning": "planificacion",
 }
+PREMIUM_ENTITLEMENTS_TTL_SECONDS = 24 * 60 * 60
+PREMIUM_ENTITLEMENTS_SOURCES = {"cloud_verified", "unverified_ui_cache"}
+ENTITLEMENTS_PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAnh25PBex2FqvritCNBr4
+/PzDJKBRM82Q1Q3nh+r5stQ4UYxmUbovORLiRHALI0+PBCJBHlB5KTLyDYmGhxAg
+3YNkl62ddxoXJFoRTihSH8HeJPWs9tHNlmJ2pX9/Hzwy8KVuqC5MfEIae/VAuFk6
+4gaztte+1yyEi7tI6383Wi+OFcfYSfVQFo/Zin85eu3AuaIMVsTeiFxJ3M2vrvBG
+7Xn0QdWOMe06Sc/rQ2FP6TlyoaeJyFgjErS8aDQvsBJxK9fLpWc/c9NQEDvCuo32
+WgtOQMg07AjwIBFEnae+cvYlbf3178+yXqrlkPLSQIcF9RSG4jZyTwaO3/Xs8sWZ
+OOXTTyGOvsLoJjQZdocgsS5W3EHJx1HxzRcz62jPGbkvodXTO9tg56TUvJeCpyjy
+Ayg2AxkbjtrkoNmB1vrGsvaTGwgIJtfXyyXGkmChWoYrHbXJXksRmireXnwAf6x+
+WKBmGgLMvnr96p8cs9ZG/JKRtB8DYSrqUgajGLoQWfRJAgMBAAE=
+-----END PUBLIC KEY-----"""
 
 
 def _default_entitlements() -> dict[str, Any]:
@@ -209,12 +230,27 @@ def _default_entitlements() -> dict[str, Any]:
             "planning": False,
         },
         "expires_at": None,
+        "last_verified_at": None,
+        "source": "unverified_ui_cache",
+        "user_id": None,
+        "issued_at": None,
+        "valid_until": None,
+        "entitlement_token": None,
     }
 
 
-def _normalize_entitlements_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_entitlements_payload(
+    payload: dict[str, Any] | None,
+    *,
+    source_override: str | None = None,
+    last_verified_at_override: str | None = None,
+) -> dict[str, Any]:
     data = _default_entitlements()
     if not isinstance(payload, dict):
+        if source_override in PREMIUM_ENTITLEMENTS_SOURCES:
+            data["source"] = source_override
+        if last_verified_at_override is not None:
+            data["last_verified_at"] = last_verified_at_override
         return data
     plan = str(payload.get("plan") or "").strip().lower()
     status = str(payload.get("status") or "").strip().lower()
@@ -230,6 +266,18 @@ def _normalize_entitlements_payload(payload: dict[str, Any] | None) -> dict[str,
         data["features"] = normalized_features
     expires_at = payload.get("expires_at")
     data["expires_at"] = str(expires_at).strip() if expires_at not in {None, ""} else None
+    source = source_override if source_override in PREMIUM_ENTITLEMENTS_SOURCES else str(payload.get("source") or "").strip().lower()
+    if source in PREMIUM_ENTITLEMENTS_SOURCES:
+        data["source"] = source
+    last_verified_at = last_verified_at_override if last_verified_at_override is not None else payload.get("last_verified_at")
+    if last_verified_at in {None, ""}:
+        data["last_verified_at"] = None
+    else:
+        parsed_last_verified = _parse_sync_datetime(last_verified_at)
+        data["last_verified_at"] = _serialize_sync_datetime(parsed_last_verified) if parsed_last_verified else None
+    for key in ("user_id", "issued_at", "valid_until", "entitlement_token"):
+        value = payload.get(key)
+        data[key] = str(value).strip() if value not in {None, ""} else None
     return data
 
 
@@ -248,8 +296,19 @@ def _read_local_entitlements(conn: sqlite3.Connection, owner: str) -> dict[str, 
     return _normalize_entitlements_payload(parsed if isinstance(parsed, dict) else None)
 
 
-def _write_local_entitlements(conn: sqlite3.Connection, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = _normalize_entitlements_payload(payload)
+def _write_local_entitlements(
+    conn: sqlite3.Connection,
+    owner: str,
+    payload: dict[str, Any],
+    *,
+    source: str = "unverified_ui_cache",
+    last_verified_at: str | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_entitlements_payload(
+        payload,
+        source_override=source,
+        last_verified_at_override=last_verified_at,
+    )
     _config_set(conn, _entitlements_config_key(owner), json.dumps(normalized, ensure_ascii=True, separators=(",", ":")))
     return normalized
 
@@ -258,14 +317,102 @@ def _premium_required_error(feature: str) -> PremiumRequiredError:
     return PremiumRequiredError(feature)
 
 
+def _configured_cloud_api_url() -> str:
+    for candidate in (
+        os.getenv("SCISONOMICS_CLOUD_API_URL", "").strip(),
+        os.getenv("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL", "").strip(),
+    ):
+        clean = candidate.rstrip("/")
+        if clean:
+            return clean
+    raise HTTPException(status_code=503, detail="No hay un servicio cloud configurado para verificar permisos Premium.")
+
+
+def _decode_entitlement_segment(value: str) -> bytes:
+    return base64.urlsafe_b64decode((value + "=" * (-len(value) % 4)).encode("ascii"))
+
+
+def _verify_entitlement_token(token: str, *, expected_owner: str, now: datetime | None = None) -> dict[str, Any]:
+    try:
+        header_raw, payload_raw, signature_raw = str(token or "").split(".", 2)
+        header = json.loads(_decode_entitlement_segment(header_raw).decode("utf-8"))
+        claims = json.loads(_decode_entitlement_segment(payload_raw).decode("utf-8"))
+        if not isinstance(header, dict) or header.get("alg") != "RS256" or header.get("typ") != "JWT":
+            raise ValueError("invalid_header")
+        if not isinstance(claims, dict):
+            raise ValueError("invalid_claims")
+        public_key = serialization.load_pem_public_key(ENTITLEMENTS_PUBLIC_KEY_PEM.encode("ascii"))
+        public_key.verify(
+            _decode_entitlement_segment(signature_raw),
+            f"{header_raw}.{payload_raw}".encode("ascii"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        current_timestamp = int((now or datetime.now(timezone.utc)).timestamp())
+        if claims.get("type") != "scisonomics_entitlement":
+            raise ValueError("invalid_type")
+        if str(claims.get("user_id") or "").strip() != expected_owner:
+            raise ValueError("owner_mismatch")
+        if int(claims.get("exp") or 0) <= current_timestamp:
+            raise ValueError("expired")
+        if int(claims.get("iat") or 0) > current_timestamp + 300:
+            raise ValueError("issued_in_future")
+        subscription_expiration = _parse_sync_datetime(claims.get("subscription_expires_at"))
+        if subscription_expiration is not None and subscription_expiration <= datetime.fromtimestamp(current_timestamp, timezone.utc):
+            raise ValueError("subscription_expired")
+        return claims
+    except (InvalidSignature, ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise ValueError("invalid_entitlement") from exc
+
+
+def _verified_entitlement_allows(entitlements: dict[str, Any], *, owner: str, feature: str, now: datetime | None = None) -> bool:
+    try:
+        claims = _verify_entitlement_token(str(entitlements.get("entitlement_token") or ""), expected_owner=owner, now=now)
+    except ValueError:
+        return False
+    if str(claims.get("status") or "") not in {"active", "trialing"}:
+        return False
+    features = claims.get("features")
+    return isinstance(features, dict) and bool(features.get(feature))
+
+
+def _fetch_cloud_entitlements_verified(access_token: str) -> dict[str, Any]:
+    if not access_token.strip():
+        raise HTTPException(status_code=401, detail="No hay una sesión cloud válida para verificar permisos Premium.")
+    endpoint = f"{_configured_cloud_api_url()}/billing/entitlements"
+    request = UrlRequest(
+        endpoint,
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {access_token.strip()}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise HTTPException(status_code=401, detail="No se pudo verificar la suscripción Premium con la sesión cloud actual.") from exc
+        raise HTTPException(status_code=502, detail="El servicio cloud no respondió correctamente al verificar permisos Premium.") from exc
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="No se pudo verificar la suscripción Premium con el servicio cloud.") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=502, detail="El servicio cloud devolvió un formato inválido al verificar permisos Premium.")
+    return _normalize_entitlements_payload(
+        body,
+        source_override="cloud_verified",
+        last_verified_at_override=_utc_now_sync_text(),
+    )
+
+
 def _require_premium_feature(feature: str) -> None:
     owner = _current_owner()
     if owner == LOCAL_OWNER_ID:
         raise _premium_required_error(feature)
     with closing(Database(WEB_DB_PATH).connect()) as conn:
         entitlements = _read_local_entitlements(conn, owner)
-    features = entitlements.get("features") if isinstance(entitlements.get("features"), dict) else {}
-    if not bool(features.get(feature)):
+    if not _verified_entitlement_allows(entitlements, owner=owner, feature=feature):
         raise _premium_required_error(feature)
 
 
@@ -1349,10 +1496,47 @@ def get_local_billing_entitlements(service: FinanceService = Depends(get_service
 @app.post("/billing/entitlements/cache")
 async def cache_local_billing_entitlements(request: Request, service: FinanceService = Depends(get_service)):
     ensure_app_data_initialized()
-    payload = BillingEntitlementsCacheIn(**(await request.json()))
+    BillingEntitlementsCacheIn(**(await request.json()))
     owner = _current_owner()
+    if owner == LOCAL_OWNER_ID:
+        raise HTTPException(status_code=400, detail="Iniciá sesión con una cuenta cloud para verificar permisos Premium.")
+    authorization = request.headers.get("Authorization", "").strip()
+    if not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="No hay una sesión cloud válida para verificar permisos Premium.")
+    access_token = authorization.split(" ", 1)[1].strip()
+    verified = _fetch_cloud_entitlements_verified(access_token)
+    cloud_user_id = str(verified.get("user_id") or "").strip()
+    if cloud_user_id != owner:
+        raise _local_structured_http_error(
+            status_code=403,
+            code="entitlement_owner_mismatch",
+            classification="entitlement_owner_mismatch",
+            message="La cuenta cloud verificada no coincide con la cuenta local activa.",
+        )
+    try:
+        claims = _verify_entitlement_token(str(verified.get("entitlement_token") or ""), expected_owner=owner)
+    except ValueError as exc:
+        raise _local_structured_http_error(
+            status_code=422,
+            code="entitlement_invalid",
+            classification="entitlement_invalid",
+            message="No se pudieron validar los permisos Premium de la cuenta.",
+        ) from exc
+    if str(claims.get("user_id") or "") != cloud_user_id:
+        raise _local_structured_http_error(
+            status_code=403,
+            code="entitlement_owner_mismatch",
+            classification="entitlement_owner_mismatch",
+            message="Los permisos Premium no pertenecen a la cuenta local activa.",
+        )
     with service.db.connect() as conn:
-        normalized = _write_local_entitlements(conn, owner, payload.model_dump())
+        normalized = _write_local_entitlements(
+            conn,
+            owner,
+            verified,
+            source="cloud_verified",
+            last_verified_at=verified.get("last_verified_at"),
+        )
     return {"ok": True, "owner": owner, **normalized}
 
 
@@ -2974,6 +3158,68 @@ def _sync_status_value(item: dict[str, Any]) -> str:
     return "synced"
 
 
+def _invalid_simple_remote_field(table: str, item: dict[str, Any], field: str, message: str) -> None:
+    raise _sync_apply_http_error(
+        status_code=422,
+        code="local_apply_invalid_payload",
+        classification="local_apply_invalid_payload",
+        table=table,
+        record_sync_id=str(item.get("sync_id") or "").strip() or None,
+        field=field,
+        message=message,
+    )
+
+
+def _is_non_negative_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and float(value) >= 0
+
+
+def _validate_simple_remote_item(table: str, item: dict[str, Any]) -> None:
+    if table == "presupuestos":
+        mes = item.get("mes")
+        anio = item.get("anio")
+        if isinstance(mes, bool) or not isinstance(mes, int) or not 1 <= mes <= 12:
+            _invalid_simple_remote_field(table, item, "mes", "El presupuesto remoto tiene un mes invalido.")
+        if isinstance(anio, bool) or not isinstance(anio, int) or not 2000 <= anio <= 2100:
+            _invalid_simple_remote_field(table, item, "anio", "El presupuesto remoto tiene un anio invalido.")
+        if not _is_non_negative_number(item.get("monto")):
+            _invalid_simple_remote_field(table, item, "monto", "El presupuesto remoto tiene un monto invalido.")
+        return
+
+    if table == "gastos_fijos":
+        if item.get("activo") not in (0, 1, False, True) or type(item.get("activo")) not in (int, bool):
+            _invalid_simple_remote_field(table, item, "activo", "El gasto fijo remoto tiene un estado activo invalido.")
+        dia = item.get("dia_vencimiento")
+        if dia is not None and (isinstance(dia, bool) or not isinstance(dia, int) or not 1 <= dia <= 31):
+            _invalid_simple_remote_field(table, item, "dia_vencimiento", "El gasto fijo remoto tiene un dia de vencimiento invalido.")
+        if not _is_non_negative_number(item.get("monto")):
+            _invalid_simple_remote_field(table, item, "monto", "El gasto fijo remoto tiene un monto invalido.")
+        return
+
+    if table == "gastos_programados":
+        if item.get("estado") not in {"pendiente", "pagado", "cancelado"}:
+            _invalid_simple_remote_field(table, item, "estado", "El gasto programado remoto tiene un estado invalido.")
+        frecuencia = item.get("frecuencia")
+        if frecuencia not in {None, "mensual", "semanal", "anual"}:
+            _invalid_simple_remote_field(table, item, "frecuencia", "El gasto programado remoto tiene una frecuencia invalida.")
+        if item.get("es_recurrente") not in (0, 1, False, True) or type(item.get("es_recurrente")) not in (int, bool):
+            _invalid_simple_remote_field(table, item, "es_recurrente", "El gasto programado remoto tiene un valor recurrente invalido.")
+        if not _is_non_negative_number(item.get("monto_estimado")):
+            _invalid_simple_remote_field(table, item, "monto_estimado", "El gasto programado remoto tiene un monto invalido.")
+        return
+
+    if table == "metas_ahorro":
+        if item.get("estado") not in {"activa", "completada", "pausada"}:
+            _invalid_simple_remote_field(table, item, "estado", "La meta remota tiene un estado invalido.")
+        if not _is_non_negative_number(item.get("monto_objetivo")):
+            _invalid_simple_remote_field(table, item, "monto_objetivo", "La meta remota tiene un monto objetivo invalido.")
+        current_field = "monto_actual" if "monto_actual" in item else "monto_inicial"
+        if not _is_non_negative_number(item.get(current_field, 0)):
+            _invalid_simple_remote_field(table, item, current_field, "La meta remota tiene un monto actual invalido.")
+
+
 def _apply_simple_remote(
     conn: sqlite3.Connection,
     table: str,
@@ -2997,6 +3243,7 @@ def _apply_simple_remote(
             field="sync_id",
             message=f"El registro remoto de {table} no incluye sync_id.",
         )
+    _validate_simple_remote_item(table, item)
     local = conn.execute(f"SELECT * FROM {table} WHERE sync_id = ? AND owner_user_id = ?", (sync_id, owner)).fetchone()
     values = [item.get(field) for field in fields]
     if local:
@@ -3379,22 +3626,83 @@ async def sync_cloud_contract_state_set(request: Request, service: FinanceServic
 async def sync_mark_synced(request: Request, service: FinanceService = Depends(get_service)):
     owner = _require_cloud_owner()
     payload = await request.json()
-    accepted = {table: [str(v) for v in payload.get(table, []) if v] for table in SYNC_TABLES}
+    if not isinstance(payload, dict):
+        raise _sync_apply_http_error(
+            status_code=422,
+            code="local_mark_synced_invalid_payload",
+            classification="local_mark_synced_invalid_payload",
+            field="body",
+            message="El body de confirmacion debe ser un objeto JSON.",
+        )
+    accepted: dict[str, list[str]] = {}
+    for table in SYNC_TABLES:
+        raw_sync_ids = payload.get(table, [])
+        if not isinstance(raw_sync_ids, list):
+            raise _sync_apply_http_error(
+                status_code=422,
+                code="local_mark_synced_invalid_payload",
+                classification="local_mark_synced_invalid_payload",
+                table=table,
+                field=table,
+                message=f"El campo {table} debe ser una lista de identificadores de sincronizacion.",
+            )
+        sync_ids: list[str] = []
+        for index, value in enumerate(raw_sync_ids):
+            if not isinstance(value, str) or not value.strip():
+                raise _sync_apply_http_error(
+                    status_code=422,
+                    code="local_mark_synced_invalid_payload",
+                    classification="local_mark_synced_invalid_payload",
+                    table=table,
+                    field=f"{table}[{index}]",
+                    message=f"El campo {table} contiene un identificador de sincronizacion invalido.",
+                )
+            sync_ids.append(value.strip())
+        accepted[table] = sync_ids
     now = datetime.now().isoformat(timespec="seconds")
+    marked = {table: 0 for table in SYNC_TABLES}
+    idempotent = {table: 0 for table in SYNC_TABLES}
 
     with service.db.connect() as conn:
         _ensure_sync_metadata_columns(conn)
+        _ensure_sync_history_table(conn)
         for table, sync_ids in accepted.items():
             for sync_id in sync_ids:
-                conn.execute(
+                updated = conn.execute(
                     f"""
                     UPDATE {table}
                     SET sync_status = 'synced',
                         last_synced_at = ?
-                    WHERE sync_id = ? AND owner_user_id = ?
+                    WHERE sync_id = ? AND owner_user_id = ? AND COALESCE(sync_status, '') != 'synced'
                     """,
                     (now, sync_id, owner),
                 )
+                if int(updated.rowcount or 0) == 0:
+                    existing = conn.execute(
+                        f"SELECT sync_status FROM {table} WHERE sync_id = ? AND owner_user_id = ?",
+                        (sync_id, owner),
+                    ).fetchone()
+                    if not existing:
+                        raise _sync_apply_http_error(
+                            status_code=409,
+                            code="local_mark_synced_target_not_found",
+                            classification="local_mark_synced_target_not_found",
+                            table=table,
+                            record_sync_id=sync_id,
+                            message="No se encontro el registro local que cloud confirmo como sincronizado.",
+                        )
+                    if str(existing["sync_status"] or "") != "synced":
+                        raise _sync_apply_http_error(
+                            status_code=409,
+                            code="local_mark_synced_target_not_found",
+                            classification="local_mark_synced_target_not_found",
+                            table=table,
+                            record_sync_id=sync_id,
+                            message="El registro local no pudo confirmarse como sincronizado.",
+                        )
+                    idempotent[table] += 1
+                else:
+                    marked[table] += int(updated.rowcount)
                 conn.execute(
                     """
                     UPDATE sync_rejections
@@ -3403,7 +3711,7 @@ async def sync_mark_synced(request: Request, service: FinanceService = Depends(g
                     """,
                     (now, owner, table, sync_id),
                 )
-    return {"ok": True, "marked": {table: len(values) for table, values in accepted.items()}}
+    return {"ok": True, "marked": marked, "idempotent": idempotent}
 
 
 @app.post("/sync/mark-rejected")

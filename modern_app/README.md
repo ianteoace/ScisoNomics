@@ -96,7 +96,7 @@ En v3.1.0 el instalador NSIS intenta cerrar procesos anteriores de ScisoNomics a
 - `scisonomics-backend.exe`
 - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
 
-No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.1.0_x64-setup.exe`.
+No debe usarse "Omitir" si Windows avisa que un archivo esta en uso; hay que cancelar, cerrar esos procesos y volver a instalar. La actualizacion no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.2.0_x64-setup.exe`.
 
 ### Desarrollo
 

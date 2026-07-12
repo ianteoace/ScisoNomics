@@ -158,10 +158,10 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     };
   }, [configured]);
 
-  function handleClearLocalSession() {
+async function handleClearLocalSession() {
     const activeSession = getActiveAccount();
     if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
-    clearActiveAccountSession();
+    const cleared = await clearActiveAccountSession();
     setAutoSyncEnabled(false);
     refreshAuthState();
     setLoadingSession(false);
@@ -171,7 +171,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setSyncHistory([]);
     setSyncConflicts([]);
     setCloudDevices([]);
-      showSuccess("Sesión activa quitada de este dispositivo.");
+    if (cleared.ok) showSuccess("Sesión activa quitada de este dispositivo.");
+    else showError("Quitamos la sesión activa, pero no pudimos limpiar por completo la sesión recordada.");
   }
 
   async function handleRetrySessionCheck() {
@@ -315,11 +316,16 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
 
   async function handleLogout() {
     const activeSession = await getActiveCloudSessionAsync();
+    let cleanupOk = true;
     if (activeSession?.user.id) {
-      await logoutAccount(activeSession.user.id);
+      const result = await logoutAccount(activeSession.user.id);
+      cleanupOk = Boolean(result?.ok);
       clearAutoSyncPreference(activeSession.user.id);
     }
-    clearActiveAccountSession();
+    else {
+      const result = await clearActiveAccountSession();
+      cleanupOk = Boolean(result?.ok);
+    }
     setTokenMode(null);
     setUser(null);
     setSessionAvailability("none");
@@ -333,7 +339,8 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     setSyncConflicts([]);
     setCloudDevices([]);
     clearAuthForms();
-    showSuccess("Sesión cerrada. Tus datos de cuenta no se muestran en modo local.");
+    if (cleanupOk) showSuccess("Sesión cerrada. Tus datos de cuenta no se muestran en modo local.");
+    else showError("Cerramos la sesión, pero no pudimos limpiar por completo la sesión recordada.");
   }
 
   async function handleClaimLocalData() {
@@ -425,19 +432,21 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     }
   }
 
-  function handleRemoveAccount(ownerId: string) {
+  async function handleRemoveAccount(ownerId: string) {
     clearAutoSyncPreference(ownerId);
-    removeAccount(ownerId);
+    const result = await removeAccount(ownerId);
     refreshAuthState();
-    showSuccess("Cuenta quitada de este dispositivo. Tus datos financieros no se borraron.");
+    if (result.ok) showSuccess("Cuenta quitada de este dispositivo. Tus datos financieros no se borraron.");
+    else showError("Quitamos la cuenta de este dispositivo, pero no pudimos limpiar por completo la sesión recordada.");
   }
 
-  function handleClearAllAccounts() {
+  async function handleClearAllAccounts() {
     for (const account of accounts) clearAutoSyncPreference(account.user.id);
-    clearAllAccounts();
+    const result = await clearAllAccounts();
     setAutoSyncEnabled(false);
     refreshAuthState();
-    showSuccess("Se quitaron todas las cuentas guardadas. Tus datos financieros no se borraron.");
+    if (result.ok) showSuccess("Se quitaron todas las cuentas guardadas. Tus datos financieros no se borraron.");
+    else showError("Quitamos las cuentas guardadas, pero no pudimos limpiar por completo algunas sesiones recordadas.");
   }
 
   function formatDate(value?: string | null) {

@@ -89,12 +89,17 @@ export function getCachedEntitlements(ownerId = getActiveOwnerId()): BillingEnti
   return DEFAULT_ENTITLEMENTS;
 }
 
-async function cacheLocalEntitlements(entitlements: BillingEntitlements, ownerId: string) {
+async function cacheLocalEntitlements(ownerId: string) {
   try {
+    const session = await getActiveCloudSessionAsync();
+    if (!session?.token) return;
     await fetch(`${API_URL}/billing/entitlements/cache`, {
       method: "POST",
-      headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }, ownerId),
-      body: JSON.stringify(entitlements),
+      headers: await getLocalRequestHeaders({
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.token}`,
+      }, ownerId),
+      body: JSON.stringify({ refresh: true }),
     });
   } catch {
     // El cache local mejora enforcement, pero la UI debe degradar a Free si falla.
@@ -124,7 +129,7 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const entitlements = normalizeEntitlements(await response.json());
     setCachedEntitlements(ownerId, entitlements);
-    void cacheLocalEntitlements(entitlements, ownerId);
+    void cacheLocalEntitlements(ownerId);
     return entitlements;
   } catch {
     return getCachedEntitlements(ownerId);

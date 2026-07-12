@@ -20,6 +20,9 @@ use serde::Serialize;
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
 const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
+fn cloud_api_url() -> &'static str {
+  option_env!("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL").unwrap_or("")
+}
 
 #[derive(Debug, Serialize)]
 struct PersistentCloudTokenSaveResult {
@@ -813,6 +816,7 @@ pub fn run() {
       match sidecar_command
         .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
         .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
+        .env("SCISONOMICS_CLOUD_API_URL", cloud_api_url())
         .spawn() {
         Ok((mut rx, child)) => {
           log::info!("Sidecar backend iniciado. PID: {}", child.pid());

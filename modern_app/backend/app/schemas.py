@@ -91,7 +91,4 @@ class PremiumFeaturesIn(BaseModel):
 
 
 class BillingEntitlementsCacheIn(BaseModel):
-    plan: Literal["free", "premium"] = "free"
-    status: Literal["active", "trialing", "past_due", "canceled", "expired"] = "active"
-    features: PremiumFeaturesIn = Field(default_factory=PremiumFeaturesIn)
-    expires_at: str | None = None
+    refresh: bool = True

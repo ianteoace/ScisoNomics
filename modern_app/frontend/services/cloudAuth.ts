@@ -1168,13 +1168,26 @@ export async function deleteCloudToken(accountId: string) {
   setRuntimeAccessToken(normalizedAccountId, null);
   clearAccountAuthStatus(normalizedAccountId);
   clearAccountRuntimeAuthState(normalizedAccountId);
-  if (!canUseSecurePersistentTokenStorage()) return;
-  await deletePersistentCloudTokenSecure(normalizedAccountId);
+  if (!canUseSecurePersistentTokenStorage()) return { ok: true, secureStorageAvailable: false, errorCode: null as string | null };
+  const result = await deletePersistentCloudTokenSecure(normalizedAccountId);
+  if (!result?.ok) {
+    console.warn("[auth] secure token delete incomplete", JSON.stringify(sanitizeAuthLogValue({
+      accountId: shortAccountId(normalizedAccountId),
+      secureStorageAvailable: true,
+      errorCode: result?.error_code || "secure_refresh_delete_failed",
+    })));
+    return {
+      ok: false,
+      secureStorageAvailable: true,
+      errorCode: result?.error_code || "secure_refresh_delete_failed",
+    };
+  }
   logAuthLifecycle("secure token delete end", {
     userId: shortUserId(normalizedAccountId),
     secureStorageAvailable: true,
     success: true,
   });
+  return { ok: true, secureStorageAvailable: true, errorCode: null as string | null };
 }
 
 async function resolveCloudSessionForAccount(account: StoredCloudAccount | null): Promise<{ session: StoredCloudSession | null; tokenSource: CloudTokenSource }> {
@@ -1705,12 +1718,19 @@ export function switchToLocalMode() {
   switchActiveOwner(LOCAL_OWNER_ID);
 }
 
-export function removeAccount(ownerId: string) {
+export async function removeAccount(ownerId: string) {
   const state = getStoredAuthState();
   const accounts = state.accounts.filter((account) => account.user.id !== ownerId);
   const activeOwnerId = state.activeOwnerId === ownerId ? LOCAL_OWNER_ID : state.activeOwnerId;
+  const deleteResult = await deleteCloudToken(ownerId);
   saveStoredAuthState({ activeOwnerId, accounts });
-  void deleteCloudToken(ownerId);
+  if (!deleteResult.ok) {
+    console.warn("[auth] account removed with partial cleanup", JSON.stringify(sanitizeAuthLogValue({
+      accountId: shortAccountId(ownerId),
+      errorCode: deleteResult.errorCode,
+    })));
+  }
+  return deleteResult;
 }
 
 export async function logoutAccount(ownerId: string) {
@@ -1719,23 +1739,34 @@ export async function logoutAccount(ownerId: string) {
   if (!account) return;
   const refreshToken = account.storage === "persistent" ? await loadCloudToken(ownerId) : null;
   await cloudAuth.logout(refreshToken);
-  removeAccount(ownerId);
+  return removeAccount(ownerId);
 }
 
-export function clearAllAccounts() {
+export async function clearAllAccounts() {
   const state = getStoredAuthState();
-  for (const account of state.accounts) void deleteCloudToken(account.user.id);
+  const results = await Promise.all(state.accounts.map((account) => deleteCloudToken(account.user.id)));
   saveStoredAuthState(emptyAuthState());
+  if (results.some((result) => !result.ok)) {
+    console.warn("[auth] clear all accounts incomplete", JSON.stringify(sanitizeAuthLogValue({
+      affectedAccounts: state.accounts.length,
+      failedDeletes: results.filter((result) => !result.ok).length,
+    })));
+  }
+  return {
+    ok: results.every((result) => result.ok),
+    failedDeletes: results.filter((result) => !result.ok).length,
+  };
 }
 
-export function clearActiveAccountSession() {
+export async function clearActiveAccountSession() {
   const active = getActiveOwnerId();
   if (active === LOCAL_OWNER_ID) switchToLocalMode();
-  else removeAccount(active);
+  else return removeAccount(active);
+  return { ok: true, secureStorageAvailable: false, errorCode: null as string | null };
 }
 
-export function clearStoredSession() {
-  clearActiveAccountSession();
+export async function clearStoredSession() {
+  return clearActiveAccountSession();
 }
 
 export async function setStoredSession(token: string, user: CloudUser, remember: boolean, notify = true) {
@@ -1765,8 +1796,8 @@ export async function setStoredToken(token: string, remember: boolean) {
   }
 }
 
-export function clearStoredToken() {
-  clearActiveAccountSession();
+export async function clearStoredToken() {
+  return clearActiveAccountSession();
 }
 
 export const getCloudToken = getStoredToken;
@@ -1926,7 +1957,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
           accessTokenValid: false,
         });
       } else {
-        removeAccount(session.user.id);
+        await removeAccount(session.user.id);
       }
     }
     throw error;

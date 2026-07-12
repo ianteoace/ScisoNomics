@@ -50,10 +50,14 @@ class BillingFeaturesOut(BaseModel):
 
 
 class BillingEntitlementsOut(BaseModel):
+    user_id: str
     plan: str
     status: str
     features: BillingFeaturesOut
     expires_at: str | None = None
+    issued_at: str
+    valid_until: str
+    entitlement_token: str
 
 
 class AdminBillingEntitlementsUpdateIn(BaseModel):

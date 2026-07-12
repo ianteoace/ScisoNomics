@@ -3,7 +3,7 @@ TÉRMINOS Y CONDICIONES DE USO Y POLÍTICA DE PRIVACIDAD
 
 Última actualización: 10/07/2026
 Autor / Desarrollador: Ian Acevedo
-Contacto de soporte: [scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+Contacto de soporte: scisoftwareco@gmail.com
 País de operación principal: República Argentina
 
 IMPORTANTE: Al instalar, acceder o utilizar ScisoNomics, declarás haber leído, comprendido y aceptado estos Términos y Condiciones de Uso y esta Política de Privacidad. Si no estás de acuerdo con alguno de sus puntos, no instales ni utilices la aplicación.
@@ -285,7 +285,7 @@ Sin perjuicio de los derechos irrenunciables del usuario conforme a la normativa
 
 Para consultas, soporte, solicitudes legales o relacionadas con privacidad, el usuario podrá contactarse a:
 
-[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+scisoftwareco@gmail.com
 
 ============================================================
 SECCIÓN II — POLÍTICA DE PRIVACIDAD
@@ -308,7 +308,7 @@ Cuando corresponda, también podrán ser aplicables normas de defensa del consum
 El responsable del tratamiento de datos será:
 
 Ian Acevedo
-Contacto: [scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+Contacto: scisoftwareco@gmail.com
 País: República Argentina
 
 4. Datos que puede tratar ScisoNomics
@@ -489,7 +489,7 @@ El usuario podrá ejercer, cuando corresponda, los derechos de acceso, rectifica
 
 Para ejercer estos derechos, el usuario podrá contactarse a:
 
-[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+scisoftwareco@gmail.com
 
 La solicitud podrá requerir verificación de identidad para evitar accesos o eliminaciones no autorizadas.
 
@@ -565,7 +565,7 @@ En caso de modificaciones relevantes, se procurará informar al usuario mediante
 
 Para consultas, solicitudes o reclamos relacionados con privacidad y protección de datos personales, el usuario podrá contactarse a:
 
-[scisoftwareco@gmail.com](mailto:scisoftwareco@gmail.com)
+scisoftwareco@gmail.com
 
 29. Autoridad de control
 

@@ -14,6 +14,8 @@ hiddenimports = [
     'openpyxl.workbook',
     'openpyxl.writer.excel',
     'psutil',
+    'cryptography',
+    'cryptography.hazmat.primitives.asymmetric.rsa',
 ]
 hiddenimports += collect_submodules('finance_app')
 hiddenimports += collect_submodules('openpyxl')

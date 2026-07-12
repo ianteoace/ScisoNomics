@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -16,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from .auth import (
+    create_entitlement_token,
     create_access_token,
     create_refresh_token,
     decode_access_token,
@@ -24,6 +26,7 @@ from .auth import (
     get_refresh_token_expiration_days,
     hash_password,
     hash_refresh_token,
+    validate_entitlements_signing_config,
     verify_password,
 )
 from .db import connect, get_database_engine, init_db
@@ -75,6 +78,7 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 @app.on_event("startup")
 def startup() -> None:
     get_jwt_secret()
+    validate_entitlements_signing_config()
     _refresh_cloud_db_state(run_init=True)
 
 
@@ -267,8 +271,10 @@ def _normalize_subscription_status(value: Any) -> str:
     return "active"
 
 
-def _billing_features_for_plan(plan: str, status: str) -> BillingFeaturesOut:
+def _billing_features_for_plan(plan: str, status: str, expires_at: datetime | None = None) -> BillingFeaturesOut:
     premium_enabled = plan == "premium" and status in {"active", "trialing"}
+    if expires_at is not None and expires_at <= datetime.now(timezone.utc):
+        premium_enabled = False
     return BillingFeaturesOut(
         budgets=premium_enabled,
         saving_goals=premium_enabled,
@@ -278,15 +284,42 @@ def _billing_features_for_plan(plan: str, status: str) -> BillingFeaturesOut:
 
 
 def _entitlements_from_user_row(row) -> BillingEntitlementsOut:
+    user_id = str(row["id"] or "").strip()
+    if not user_id:
+        raise RuntimeError("El usuario no tiene un identificador valido para emitir entitlements.")
     plan = _normalize_plan(row["plan"] if "plan" in row.keys() else None)
     status = _normalize_subscription_status(row["subscription_status"] if "subscription_status" in row.keys() else None)
     expires_at = row["subscription_expires_at"] if "subscription_expires_at" in row.keys() else None
     normalized_expires_at = str(expires_at).strip() if expires_at is not None else ""
+    subscription_expiration = parse_sync_datetime(normalized_expires_at) if normalized_expires_at else None
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        lifetime_seconds = max(300, min(int(os.getenv("SCISONOMICS_ENTITLEMENTS_EXPIRE_SECONDS", "86400")), 86400))
+    except ValueError:
+        lifetime_seconds = 86400
+    token_expiration = now + timedelta(seconds=lifetime_seconds)
+    if subscription_expiration is not None and subscription_expiration < token_expiration:
+        token_expiration = subscription_expiration
+    features = _billing_features_for_plan(plan, status, subscription_expiration)
+    claims = {
+        "type": "scisonomics_entitlement",
+        "user_id": user_id,
+        "plan": plan,
+        "status": status,
+        "features": features.model_dump(),
+        "subscription_expires_at": normalized_expires_at or None,
+        "iat": int(now.timestamp()),
+        "exp": int(token_expiration.timestamp()),
+    }
     return BillingEntitlementsOut(
+        user_id=user_id,
         plan=plan,
         status=status,
-        features=_billing_features_for_plan(plan, status),
+        features=features,
         expires_at=normalized_expires_at or None,
+        issued_at=now.isoformat(),
+        valid_until=token_expiration.isoformat(),
+        entitlement_token=create_entitlement_token(claims),
     )
 
 
@@ -585,6 +618,47 @@ def _valid_sync_item(item: dict[str, Any], config: dict[str, Any]) -> bool:
     return all(item.get(field) not in (None, "") for field in config["required"])
 
 
+def _is_non_negative_sync_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and float(value) >= 0
+
+
+def _valid_simple_sync_semantics(key: str, item: dict[str, Any]) -> bool:
+    if key == "presupuestos":
+        mes = item.get("mes")
+        anio = item.get("anio")
+        return (
+            isinstance(mes, int) and not isinstance(mes, bool) and 1 <= mes <= 12
+            and isinstance(anio, int) and not isinstance(anio, bool) and 2000 <= anio <= 2100
+            and _is_non_negative_sync_number(item.get("monto"))
+        )
+    if key == "gastos_fijos":
+        activo = item.get("activo")
+        dia = item.get("dia_vencimiento")
+        return (
+            type(activo) in (int, bool) and activo in (0, 1, False, True)
+            and (dia is None or (isinstance(dia, int) and not isinstance(dia, bool) and 1 <= dia <= 31))
+            and _is_non_negative_sync_number(item.get("monto"))
+        )
+    if key == "gastos_programados":
+        recurrente = item.get("es_recurrente")
+        return (
+            item.get("estado") in {"pendiente", "pagado", "cancelado"}
+            and item.get("frecuencia") in {None, "mensual", "semanal", "anual"}
+            and type(recurrente) in (int, bool) and recurrente in (0, 1, False, True)
+            and _is_non_negative_sync_number(item.get("monto_estimado"))
+        )
+    if key == "metas_ahorro":
+        current_field = "monto_actual" if "monto_actual" in item else "monto_inicial"
+        return (
+            item.get("estado") in {"activa", "completada", "pausada"}
+            and _is_non_negative_sync_number(item.get("monto_objetivo"))
+            and _is_non_negative_sync_number(item.get(current_field, 0))
+        )
+    return True
+
+
 def _rejected_item(entity: str, sync_id: str | None, code: str, message: str) -> RejectedSyncItem:
     return {
         "entity": entity,
@@ -614,7 +688,7 @@ def _push_table(
         if not isinstance(item, dict):
             rejected.append(_rejected_item(key, None, "invalid_payload", "Registro invalido."))
             continue
-        if not _valid_sync_item(item, config):
+        if not _valid_sync_item(item, config) or not _valid_simple_sync_semantics(key, item):
             rejected.append(_rejected_item(key, item.get("sync_id"), "invalid_payload", "Registro invalido."))
             continue
         sync_id = str(item.get("sync_id") or "").strip()
@@ -864,7 +938,7 @@ def me(user: UserOut = Depends(get_current_user)):
 def billing_entitlements(user: UserOut = Depends(get_current_user)):
     with connect() as conn:
         row = conn.execute(
-            "SELECT plan, subscription_status, subscription_expires_at FROM users WHERE id = ?",
+            "SELECT id, plan, subscription_status, subscription_expires_at FROM users WHERE id = ?",
             (user.id,),
         ).fetchone()
     if row is None:

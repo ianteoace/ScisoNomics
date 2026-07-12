@@ -2,9 +2,7 @@ import { getActiveOwnerId } from "./cloudAuth";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token";
-const LOCAL_TOKEN_ENV = process.env.NEXT_PUBLIC_SCISONOMICS_LOCAL_TOKEN || "";
-
-let cachedLocalApiToken: string | null = LOCAL_TOKEN_ENV || null;
+let cachedLocalApiToken: string | null = null;
 let localApiTokenPromise: Promise<string | null> | null = null;
 
 export type LocalRequestSecurity = {
@@ -20,11 +18,8 @@ function isRunningInTauri() {
 
 async function loadLocalApiToken(): Promise<string | null> {
   if (cachedLocalApiToken) return cachedLocalApiToken;
-  if (LOCAL_TOKEN_ENV) {
-    cachedLocalApiToken = LOCAL_TOKEN_ENV;
-    return cachedLocalApiToken;
-  }
   if (typeof window === "undefined") return null;
+  if (!isRunningInTauri()) return null;
   if (localApiTokenPromise) return localApiTokenPromise;
   localApiTokenPromise = import("@tauri-apps/api/core")
     .then(({ invoke }) => invoke<string>("get_local_api_token"))
@@ -50,8 +45,10 @@ export function localOwnerHeaders(extra?: HeadersInit, ownerId?: string): Header
 
 export async function getLocalRequestHeaders(extra?: HeadersInit, ownerId?: string, requireToken = false): Promise<HeadersInit> {
   const token = await loadLocalApiToken();
-  if (requireToken && isRunningInTauri() && !token) {
-    throw new Error("No se pudo autenticar contra el servicio local.");
+  if (requireToken && !token) {
+    throw new Error(isRunningInTauri()
+      ? "No se pudo autenticar contra el servicio local."
+      : "El servicio local protegido solo está disponible dentro de la app de escritorio.");
   }
   const headers: Record<string, string> = {
     ...((extra as Record<string, string>) || {}),

@@ -10,18 +10,18 @@ Desde v3.1.0, una cuenta cloud activa intenta sincronizar al abrir y cerrar la a
 
 ## Descarga
 
-Versión estable actual: **v3.1.0**
+Versión estable actual: **v3.2.0**
 
-[Descargar ScisoNomics v3.1.0](../../releases/tag/v3.1.0)
+[Descargar ScisoNomics v3.2.0](../../releases/tag/v3.2.0)
 
 ### Actualizar manualmente
 
 - Cerra ScisoNomics antes de instalar una version nueva.
-- El instalador de v3.1.0 mantiene el cierre robusto del sidecar y suma sync confiable al abrir y cerrar.
+- El instalador de v3.2.0 mantiene el cierre robusto del sidecar, sync confiable y permisos Premium firmados.
 - Si Windows informa que hay archivos en uso, cancela la instalacion y cerra los procesos desde el Administrador de tareas.
 - No uses "Omitir" en archivos de ScisoNomics durante el instalador; podria quedar una app nueva con backend viejo.
 - Actualizar la app no borra la base local, backups ni logs.
-- Instalador esperado en Windows: `ScisoNomics_3.1.0_x64-setup.exe`.
+- Instalador esperado en Windows: `ScisoNomics_3.2.0_x64-setup.exe`.
 - Procesos esperados a cerrar si hace falta:
   - `ScisoNomics.exe`
   - `scisonomics-backend.exe`
@@ -29,7 +29,7 @@ Versión estable actual: **v3.1.0**
 
 ---
 
-## Novedades de v3.1.0
+## Novedades de v3.2.0
 
 - Sync automática confiable al abrir y cerrar la app cuando hay una cuenta cloud activa.
 - El toggle de sync automática controla solo el background durante el uso: cambios locales, foco e intervalo.

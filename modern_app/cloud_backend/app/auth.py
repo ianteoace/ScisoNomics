@@ -9,6 +9,9 @@ import secrets
 import time
 from typing import Any
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+
 
 PASSWORD_ITERATIONS = 260_000
 TOKEN_ALGORITHM = "HS256"
@@ -121,3 +124,46 @@ def decode_access_token(token: str) -> dict[str, Any]:
     if int(payload.get("exp", 0)) < int(time.time()):
         raise ValueError("Sesion expirada.")
     return payload
+
+
+def _entitlements_private_key_pem() -> bytes:
+    inline = os.getenv("SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY", "").strip()
+    file_path = os.getenv("SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY_FILE", "").strip()
+    if inline:
+        return inline.replace("\\n", "\n").encode("utf-8")
+    if file_path:
+        try:
+            with open(file_path, "rb") as handle:
+                return handle.read()
+        except OSError as exc:
+            raise RuntimeError("No se pudo leer la clave privada de entitlements.") from exc
+    raise RuntimeError("SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY es obligatorio para emitir entitlements.")
+
+
+def create_entitlement_token(payload: dict[str, Any]) -> str:
+    header = {"alg": "RS256", "typ": "JWT"}
+    signing_input = ".".join(
+        [
+            _b64url_encode(json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")),
+            _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")),
+        ]
+    )
+    try:
+        private_key = serialization.load_pem_private_key(_entitlements_private_key_pem(), password=None)
+        signature = private_key.sign(signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("La clave privada de entitlements no es valida.") from exc
+    return f"{signing_input}.{_b64url_encode(signature)}"
+
+
+def validate_entitlements_signing_config() -> None:
+    configured = bool(
+        os.getenv("SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY", "").strip()
+        or os.getenv("SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY_FILE", "").strip()
+    )
+    if not configured and os.getenv("SCISONOMICS_ENV", "development").strip().lower() != "production":
+        return
+    try:
+        serialization.load_pem_private_key(_entitlements_private_key_pem(), password=None)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("La clave privada de entitlements no es valida.") from exc
