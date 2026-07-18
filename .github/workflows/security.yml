@@ -1,0 +1,48 @@
+name: Security checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  application-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            modern_app/backend/requirements.txt
+            modern_app/cloud_backend/requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r modern_app/backend/requirements.txt -r modern_app/cloud_backend/requirements.txt
+          python -m pip install pip-audit
+      - name: Python security tests
+        run: python -m unittest modern_app.cloud_backend.test_security -v
+      - name: Audit Python dependencies
+        run: |
+          python -m pip_audit -r modern_app/backend/requirements.txt
+          python -m pip_audit -r modern_app/cloud_backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: modern_app/frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: modern_app/frontend
+        run: npm ci
+      - name: Build frontend
+        working-directory: modern_app/frontend
+        run: npm run build
+      - name: Audit production dependencies
+        working-directory: modern_app/frontend
+        run: npm audit --omit=dev --audit-level=high

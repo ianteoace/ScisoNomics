@@ -85,3 +85,16 @@ export async function createSecurityCopyWithSaveDialog() {
     throw new Error("No se pudo guardar la copia de seguridad en la ubicación seleccionada. Probá elegir otra carpeta.");
   }
 }
+
+export async function createEncryptedSecurityCopyWithSaveDialog(passphrase: string) {
+  await assertBackendReady();
+  const { blob, filename } = await api.downloadEncryptedBackup(passphrase);
+  if (blob.size <= 0) throw new Error("La copia cifrada esta vacia.");
+  const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (!isTauri) {
+    downloadBlobInBrowser(blob, filename);
+    return;
+  }
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  await invoke<boolean>("save_binary_file", { fileName: filename, extension: "sciso-backup", bytes: Array.from(bytes) });
+}

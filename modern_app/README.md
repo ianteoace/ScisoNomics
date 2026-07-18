@@ -158,9 +158,18 @@ npm run tauri:build
 - En v3.0.0 se fija el modo oscuro, se elimina el selector claro/oscuro, se expone diagnostico seguro desde Configuracion > Acerca de ScisoNomics y las actualizaciones se realizan manualmente desde GitHub Releases.
 - En v3.0.1 se agrega estabilizacion de sync/auth: snapshot de owner por corrida, token local para el sidecar en app instalada y Google Login one-time-use.
 - En v3.1.0 una cuenta cloud activa intenta sincronizar al abrir y cerrar la app. El toggle controla solo el background durante el uso y el intervalo configurable por owner.
-- El CSP desktop restringe conexiones al sidecar local, localhost de desarrollo y Railway. `script-src 'unsafe-inline'` se conserva porque el export estatico de Next lo necesita para hidratacion.
-- `shell:allow-spawn` se mantiene como permiso minimo necesario para iniciar `app.shell().sidecar("scisonomics-backend")`; no se amplio `plugins.shell.scope`.
-- Los JWT siguen centralizados en el servicio de auth. La expiracion cloud por defecto baja a 240 minutos. Migrar a secure storage nativo requiere incorporar un plugin del sistema operativo y se deja como tarea separada para no romper sesiones multicuentas existentes.
+- El CSP desktop separa produccion y desarrollo, elimina `script-src 'unsafe-inline'` y deja que Tauri agregue hashes/nonces a los assets empaquetados.
+- El sidecar se inicia desde Rust y el frontend no recibe permiso `shell:allow-spawn`. La apertura de URLs queda limitada a GitHub Releases y a los endpoints de autenticacion conocidos.
+- Los access tokens vencen por defecto a los 15 minutos. Los refresh tokens persistentes se guardan en el almacen seguro del sistema operativo y los tokens de acceso viven solo durante la ejecucion.
+
+## Seguridad de produccion
+
+- Las contrasenas nuevas usan scrypt y las PBKDF2 existentes migran al proximo login correcto.
+- Los refresh tokens rotan por familias; reutilizar uno anterior revoca la familia completa.
+- Login, registro, verificacion, refresh, administracion y sync tienen limites de intentos.
+- La administracion requiere identidad, token individual y TOTP en produccion.
+- Configuracion > Datos y backups permite crear copias portables cifradas con una clave elegida por el usuario.
+- Variables obligatorias, auditoria e incidentes se documentan en `../SECURITY.md`.
 
 ## Rutas locales principales
 

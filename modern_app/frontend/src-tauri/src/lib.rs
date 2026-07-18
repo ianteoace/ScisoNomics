@@ -105,6 +105,7 @@ async fn save_binary_file(app: tauri::AppHandle, file_name: String, extension: S
   let allowed_extension = match extension.trim().to_ascii_lowercase().as_str() {
     "db" => "db",
     "xlsx" => "xlsx",
+    "sciso-backup" => "sciso-backup",
     _ => return Err("Tipo de archivo no permitido.".to_string()),
   };
   let suggested_path = std::path::Path::new(file_name.trim());
@@ -160,6 +161,35 @@ async fn save_binary_file(app: tauri::AppHandle, file_name: String, extension: S
 #[tauri::command]
 fn get_local_api_token(token: tauri::State<'_, LocalApiToken>) -> String {
   token.0.clone()
+}
+
+#[tauri::command]
+fn enable_windows_data_protection() -> Result<bool, String> {
+  #[cfg(not(target_os = "windows"))]
+  {
+    return Err("La proteccion integrada esta disponible solo en Windows.".to_string());
+  }
+  #[cfg(target_os = "windows")]
+  {
+    let local_appdata = std::env::var_os("LOCALAPPDATA")
+      .ok_or_else(|| "No se encontro la carpeta de datos del usuario.".to_string())?;
+    let base = std::path::PathBuf::from(local_appdata).join("RegistroFinanzas");
+    let folders = [base.join("data"), base.join("backups")];
+    for folder in folders {
+      std::fs::create_dir_all(&folder)
+        .map_err(|error| format!("No se pudo preparar la carpeta de datos: {error}"))?;
+      let recursive = format!("/S:{}", folder.display());
+      let output = Command::new("cipher.exe")
+        .args(["/E", "/A", recursive.as_str()])
+        .current_dir(&folder)
+        .output()
+        .map_err(|error| format!("No se pudo iniciar la proteccion de Windows: {error}"))?;
+      if !output.status.success() {
+        return Err("Windows no pudo cifrar la carpeta. Verifica que la unidad use NTFS y que EFS este disponible.".to_string());
+      }
+    }
+    Ok(true)
+  }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -776,6 +806,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       save_binary_file,
       get_local_api_token,
+      enable_windows_data_protection,
       save_persistent_cloud_token,
       load_persistent_cloud_token,
       delete_persistent_cloud_token,

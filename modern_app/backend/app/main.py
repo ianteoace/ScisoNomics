@@ -45,6 +45,7 @@ from finance_app.services import (
     set_current_owner_id,
 )
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
+from finance_app.secure_backup import decrypt_backup, encrypt_backup, is_encrypted_backup
 from openpyxl import load_workbook
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -59,7 +60,7 @@ from .deps import (
     start_database_initialization,
 )
 from .settings import ORIGINAL_DB_PATH, WEB_DB_PATH
-from .schemas import BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, BillingEntitlementsCacheIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
+from .schemas import BackupEncryptionIn, BackupFrequencyIn, BackupRestoreIn, BackupRestorePathIn, BillingEntitlementsCacheIn, CategoriaIn, GastoFijoIn, GastoProgramadoIn, MetaAhorroIn, MovimientoIn, PresupuestoIn, TagIn
 
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # La documentacion interactiva ayuda en desarrollo, pero en la app instalada
@@ -489,6 +490,18 @@ def _cleanup_temp_snapshot(path: Path) -> None:
         path.parent.rmdir()
     except OSError:
         _logger.warning("No se pudo limpiar snapshot temporal. file=%s", path.name)
+
+
+def _cleanup_encrypted_snapshot(snapshot: Path, encrypted: Path) -> None:
+    for path in (snapshot, encrypted):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            _logger.warning("No se pudo limpiar snapshot temporal. file=%s", path.name)
+    try:
+        encrypted.parent.rmdir()
+    except OSError:
+        pass
 
 
 def _cleanup_stale_temp_snapshots(max_age_seconds: int = 600) -> None:
@@ -4244,6 +4257,7 @@ def export_backup(service: FinanceService = Depends(get_service)):
 
 @app.post("/backup/restore")
 async def restore_backup(request: Request, service: FinanceService = Depends(get_service)):
+    decrypted: Path | None = None
     try:
         ensure_app_data_initialized()
         try:
@@ -4261,6 +4275,10 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
             raise HTTPException(status_code=400, detail="Debes indicar source_path.")
 
         source = Path(source_path_value).expanduser()
+        if is_encrypted_backup(source):
+            passphrase = str(payload.get("passphrase") or "")
+            decrypted = Path(mkdtemp(prefix="finanzas_restore_")) / "restored.db"
+            source = decrypt_backup(source, decrypted, passphrase)
         pre_restore_backups = get_data_dir() / "backups"
         safety = service.restore_database_from_path(source, pre_restore_backups)
         invalidate_app_data_initialized()
@@ -4278,6 +4296,9 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
             status_code=500,
             detail="No se pudo restaurar la copia de seguridad.",
         ) from exc
+    finally:
+        if decrypted is not None:
+            _cleanup_temp_snapshot(decrypted)
 
 
 @app.get("/backup/download")
@@ -4314,6 +4335,27 @@ def download_backup(service: FinanceService = Depends(get_service)):
     except Exception as exc:
         _logger.exception("Error generando copia de seguridad. error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=500, detail="No se pudo obtener la copia de seguridad.") from exc
+
+
+@app.post("/backup/download-encrypted")
+def download_encrypted_backup(payload: BackupEncryptionIn, service: FinanceService = Depends(get_service)):
+    try:
+        ensure_app_data_initialized()
+        temp_dir = Path(mkdtemp(prefix="finanzas_encrypted_"))
+        snapshot = service.backup_database(temp_dir)
+        encrypted = temp_dir / f"ScisoNomics_copia_cifrada_{datetime.now().strftime('%Y-%m-%d')}.sciso-backup"
+        encrypt_backup(snapshot, encrypted, payload.passphrase)
+        return FileResponse(
+            path=encrypted,
+            filename=encrypted.name,
+            media_type="application/octet-stream",
+            background=BackgroundTask(_cleanup_encrypted_snapshot, snapshot, encrypted),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _logger.exception("Error generando copia cifrada. error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="No se pudo crear la copia cifrada.") from exc
 
 
 @app.get("/export/excel")

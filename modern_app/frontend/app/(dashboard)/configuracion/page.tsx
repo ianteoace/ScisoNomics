@@ -10,7 +10,7 @@ import { Modal } from "../../../components/ui/Modal";
 import packageJson from "../../../package.json";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
-import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
+import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import {
@@ -122,6 +122,13 @@ export default function ConfiguracionPage() {
   const [checkingLocalIntegrity, setCheckingLocalIntegrity] = useState(false);
   const [creatingLocalBackup, setCreatingLocalBackup] = useState(false);
   const [repairingLocalDb, setRepairingLocalDb] = useState(false);
+  const [encryptedBackupOpen, setEncryptedBackupOpen] = useState(false);
+  const [backupPassphrase, setBackupPassphrase] = useState("");
+  const [backupPassphraseConfirm, setBackupPassphraseConfirm] = useState("");
+  const [restorePassphrase, setRestorePassphrase] = useState("");
+  const [creatingEncryptedBackup, setCreatingEncryptedBackup] = useState(false);
+  const [windowsProtectionOpen, setWindowsProtectionOpen] = useState(false);
+  const [enablingWindowsProtection, setEnablingWindowsProtection] = useState(false);
   const { showError, showSuccess } = useToast();
 
   function selectSection(section: SettingsSectionId) {
@@ -208,6 +215,43 @@ export default function ConfiguracionPage() {
     }
   }
 
+  async function handleCreateEncryptedSecurityCopy() {
+    if (backupPassphrase.length < 12) {
+      showError("La clave debe tener al menos 12 caracteres.");
+      return;
+    }
+    if (backupPassphrase !== backupPassphraseConfirm) {
+      showError("Las claves no coinciden.");
+      return;
+    }
+    setCreatingEncryptedBackup(true);
+    try {
+      await createEncryptedSecurityCopyWithSaveDialog(backupPassphrase);
+      setEncryptedBackupOpen(false);
+      setBackupPassphrase("");
+      setBackupPassphraseConfirm("");
+      showSuccess("Copia cifrada creada correctamente. Guarda la clave en un lugar seguro.");
+    } catch (error) {
+      showError(error instanceof Error ? error.message : "No se pudo crear la copia cifrada.");
+    } finally {
+      setCreatingEncryptedBackup(false);
+    }
+  }
+
+  async function handleEnableWindowsProtection() {
+    setEnablingWindowsProtection(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke<boolean>("enable_windows_data_protection");
+      setWindowsProtectionOpen(false);
+      showSuccess("Windows protegió la base local y los backups con tu cuenta de usuario.");
+    } catch (error) {
+      showError(error instanceof Error ? error.message : String(error || "No se pudo activar la protección de Windows."));
+    } finally {
+      setEnablingWindowsProtection(false);
+    }
+  }
+
   async function handlePickRestoreFile() {
     try {
       const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -219,13 +263,13 @@ export default function ConfiguracionPage() {
       const [{ open }] = await Promise.all([import("@tauri-apps/plugin-dialog")]);
       const selected = await open({
         multiple: false,
-        filters: [{ name: "Base de datos SQLite", extensions: ["db"] }],
+        filters: [{ name: "Copia de ScisoNomics", extensions: ["db", "sciso-backup"] }],
       });
       if (!selected) return;
 
       const path = Array.isArray(selected) ? selected[0] : selected;
-      if (!path || !path.toLowerCase().endsWith(".db")) {
-        showError("Debés seleccionar un archivo .db válido.");
+      if (!path || !(path.toLowerCase().endsWith(".db") || path.toLowerCase().endsWith(".sciso-backup"))) {
+        showError("Debés seleccionar una copia .db o .sciso-backup válida.");
         return;
       }
       setSelectedRestorePath(path);
@@ -239,8 +283,14 @@ export default function ConfiguracionPage() {
     if (!selectedRestorePath || restoring) return;
     setRestoring(true);
     try {
-      await api.restoreBackupFromPath(selectedRestorePath);
+      const encrypted = selectedRestorePath.toLowerCase().endsWith(".sciso-backup");
+      if (encrypted && restorePassphrase.length < 12) {
+        showError("Ingresa la clave de la copia cifrada.");
+        return;
+      }
+      await api.restoreBackupFromPath(selectedRestorePath, encrypted ? restorePassphrase : undefined);
       setSelectedRestorePath(null);
+      setRestorePassphrase("");
       showSuccess("Copia restaurada correctamente. Reinicia ScisoNomics para aplicar los cambios.");
     } catch (error: any) {
       console.error("Error restaurando copia de seguridad:", error);
@@ -650,6 +700,8 @@ export default function ConfiguracionPage() {
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
+          <button className="btn-secondary" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada</button>
+          <button className="btn-secondary" onClick={() => setWindowsProtectionOpen(true)}>Proteger datos con Windows</button>
           <button className="btn-secondary" onClick={handlePickRestoreFile}>Restaurar copia de seguridad</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
@@ -890,12 +942,61 @@ export default function ConfiguracionPage() {
             Archivo seleccionado: {selectedRestoreName}
           </p>
         ) : null}
+        {selectedRestorePath?.toLowerCase().endsWith(".sciso-backup") ? (
+          <label className="mt-4 block text-sm text-slate-300">
+            Clave de la copia cifrada
+            <input
+              className="input mt-2 w-full"
+              type="password"
+              autoComplete="off"
+              value={restorePassphrase}
+              onChange={(event) => setRestorePassphrase(event.target.value)}
+              maxLength={256}
+            />
+          </label>
+        ) : null}
         <div className="mt-4 flex justify-end gap-2">
           <button className="btn-secondary" onClick={() => setSelectedRestorePath(null)} disabled={restoring}>
             Cancelar
           </button>
           <button className="btn" onClick={handleConfirmRestore} disabled={restoring}>
             {restoring ? "Restaurando..." : "Restaurar copia"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={encryptedBackupOpen} title="Crear copia cifrada" onClose={() => setEncryptedBackupOpen(false)}>
+        <p className="text-sm text-slate-300">
+          La copia se cifra antes de salir de ScisoNomics. Sin esta clave no se puede recuperar.
+        </p>
+        <label className="mt-4 block text-sm text-slate-300">
+          Clave (mínimo 12 caracteres)
+          <input className="input mt-2 w-full" type="password" autoComplete="new-password" value={backupPassphrase} onChange={(event) => setBackupPassphrase(event.target.value)} maxLength={256} />
+        </label>
+        <label className="mt-3 block text-sm text-slate-300">
+          Repetir clave
+          <input className="input mt-2 w-full" type="password" autoComplete="new-password" value={backupPassphraseConfirm} onChange={(event) => setBackupPassphraseConfirm(event.target.value)} maxLength={256} />
+        </label>
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="btn-secondary" onClick={() => setEncryptedBackupOpen(false)} disabled={creatingEncryptedBackup}>Cancelar</button>
+          <button className="btn" onClick={handleCreateEncryptedSecurityCopy} disabled={creatingEncryptedBackup}>
+            {creatingEncryptedBackup ? "Cifrando..." : "Crear copia cifrada"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal open={windowsProtectionOpen} title="Proteger datos locales con Windows" onClose={() => setWindowsProtectionOpen(false)}>
+        <div className="space-y-3 text-sm text-slate-300">
+          <p>Windows cifrará la base local y la carpeta de backups mediante EFS, vinculándolas a tu cuenta de usuario.</p>
+          <p className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-amber-200">
+            Exportá el certificado de cifrado de Windows y guardalo de forma segura. Si perdés la cuenta o el certificado, los archivos podrían quedar inaccesibles.
+          </p>
+          <p>Esta protección requiere una unidad NTFS y una edición de Windows compatible. No reemplaza las copias cifradas portables.</p>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="btn-secondary" onClick={() => setWindowsProtectionOpen(false)} disabled={enablingWindowsProtection}>Cancelar</button>
+          <button className="btn" onClick={handleEnableWindowsProtection} disabled={enablingWindowsProtection}>
+            {enablingWindowsProtection ? "Protegiendo..." : "Activar protección"}
           </button>
         </div>
       </Modal>

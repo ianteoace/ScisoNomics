@@ -7,8 +7,15 @@
   ],
   "permissions": [
     "core:default",
-    "shell:allow-spawn",
     "dialog:default",
-    "opener:default"
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/ianteoace/scisonomics/**" },
+        { "url": "https://scisonomics-production-d8a3.up.railway.app/**" },
+        { "url": "http://127.0.0.1:9000/**" },
+        { "url": "http://localhost:9000/**" }
+      ]
+    }
   ]
 }

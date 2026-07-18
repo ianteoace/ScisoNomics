@@ -106,11 +106,26 @@ export const api = {
     const filename = match?.[1] || `ScisoNomics_copia_seguridad_${getLocalDateInputValue()}.db`;
     return { blob, filename };
   },
-  restoreBackupFromPath: async (sourcePath: string) => {
+  downloadEncryptedBackup: async (passphrase: string) => {
+    const response = await fetch(`${API_URL}/backup/download-encrypted`, {
+      method: "POST",
+      headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ passphrase }),
+    });
+    if (!response.ok) {
+      const parsed = await response.json().catch(() => null);
+      throw new Error(parsed?.detail || "No se pudo crear la copia cifrada.");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    return { blob, filename: match?.[1] || `ScisoNomics_copia_cifrada_${getLocalDateInputValue()}.sciso-backup` };
+  },
+  restoreBackupFromPath: async (sourcePath: string, passphrase?: string) => {
     const response = await fetch(`${API_URL}/backup/restore`, {
       method: "POST",
       headers: await getLocalRequestHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ source_path: sourcePath }),
+      body: JSON.stringify({ source_path: sourcePath, ...(passphrase ? { passphrase } : {}) }),
     });
     const text = await response.text();
     let parsed: any = null;
