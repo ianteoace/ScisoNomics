@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 FeatureKey = str
 
 
-class RegisterRequest(BaseModel):
-    email: str
-    password: str
-    display_name: str | None = None
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-class LoginRequest(BaseModel):
-    email: str
-    password: str
+class RegisterRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12, max_length=256)
+    display_name: str | None = Field(default=None, max_length=120)
+
+
+class LoginRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class UserOut(BaseModel):
@@ -43,21 +47,21 @@ class AuthResponse(BaseModel):
     user: UserOut
 
 
-class VerifyEmailRequest(BaseModel):
-    verification_token: str
-    code: str
+class VerifyEmailRequest(StrictModel):
+    verification_token: str = Field(min_length=32, max_length=4096)
+    code: str = Field(min_length=6, max_length=32)
 
 
-class ResendEmailVerificationRequest(BaseModel):
-    verification_token: str
+class ResendEmailVerificationRequest(StrictModel):
+    verification_token: str = Field(min_length=32, max_length=4096)
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str
+class RefreshRequest(StrictModel):
+    refresh_token: str = Field(min_length=32, max_length=512)
 
 
-class LogoutRequest(BaseModel):
-    refresh_token: str
+class LogoutRequest(StrictModel):
+    refresh_token: str = Field(min_length=32, max_length=512)
 
 
 class BillingFeaturesOut(BaseModel):
@@ -78,8 +82,8 @@ class BillingEntitlementsOut(BaseModel):
     entitlement_token: str
 
 
-class AdminBillingEntitlementsUpdateIn(BaseModel):
-    email: str
-    plan: str
-    subscription_status: str
-    subscription_expires_at: str | None = None
+class AdminBillingEntitlementsUpdateIn(StrictModel):
+    email: str = Field(min_length=3, max_length=254)
+    plan: str = Field(min_length=1, max_length=32)
+    subscription_status: str = Field(min_length=1, max_length=32)
+    subscription_expires_at: str | None = Field(default=None, max_length=64)

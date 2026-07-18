@@ -14,7 +14,13 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 
 PASSWORD_ITERATIONS = 260_000
+SCRYPT_N = 2**15
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_MAXMEM = 64 * 1024 * 1024
 TOKEN_ALGORITHM = "HS256"
+TOKEN_ISSUER = "scisonomics-cloud"
+TOKEN_AUDIENCE = "scisonomics-desktop"
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -73,9 +79,11 @@ def hash_refresh_token(token: str) -> str:
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS)
-    return "pbkdf2_sha256${iterations}${salt}${digest}".format(
-        iterations=PASSWORD_ITERATIONS,
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32, maxmem=SCRYPT_MAXMEM)
+    return "scrypt${n}${r}${p}${salt}${digest}".format(
+        n=SCRYPT_N,
+        r=SCRYPT_R,
+        p=SCRYPT_P,
         salt=_b64url_encode(salt),
         digest=_b64url_encode(digest),
     )
@@ -83,16 +91,35 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored_hash: str) -> bool:
     try:
-        scheme, iterations_raw, salt_raw, digest_raw = stored_hash.split("$", 3)
-        if scheme != "pbkdf2_sha256":
+        parts = stored_hash.split("$")
+        scheme = parts[0]
+        if scheme == "scrypt" and len(parts) == 6:
+            _, n_raw, r_raw, p_raw, salt_raw, digest_raw = parts
+            salt = _b64url_decode(salt_raw)
+            expected = _b64url_decode(digest_raw)
+            actual = hashlib.scrypt(
+                password.encode("utf-8"),
+                salt=salt,
+                n=int(n_raw),
+                r=int(r_raw),
+                p=int(p_raw),
+                dklen=len(expected),
+                maxmem=SCRYPT_MAXMEM,
+            )
+        elif scheme == "pbkdf2_sha256" and len(parts) == 4:
+            _, iterations_raw, salt_raw, digest_raw = parts
+            salt = _b64url_decode(salt_raw)
+            expected = _b64url_decode(digest_raw)
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations_raw))
+        else:
             return False
-        iterations = int(iterations_raw)
-        salt = _b64url_decode(salt_raw)
-        expected = _b64url_decode(digest_raw)
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
+
+
+def password_needs_rehash(stored_hash: str) -> bool:
+    return not stored_hash.startswith(f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}$")
 
 
 def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> str:
@@ -101,6 +128,10 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
         "sub": subject,
         "iat": now,
         "exp": now + get_access_token_expires_in(),
+        "iss": TOKEN_ISSUER,
+        "aud": TOKEN_AUDIENCE,
+        "type": "access",
+        "jti": secrets.token_urlsafe(18),
     }
     if extra:
         payload.update(extra)
@@ -133,15 +164,41 @@ def decode_access_token(token: str) -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError("Token invalido.") from exc
 
+    try:
+        header = json.loads(_b64url_decode(header_raw).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("Token invalido.") from exc
+    if not isinstance(header, dict) or header.get("alg") != TOKEN_ALGORITHM or header.get("typ") != "JWT":
+        raise ValueError("Token invalido.")
     signing_input = f"{header_raw}.{payload_raw}"
     expected_signature = hmac.new(get_jwt_secret().encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
-    received_signature = _b64url_decode(signature_raw)
+    try:
+        received_signature = _b64url_decode(signature_raw)
+    except Exception as exc:
+        raise ValueError("Token invalido.") from exc
     if not hmac.compare_digest(expected_signature, received_signature):
         raise ValueError("Token invalido.")
 
-    payload = json.loads(_b64url_decode(payload_raw).decode("utf-8"))
-    if int(payload.get("exp", 0)) < int(time.time()):
+    try:
+        payload = json.loads(_b64url_decode(payload_raw).decode("utf-8"))
+    except Exception as exc:
+        raise ValueError("Token invalido.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Token invalido.")
+    now = int(time.time())
+    try:
+        expires_at = int(payload.get("exp", 0))
+        issued_at = int(payload.get("iat", now + 1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Token invalido.") from exc
+    if expires_at < now:
         raise ValueError("Sesion expirada.")
+    if issued_at > now + 60:
+        raise ValueError("Token invalido.")
+    if payload.get("iss") != TOKEN_ISSUER or payload.get("aud") != TOKEN_AUDIENCE:
+        raise ValueError("Token invalido.")
+    if not str(payload.get("sub") or "").strip() or not str(payload.get("jti") or "").strip():
+        raise ValueError("Token invalido.")
     return payload
 
 

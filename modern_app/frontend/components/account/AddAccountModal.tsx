@@ -11,6 +11,7 @@ import {
   getCloudAuthTokens,
   getStoredAccounts,
   isCloudAuthConfigured,
+  isCloudAuthRequestError,
   isEmailVerificationRequiredResponse,
   type EmailVerificationRequiredResponse,
 } from "../../services/cloudAuth";
@@ -44,6 +45,7 @@ export function AddAccountModal({
   const [verification, setVerification] = useState<PendingVerification | null>(null);
   const [verificationCode, setVerificationCode] = useState("");
   const [resendAvailableIn, setResendAvailableIn] = useState(0);
+  const [showLoginRecovery, setShowLoginRecovery] = useState(false);
   const googleCancelledRef = useRef(false);
   const googlePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -59,6 +61,7 @@ export function AddAccountModal({
     setVerification(null);
     setVerificationCode("");
     setResendAvailableIn(0);
+    setShowLoginRecovery(false);
   }
 
   function closeModal() {
@@ -166,12 +169,17 @@ export function AddAccountModal({
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!configured || submitting || googleWaiting) return;
+    if (mode === "register" && password.length < 12) {
+      setError("La contraseña debe tener al menos 12 caracteres.");
+      return;
+    }
     if (mode === "register" && password !== repeatPassword) {
       setError("Las contraseñas no coinciden.");
       return;
     }
     setSubmitting(true);
     setError("");
+    setShowLoginRecovery(false);
     console.info("[auth] login submit", JSON.stringify({ mode, remember }));
     try {
       const accountsBefore = getStoredAccounts();
@@ -183,7 +191,11 @@ export function AddAccountModal({
         setVerification({ ...response, source: mode });
         setVerificationCode("");
         setResendAvailableIn(response.resend_available_in || 0);
-        showSuccess("Te enviamos un código de verificación por correo.");
+        if (response.resend_available_in > 0) {
+          showSuccess("Te enviamos un código de verificación por correo.");
+        } else {
+          setError("La cuenta está pendiente de verificación. Pedí un nuevo código para continuar.");
+        }
         return;
       }
       const existed = accountsBefore.some((account) => account.user.id === response.user.id);
@@ -197,6 +209,22 @@ export function AddAccountModal({
       showSuccess(mode === "register" ? "Cuenta creada y agregada correctamente." : existed ? "Cuenta actualizada y activada." : "Cuenta agregada correctamente.");
     } catch (err) {
       console.error("No se pudo agregar la cuenta:", err);
+      if (isCloudAuthRequestError(err) && err.code === "email_delivery_failed" && err.verification) {
+        setVerification({ ...err.verification, source: mode });
+        setVerificationCode("");
+        setResendAvailableIn(0);
+        const deliveryMessage = "La cuenta quedó creada, pero el correo no pudo enviarse. Podés reintentar el envío.";
+        setError(deliveryMessage);
+        showError(deliveryMessage);
+        return;
+      }
+      if (isCloudAuthRequestError(err) && err.kind === "timeout") {
+        const timeoutMessage = "La solicitud tardó demasiado. La cuenta puede haberse creado; podés ir a iniciar sesión para recuperar la verificación.";
+        setError(timeoutMessage);
+        setShowLoginRecovery(true);
+        showError(timeoutMessage);
+        return;
+      }
       const message = err instanceof Error ? err.message : "";
       const friendly =
         message.toLowerCase().includes("fetch") || message.toLowerCase().includes("conectar")
@@ -244,6 +272,10 @@ export function AddAccountModal({
       showSuccess("Te enviamos un nuevo código.");
     } catch (err) {
       console.error("No se pudo reenviar el código:", err);
+      if (isCloudAuthRequestError(err) && err.code === "email_delivery_failed" && err.verification) {
+        setVerification({ ...err.verification, source: verification.source });
+        setResendAvailableIn(0);
+      }
       const message = err instanceof Error ? err.message : "No se pudo reenviar el código.";
       setError(message);
       showError(message);
@@ -316,6 +348,20 @@ export function AddAccountModal({
             {error}
           </div>
         ) : null}
+        {showLoginRecovery ? (
+          <button
+            className="btn-secondary w-full justify-center"
+            type="button"
+            onClick={() => {
+              setMode("login");
+              setRepeatPassword("");
+              setError("");
+              setShowLoginRecovery(false);
+            }}
+          >
+            Ir a iniciar sesión
+          </button>
+        ) : null}
         <button className="btn-secondary w-full justify-center" type="button" onClick={handleGoogleLogin} disabled={!configured || submitting || googleWaiting}>
           {googleWaiting ? "Esperando confirmación de Google..." : "Continuar con Google"}
         </button>
@@ -362,10 +408,14 @@ export function AddAccountModal({
             className={inputClass}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            autoComplete="current-password"
+            autoComplete={mode === "register" ? "new-password" : "current-password"}
+            minLength={mode === "register" ? 12 : undefined}
             required
             disabled={!configured || submitting || googleWaiting}
           />
+          {mode === "register" ? (
+            <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Mínimo 12 caracteres.</span>
+          ) : null}
         </label>
         {mode === "register" ? (
           <label className="block text-sm">
@@ -375,7 +425,7 @@ export function AddAccountModal({
               value={repeatPassword}
               onChange={(event) => setRepeatPassword(event.target.value)}
               autoComplete="new-password"
-              minLength={8}
+              minLength={12}
               required
               disabled={!configured || submitting || googleWaiting}
             />

@@ -32,11 +32,11 @@ def _last_code(main_module) -> str:
 def _register(client: TestClient, email: str = "new@example.com"):
     return client.post(
         "/auth/register",
-        json={"email": email, "password": "password123", "display_name": "Test"},
+        json={"email": email, "password": "correct horse battery staple", "display_name": "Test"},
     )
 
 
-def _login(client: TestClient, email: str, password: str = "password123"):
+def _login(client: TestClient, email: str, password: str = "correct horse battery staple"):
     return client.post("/auth/login", json={"email": email, "password": password})
 
 
@@ -88,9 +88,11 @@ def main() -> None:
             _assert(login_unverified.status_code == 200, "unverified login should return verification flow")
             login_payload = login_unverified.json()
             _assert(login_payload["status"] == "verification_required", "unverified login should not return session")
+            first_resend = client.post("/auth/resend-email-verification", json={"verification_token": login_payload["verification_token"]})
+            _assert(first_resend.status_code == 200, "login recovery should allow an explicit resend")
             code = _last_code(cloud_main)
 
-            too_soon = client.post("/auth/resend-email-verification", json={"verification_token": login_payload["verification_token"]})
+            too_soon = client.post("/auth/resend-email-verification", json={"verification_token": first_resend.json()["verification_token"]})
             _assert(too_soon.status_code == 429, "resend before cooldown should fail")
 
             with _connect(db_path) as conn:
@@ -99,7 +101,7 @@ def main() -> None:
                     ((datetime.now(timezone.utc) - timedelta(seconds=61)).isoformat(timespec="seconds"), user["id"]),
                 )
                 conn.commit()
-            resent = client.post("/auth/resend-email-verification", json={"verification_token": login_payload["verification_token"]})
+            resent = client.post("/auth/resend-email-verification", json={"verification_token": first_resend.json()["verification_token"]})
             _assert(resent.status_code == 200, "resend after cooldown should pass")
             new_code = _last_code(cloud_main)
             _assert(new_code != code, "resend should generate a new code")
@@ -162,7 +164,7 @@ def main() -> None:
             _assert(failed.status_code == 503, "email provider failure should fail safely")
         with _connect(failing_path) as conn:
             row = conn.execute("SELECT id FROM users WHERE email = ?", ("fail@example.com",)).fetchone()
-        _assert(row is None, "failed email delivery should rollback account creation")
+        _assert(row is not None, "failed email delivery should preserve the unverified account")
 
     print("email verification smoke tests OK")
 

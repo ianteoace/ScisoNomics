@@ -233,6 +233,31 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
 def _ensure_refresh_token_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "cloud_refresh_tokens", "device_id", "TEXT")
     _ensure_column(conn, "cloud_refresh_tokens", "device_name", "TEXT")
+    _ensure_column(conn, "cloud_refresh_tokens", "family_id", "TEXT")
+    _ensure_column(conn, "cloud_refresh_tokens", "parent_token_id", "TEXT")
+    _ensure_column(conn, "cloud_refresh_tokens", "compromised_at", "TEXT")
+    conn.execute("UPDATE cloud_refresh_tokens SET family_id = COALESCE(NULLIF(family_id, ''), id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_family ON cloud_refresh_tokens(family_id)")
+
+
+def _ensure_security_audit_schema(conn: CloudConnection) -> None:
+    id_type = "INTEGER PRIMARY KEY AUTOINCREMENT" if conn.engine == "sqlite" else "BIGSERIAL PRIMARY KEY"
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS security_audit_log (
+            id {id_type},
+            event_type TEXT NOT NULL,
+            actor_id TEXT,
+            target_id TEXT,
+            source_ip TEXT,
+            outcome TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_created ON security_audit_log(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_actor ON security_audit_log(actor_id)")
 
 
 def _ensure_billing_columns(conn: CloudConnection) -> None:
@@ -508,6 +533,7 @@ def _init_sqlite() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
+        _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
         _ensure_email_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)
@@ -743,6 +769,7 @@ def _init_postgres() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
         _ensure_refresh_token_columns(conn)
+        _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
         _ensure_email_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)

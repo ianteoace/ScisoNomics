@@ -16,6 +16,7 @@ import {
   getActiveOwnerId,
   getCloudAuthTokens,
   getStoredAccounts,
+  isCloudAuthRequestError,
   isEmailVerificationRequiredResponse,
   isCloudAuthConfigured,
   logoutAccount,
@@ -128,11 +129,15 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     showSuccess(successMessage);
   }
 
-  function enterVerification(response: EmailVerificationRequiredResponse, source: Mode) {
+  function enterVerification(
+    response: EmailVerificationRequiredResponse,
+    source: Mode,
+    delivered = response.resend_available_in > 0,
+  ) {
     setVerification({ ...response, source });
     setVerificationCode("");
     setResendAvailableIn(response.resend_available_in || 0);
-    showSuccess("Te enviamos un código de verificación por correo.");
+    if (delivered) showSuccess("Te enviamos un código de verificación por correo.");
   }
 
   function refreshAuthState() {
@@ -313,6 +318,11 @@ async function handleClearLocalSession() {
       showSuccess("Sesión iniciada.");
     } catch (error) {
       console.error("Error iniciando sesión:", error);
+      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
+        enterVerification(error.verification, "login", false);
+        showError("La cuenta sigue sin verificar y el correo no pudo enviarse. Podés reintentar el envío.");
+        return;
+      }
       showError(error instanceof Error ? error.message : "No se pudo iniciar sesión.");
     } finally {
       setSubmitting(false);
@@ -322,6 +332,10 @@ async function handleClearLocalSession() {
   async function handleRegister(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!configured || submitting) return;
+    if (registerPassword.length < 12) {
+      showError("La contraseña debe tener al menos 12 caracteres.");
+      return;
+    }
     if (registerPassword !== repeatPassword) {
       showError("Las contraseñas no coinciden.");
       return;
@@ -354,6 +368,16 @@ async function handleClearLocalSession() {
       showSuccess("Cuenta creada.");
     } catch (error) {
       console.error("Error creando cuenta:", error);
+      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
+        enterVerification(error.verification, "register", false);
+        showError("La cuenta quedó creada, pero el correo no pudo enviarse. Podés reintentar el envío.");
+        return;
+      }
+      if (isCloudAuthRequestError(error) && error.kind === "timeout") {
+        setMode("login");
+        showError("La solicitud tardó demasiado. La cuenta puede haberse creado; probá iniciar sesión para recuperar la verificación.");
+        return;
+      }
       showError(error instanceof Error ? error.message : "No se pudo crear la cuenta.");
     } finally {
       setSubmitting(false);
@@ -391,6 +415,10 @@ async function handleClearLocalSession() {
       showSuccess("Te enviamos un nuevo código.");
     } catch (error) {
       console.error("Error reenviando código:", error);
+      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
+        setVerification({ ...error.verification, source: verification.source });
+        setResendAvailableIn(0);
+      }
       showError(error instanceof Error ? error.message : "No se pudo reenviar el código.");
     } finally {
       setSubmitting(false);
@@ -1097,11 +1125,12 @@ async function handleClearLocalSession() {
                   </label>
                   <label className="block text-sm">
                     Contraseña
-                    <PasswordInput className={inputClass} value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
+                    <PasswordInput className={inputClass} value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={!configured} />
+                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Mínimo 12 caracteres.</span>
                   </label>
                   <label className="block text-sm">
                     Repetir contraseña
-                    <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={8} required disabled={!configured} />
+                    <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={!configured} />
                   </label>
                   <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
                     {submitting ? "Creando..." : "Crear cuenta"}

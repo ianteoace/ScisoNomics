@@ -116,19 +116,36 @@ export const ACCOUNT_SESSION_CHANGED_EVENT = "scisonomics:account-session-change
 export const OWNER_CHANGED_EVENT = "scisonomics:owner-changed";
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const CLOUD_AUTH_TIMEOUT_MS = 10000;
+const CLOUD_EMAIL_FLOW_TIMEOUT_MS = 30000;
 
 type CloudAuthErrorKind = "auth" | "network" | "timeout" | "server" | "unknown";
 
-class CloudAuthRequestError extends Error {
+export class CloudAuthRequestError extends Error {
   statusCode: number | null;
   kind: CloudAuthErrorKind;
+  code: string | null;
+  verification: EmailVerificationRequiredResponse | null;
 
-  constructor(message: string, options: { statusCode?: number | null; kind?: CloudAuthErrorKind } = {}) {
+  constructor(
+    message: string,
+    options: {
+      statusCode?: number | null;
+      kind?: CloudAuthErrorKind;
+      code?: string | null;
+      verification?: EmailVerificationRequiredResponse | null;
+    } = {},
+  ) {
     super(message);
     this.name = "CloudAuthRequestError";
     this.statusCode = options.statusCode ?? null;
     this.kind = options.kind || "unknown";
+    this.code = options.code ?? null;
+    this.verification = options.verification ?? null;
   }
+}
+
+export function isCloudAuthRequestError(error: unknown): error is CloudAuthRequestError {
+  return error instanceof CloudAuthRequestError;
 }
 
 export function isEmailVerificationRequiredResponse(response: CloudAuthRegisterOrLoginResponse): response is EmailVerificationRequiredResponse {
@@ -1825,11 +1842,11 @@ export function subscribeAuthChanges(listener: () => void) {
   return () => window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, listener);
 }
 
-async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
   if (!isCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado en este entorno.", { kind: "unknown" });
   let response: Response;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CLOUD_AUTH_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     response = await fetch(`${CLOUD_API_URL}${path}`, {
       ...options,
@@ -1839,7 +1856,7 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
     });
   } catch (error) {
     console.error("Cloud auth request failed", { path, errorType: error instanceof Error ? error.name : typeof error });
-    const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    const isTimeout = error instanceof Error && error.name === "AbortError";
     throw new CloudAuthRequestError(
       isTimeout
         ? "No pudimos verificar la cuenta por un problema de conexión. La cuenta no fue eliminada."
@@ -1852,6 +1869,14 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const detail = body?.detail;
+    const detailCode = typeof detail?.code === "string" ? detail.code : null;
+    const verification = detail?.verification;
+    const recovery =
+      verification?.status === "verification_required" &&
+      typeof verification?.verification_token === "string" &&
+      typeof verification?.email === "string"
+        ? (verification as EmailVerificationRequiredResponse)
+        : null;
     const detailMessage =
       typeof detail === "string"
         ? detail
@@ -1865,11 +1890,18 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
       });
     }
     if (response.status === 401 || response.status === 403) {
-      throw new CloudAuthRequestError(detailMessage, { statusCode: response.status, kind: "auth" });
+      throw new CloudAuthRequestError(detailMessage, {
+        statusCode: response.status,
+        kind: "auth",
+        code: detailCode,
+        verification: recovery,
+      });
     }
     throw new CloudAuthRequestError(detailMessage, {
       statusCode: response.status,
       kind: response.status >= 500 ? "server" : "unknown",
+      code: detailCode,
+      verification: recovery,
     });
   }
   if (path === "/auth/refresh") {
@@ -1883,7 +1915,11 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}): Promise
 
 export const cloudAuth = {
   register: async (input: { email: string; password: string; display_name?: string | null }) => {
-    const response = await cloudRequest<CloudAuthRegisterOrLoginResponse>("/auth/register", { method: "POST", body: JSON.stringify(input) });
+    const response = await cloudRequest<CloudAuthRegisterOrLoginResponse>(
+      "/auth/register",
+      { method: "POST", body: JSON.stringify(input) },
+      CLOUD_EMAIL_FLOW_TIMEOUT_MS,
+    );
     if (isEmailVerificationRequiredResponse(response)) {
       logAuthLifecycle("register verification required", {
         email: response.email,
@@ -1919,7 +1955,11 @@ export const cloudAuth = {
   verifyEmail: (input: { verification_token: string; code: string }) =>
     cloudRequest<CloudAuthResponse>("/auth/verify-email", { method: "POST", body: JSON.stringify(input) }),
   resendEmailVerification: (input: { verification_token: string }) =>
-    cloudRequest<EmailVerificationRequiredResponse>("/auth/resend-email-verification", { method: "POST", body: JSON.stringify(input) }),
+    cloudRequest<EmailVerificationRequiredResponse>(
+      "/auth/resend-email-verification",
+      { method: "POST", body: JSON.stringify(input) },
+      CLOUD_EMAIL_FLOW_TIMEOUT_MS,
+    ),
   refresh: (refreshToken: string) =>
     cloudRequest<CloudAuthResponse>("/auth/refresh", { method: "POST", body: JSON.stringify({ refresh_token: refreshToken }) }),
   me: (token: string) =>

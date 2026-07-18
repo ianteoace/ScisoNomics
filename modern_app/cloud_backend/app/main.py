@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 import hashlib
@@ -10,7 +11,9 @@ import math
 import os
 import re
 import secrets
+import socket
 import smtplib
+import time
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
@@ -18,7 +21,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from .auth import (
     create_entitlement_token,
@@ -32,6 +35,7 @@ from .auth import (
     get_refresh_token_expiration_days,
     hash_password,
     hash_refresh_token,
+    password_needs_rehash,
     validate_entitlements_signing_config,
     verify_password,
 )
@@ -50,6 +54,7 @@ from .schemas import (
     UserOut,
     VerifyEmailRequest,
 )
+from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, reset_rate_limit, sync_max_records
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -87,8 +92,30 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_credentials=_allowed_origins != ["*"],
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Scisonomics-Owner-Id"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Scisonomics-Owner-Id",
+        "X-Scisonomics-Device-Id",
+        "X-Scisonomics-Device-Name",
+    ],
 )
+
+
+@app.middleware("http")
+async def security_limits_middleware(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH"}:
+        content_length = request.headers.get("content-length", "").strip()
+        if not content_length:
+            return JSONResponse(status_code=411, content={"detail": "Content-Length requerido."})
+        try:
+            if int(content_length) < 0:
+                raise ValueError
+            if int(content_length) > request_body_limit_bytes():
+                return JSONResponse(status_code=413, content={"detail": "Solicitud demasiado grande."})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Content-Length invalido."})
+    return await call_next(request)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -144,6 +171,33 @@ def _refresh_cloud_db_state(*, run_init: bool) -> dict[str, Any]:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _security_audit(
+    conn,
+    event_type: str,
+    *,
+    outcome: str,
+    actor_id: str | None = None,
+    target_id: str | None = None,
+    source_ip: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO security_audit_log (event_type, actor_id, target_id, source_ip, outcome, details, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_type[:80],
+            actor_id,
+            target_id,
+            source_ip,
+            outcome[:32],
+            json.dumps(details or {}, separators=(",", ":"), sort_keys=True)[:2000],
+            now_iso(),
+        ),
+    )
 
 
 def normalize_email(email: str) -> str:
@@ -216,6 +270,24 @@ def _email_provider() -> str:
     return "console" if os.getenv("SCISONOMICS_ENV", "development").strip().lower() != "production" else ""
 
 
+class EmailDeliveryError(RuntimeError):
+    def __init__(self, kind: str):
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _smtp_timeout(name: str, default: int) -> int:
+    return _env_int(name, default, 1)
+
+
+def _set_smtp_operation_timeout(smtp: smtplib.SMTP, *, deadline: float, operation_timeout: int) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise EmailDeliveryError("timeout")
+    if smtp.sock is not None:
+        smtp.sock.settimeout(min(float(operation_timeout), remaining))
+
+
 def send_verification_email(email: str, code: str) -> None:
     provider = _email_provider()
     sender = os.getenv("SCISONOMICS_EMAIL_FROM", "").strip()
@@ -230,8 +302,6 @@ def send_verification_email(email: str, code: str) -> None:
     if provider in {"console", "memory", "fake"}:
         if os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production":
             raise RuntimeError("Proveedor de email dev-only deshabilitado en produccion.")
-        if os.getenv("SCISONOMICS_EMAIL_DEV_LOG_CODES", "").strip().lower() in {"1", "true", "yes", "on"}:
-            _logger.info("[email-verification] dev code email=%s code=%s", mask_email(email), code)
         _DEV_EMAIL_OUTBOX.append({"email": email, "code": code, "body": body})
         return
 
@@ -242,21 +312,41 @@ def send_verification_email(email: str, code: str) -> None:
         password = os.getenv("SCISONOMICS_SMTP_PASSWORD", "")
         use_tls = os.getenv("SCISONOMICS_SMTP_USE_TLS", "true").strip().lower() not in {"0", "false", "no", "off"}
         if not host or not sender:
-            raise RuntimeError("SMTP no esta configurado.")
+            raise EmailDeliveryError("configuration")
+        connect_timeout = _smtp_timeout("SCISONOMICS_SMTP_CONNECT_TIMEOUT_SECONDS", 8)
+        operation_timeout = _smtp_timeout("SCISONOMICS_SMTP_OPERATION_TIMEOUT_SECONDS", 10)
+        total_timeout = _smtp_timeout("SCISONOMICS_SMTP_TOTAL_TIMEOUT_SECONDS", 20)
+        deadline = time.monotonic() + total_timeout
         message = EmailMessage()
         message["Subject"] = "Tu codigo de verificacion de ScisoNomics"
         message["From"] = sender
         message["To"] = email
         message.set_content(body)
-        with smtplib.SMTP(host, port, timeout=15) as smtp:
-            if use_tls:
-                smtp.starttls()
-            if username or password:
-                smtp.login(username, password)
-            smtp.send_message(message)
+        try:
+            with smtplib.SMTP(host, port, timeout=min(connect_timeout, total_timeout)) as smtp:
+                if use_tls:
+                    _set_smtp_operation_timeout(smtp, deadline=deadline, operation_timeout=operation_timeout)
+                    smtp.starttls()
+                if username or password:
+                    _set_smtp_operation_timeout(smtp, deadline=deadline, operation_timeout=operation_timeout)
+                    smtp.login(username, password)
+                _set_smtp_operation_timeout(smtp, deadline=deadline, operation_timeout=operation_timeout)
+                smtp.send_message(message)
+        except EmailDeliveryError:
+            raise
+        except smtplib.SMTPAuthenticationError as exc:
+            raise EmailDeliveryError("authentication") from exc
+        except (socket.timeout, TimeoutError) as exc:
+            raise EmailDeliveryError("timeout") from exc
+        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError) as exc:
+            raise EmailDeliveryError("rejected") from exc
+        except (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, ConnectionError, OSError) as exc:
+            raise EmailDeliveryError("connection") from exc
+        except smtplib.SMTPException as exc:
+            raise EmailDeliveryError("protocol") from exc
         return
 
-    raise RuntimeError("Proveedor de email no configurado.")
+    raise EmailDeliveryError("configuration")
 
 
 _DEV_EMAIL_OUTBOX: list[dict[str, str]] = []
@@ -279,23 +369,82 @@ def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> 
             (user_id, purpose, code_hash, expires_at, attempts, max_attempts, consumed_at, created_at, last_sent_at, invalidated_at)
         VALUES (?, 'signup', ?, ?, 0, 5, NULL, ?, ?, NULL)
         """,
-        (user_id, _hash_verification_code(user_id, "signup", code), expires_at, now, now),
+        (user_id, _hash_verification_code(user_id, "signup", code), expires_at, now, "1970-01-01T00:00:00+00:00"),
     )
+    # La cuenta y el codigo deben sobrevivir aunque SMTP falle o el cliente se desconecte.
+    conn.commit()
+    response = _verification_required_response(
+        user_id=user_id,
+        email=email,
+        expires_at=expires_at,
+        resend_available_in=0,
+    )
+    send_started = time.monotonic()
+    _logger.info("[email-verification] email send start user=%s", short_identifier(user_id))
     try:
         send_verification_email(email, code)
+    except EmailDeliveryError as exc:
+        _logger.warning(
+            "[email-verification] email send failure user=%s kind=%s duration_ms=%d",
+            short_identifier(user_id),
+            exc.kind,
+            int((time.monotonic() - send_started) * 1000),
+        )
+        raise _email_verification_error(
+            503,
+            "email_delivery_failed",
+            "La cuenta quedo creada, pero no pudimos enviar el codigo de verificacion.",
+            verification=response.model_dump(),
+        ) from exc
     except Exception as exc:
-        _logger.warning("[email-verification] delivery failed email=%s error_type=%s", mask_email(email), type(exc).__name__)
-        raise _email_verification_error(503, "email_delivery_failed", "No pudimos enviar el codigo de verificacion.") from exc
+        _logger.warning(
+            "[email-verification] email send failure user=%s kind=unexpected duration_ms=%d",
+            short_identifier(user_id),
+            int((time.monotonic() - send_started) * 1000),
+        )
+        raise _email_verification_error(
+            503,
+            "email_delivery_failed",
+            "La cuenta quedo creada, pero no pudimos enviar el codigo de verificacion.",
+            verification=response.model_dump(),
+        ) from exc
+    sent_at = now_iso()
+    conn.execute(
+        "UPDATE email_verification_codes SET last_sent_at = ? WHERE user_id = ? AND purpose = 'signup' AND invalidated_at IS NULL",
+        (sent_at, user_id),
+    )
+    conn.commit()
+    _logger.info(
+        "[email-verification] email send success user=%s duration_ms=%d",
+        short_identifier(user_id),
+        int((time.monotonic() - send_started) * 1000),
+    )
     return _verification_required_response(user_id=user_id, email=email, expires_at=expires_at)
 
 
-def _verification_required_response(*, user_id: str, email: str, expires_at: str | None = None) -> EmailVerificationRequiredOut:
+def _verification_required_response(
+    *,
+    user_id: str,
+    email: str,
+    expires_at: str | None = None,
+    resend_available_in: int | None = None,
+) -> EmailVerificationRequiredOut:
     return EmailVerificationRequiredOut(
         email=mask_email(email),
         verification_token=create_email_verification_token(user_id, purpose="signup"),
         verification_expires_in=_seconds_until(expires_at, default=email_verification_ttl_seconds()),
-        resend_available_in=email_verification_resend_seconds(),
+        resend_available_in=email_verification_resend_seconds() if resend_available_in is None else max(0, resend_available_in),
     )
+
+
+def _resend_wait_seconds(code_row) -> int:
+    if code_row is None:
+        return 0
+    last_sent = parse_sync_datetime(code_row["last_sent_at"])
+    if last_sent is None:
+        return 0
+    elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
+    return max(0, email_verification_resend_seconds() - int(elapsed))
 
 
 def _active_signup_code(conn, user_id: str):
@@ -323,6 +472,26 @@ def _resend_limit_reached(conn, user_id: str) -> bool:
     ).fetchone()
     # La primera generacion no es un reenvio; se permiten N reenvios adicionales.
     return int(row["total"] or 0) >= (email_verification_max_resends_per_hour() + 1)
+
+
+def _continue_unverified_verification(conn, user_row, *, now: str) -> EmailVerificationRequiredOut:
+    code_row = _active_signup_code(conn, user_row["id"])
+    if code_row is not None and _seconds_until(code_row["expires_at"]) > 0:
+        wait = _resend_wait_seconds(code_row)
+        if wait > 0:
+            return _verification_required_response(
+                user_id=user_row["id"],
+                email=user_row["email"],
+                expires_at=code_row["expires_at"],
+                resend_available_in=wait,
+            )
+    if _resend_limit_reached(conn, user_row["id"]):
+        raise _email_verification_error(
+            429,
+            "verification_resend_limit_exceeded",
+            "Pediste demasiados codigos. Intenta mas tarde.",
+        )
+    return _create_signup_verification(conn, user_id=user_row["id"], email=user_row["email"], now=now)
 
 
 def _verification_user_from_token(conn, verification_token: str):
@@ -362,7 +531,16 @@ def _issue_auth_response(
     refresh_token_id = str(uuid4())
     refresh_token_hash = hash_refresh_token(refresh_token)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=get_refresh_token_expiration_days())).isoformat(timespec="seconds")
+    parent_token_id = None
+    family_id = refresh_token_id
     if rotate_from_hash:
+        previous = conn.execute(
+            "SELECT id, family_id FROM cloud_refresh_tokens WHERE token_hash = ? LIMIT 1",
+            (rotate_from_hash,),
+        ).fetchone()
+        if previous:
+            parent_token_id = previous["id"]
+            family_id = str(previous["family_id"] or previous["id"])
         conn.execute(
             """
             UPDATE cloud_refresh_tokens
@@ -373,10 +551,13 @@ def _issue_auth_response(
         )
     conn.execute(
         """
-        INSERT INTO cloud_refresh_tokens (id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at, device_id, device_name)
-        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+        INSERT INTO cloud_refresh_tokens (
+            id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at,
+            device_id, device_name, family_id, parent_token_id, compromised_at
+        )
+        VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
         """,
-        (refresh_token_id, user.id, refresh_token_hash, now, expires_at, now, device_id, device_name),
+        (refresh_token_id, user.id, refresh_token_hash, now, expires_at, now, device_id, device_name, family_id, parent_token_id),
     )
     access_token = create_access_token(user.id)
     return AuthResponse(
@@ -399,7 +580,8 @@ def _lookup_refresh_token(conn, refresh_token: str):
     token_hash = hash_refresh_token(refresh_token)
     row = conn.execute(
         """
-        SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at, device_id, device_name
+        SELECT id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at,
+               device_id, device_name, family_id, parent_token_id, compromised_at
         FROM cloud_refresh_tokens
         WHERE token_hash = ?
         LIMIT 1
@@ -424,9 +606,39 @@ def validate_credentials(email: str, password: str) -> str:
     normalized_email = normalize_email(email)
     if not EMAIL_RE.match(normalized_email):
         raise HTTPException(status_code=422, detail="Ingresa un email valido.")
-    if len(password) < 8:
-        raise HTTPException(status_code=422, detail="La contrasena debe tener al menos 8 caracteres.")
+    if len(password) < 12 or len(password) > 256:
+        raise HTTPException(status_code=422, detail="La contrasena debe tener entre 12 y 256 caracteres.")
+    compact = re.sub(r"[^a-z0-9]", "", password.lower())
+    weak_passwords = {"password", "password123", "contrasena", "contrasena123", "scisonomics", "123456789012", "qwertyuiop12"}
+    if compact in weak_passwords or compact == normalized_email.split("@", 1)[0]:
+        raise HTTPException(status_code=422, detail="Elegi una contrasena menos predecible.")
     return normalized_email
+
+
+def _reject_breached_password(password: str) -> None:
+    env = os.getenv("SCISONOMICS_CHECK_BREACHED_PASSWORDS", "").strip().lower()
+    enabled = env in {"1", "true", "yes", "on"} or (
+        not env and os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production"
+    )
+    if not enabled:
+        return
+    digest = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
+    prefix, suffix = digest[:5], digest[5:]
+    request = UrlRequest(
+        f"https://api.pwnedpasswords.com/range/{prefix}",
+        headers={"User-Agent": "ScisoNomics-Security", "Add-Padding": "true"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=4) as response:
+            result = response.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        _logger.warning("No se pudo consultar passwords filtradas. error_type=%s", type(exc).__name__)
+        return
+    for line in result.splitlines():
+        candidate = line.split(":", 1)[0].strip().upper()
+        if candidate and hmac.compare_digest(candidate, suffix):
+            raise HTTPException(status_code=422, detail="Esa contrasena aparece en filtraciones conocidas. Elegi otra.")
 
 
 def _require_debug_endpoints_enabled() -> None:
@@ -439,15 +651,60 @@ def _admin_billing_enabled() -> bool:
     return os.getenv("SCISONOMICS_ENABLE_ADMIN_BILLING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _require_admin_billing_access(admin_token: str | None) -> None:
+def _load_json_secret_map(name: str) -> dict[str, str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=503, detail=f"Configuracion administrativa invalida: {name}.") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=503, detail=f"Configuracion administrativa invalida: {name}.")
+    return {str(key).strip(): str(value).strip() for key, value in parsed.items() if str(key).strip() and str(value).strip()}
+
+
+def _valid_totp(secret: str, provided: str | None) -> bool:
+    code = str(provided or "").strip()
+    normalized = secret.strip().replace(" ", "").upper()
+    if not re.fullmatch(r"\d{6}", code) or not normalized:
+        return False
+    try:
+        key = base64.b32decode(normalized + "=" * (-len(normalized) % 8))
+    except Exception:
+        return False
+    counter = int(time.time()) // 30
+    for drift in (-1, 0, 1):
+        digest = hmac.new(key, (counter + drift).to_bytes(8, "big"), hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        value = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF) % 1_000_000
+        if secrets.compare_digest(f"{value:06d}", code):
+            return True
+    return False
+
+
+def _require_admin_billing_access(admin_id: str | None, admin_token: str | None, admin_totp: str | None) -> str:
     if not _admin_billing_enabled():
         raise HTTPException(status_code=404, detail="Not Found")
-    expected = os.getenv("SCISONOMICS_ADMIN_TOKEN", "").strip()
+    identity = str(admin_id or "").strip()
+    token_map = _load_json_secret_map("SCISONOMICS_ADMIN_TOKENS_JSON")
+    totp_map = _load_json_secret_map("SCISONOMICS_ADMIN_TOTP_SECRETS_JSON")
+    expected = token_map.get(identity, "") if identity else ""
+    if not token_map and os.getenv("SCISONOMICS_ENV", "development").strip().lower() != "production":
+        identity = identity or "legacy-admin"
+        expected = os.getenv("SCISONOMICS_ADMIN_TOKEN", "").strip()
     provided = str(admin_token or "").strip()
-    if not expected:
+    if not identity or not expected:
         raise HTTPException(status_code=503, detail="Admin billing token no configurado.")
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=403, detail="Acceso administrativo inválido.")
+    totp_secret = totp_map.get(identity, "")
+    production = os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production"
+    if production and not totp_secret:
+        raise HTTPException(status_code=503, detail="MFA administrativo no configurado.")
+    if totp_secret and not _valid_totp(totp_secret, admin_totp):
+        raise HTTPException(status_code=403, detail="Segundo factor administrativo invalido.")
+    return identity
 
 
 def row_to_user(row) -> UserOut:
@@ -1027,6 +1284,41 @@ def _payload_counts(payload: dict[str, Any]) -> dict[str, int]:
     return {table: len(payload.get(table, []) or []) for table in SYNC_TABLES}
 
 
+def _validate_sync_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Payload de sincronizacion invalido.")
+    allowed_keys = set(SYNC_TABLES) | {"device_id", "device_name"}
+    unknown = set(payload) - allowed_keys
+    if unknown:
+        raise HTTPException(status_code=422, detail="El payload de sincronizacion contiene campos no permitidos.")
+    device_id = str(payload.get("device_id") or "")
+    device_name = str(payload.get("device_name") or "")
+    if len(device_id) > 160 or len(device_name) > 120:
+        raise HTTPException(status_code=422, detail="Identificacion de dispositivo invalida.")
+    total = 0
+    maximum = sync_max_records()
+    for table in SYNC_TABLES:
+        items = payload.get(table, [])
+        if items is None:
+            items = []
+            payload[table] = items
+        if not isinstance(items, list):
+            raise HTTPException(status_code=422, detail=f"La tabla {table} debe ser una lista.")
+        total += len(items)
+        if len(items) > maximum or total > maximum:
+            raise HTTPException(status_code=413, detail=f"La sincronizacion supera el limite de {maximum} registros.")
+        for item in items:
+            if not isinstance(item, dict) or len(item) > 32:
+                raise HTTPException(status_code=422, detail=f"Registro invalido en {table}.")
+            sync_id = str(item.get("sync_id") or "")
+            if len(sync_id) > 160:
+                raise HTTPException(status_code=422, detail=f"Identificador invalido en {table}.")
+            for value in item.values():
+                if isinstance(value, str) and len(value) > 10_000:
+                    raise HTTPException(status_code=422, detail=f"Texto demasiado largo en {table}.")
+    return payload
+
+
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -1036,6 +1328,8 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Sesion no valida.")
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -1094,13 +1388,38 @@ def ready():
 
 @app.post("/auth/register", response_model=AuthResponse | EmailVerificationRequiredOut)
 def register(payload: RegisterRequest, request: Request):
+    started = time.monotonic()
+    outcome = "failed"
+    enforce_rate_limit(request, "auth-register", identity=normalize_email(payload.email), limit=5, window_seconds=3600)
     email = validate_credentials(payload.email, payload.password)
-    user_id = str(uuid4())
-    timestamp = now_iso()
-    display_name = payload.display_name.strip() if payload.display_name else None
-
+    _reject_breached_password(payload.password)
+    _logger.info("[auth-register] register start email=%s", mask_email(email))
     try:
         with connect() as conn:
+            existing = conn.execute(
+                "SELECT id, email, password_hash, email_verified FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1",
+                (email,),
+            ).fetchone()
+            if existing is not None:
+                valid_unverified = (
+                    not _email_is_verified(existing)
+                    and bool(existing["password_hash"])
+                    and verify_password(payload.password, existing["password_hash"])
+                )
+                if not valid_unverified:
+                    raise HTTPException(status_code=401, detail="No se pudo continuar con el registro.")
+                if password_needs_rehash(existing["password_hash"]):
+                    conn.execute(
+                        "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                        (hash_password(payload.password), now_iso(), existing["id"]),
+                    )
+                _logger.info("[auth-register] user existing unverified user=%s", short_identifier(existing["id"]))
+                outcome = "existing_unverified"
+                return _continue_unverified_verification(conn, existing, now=now_iso())
+
+            user_id = str(uuid4())
+            timestamp = now_iso()
+            display_name = payload.display_name.strip() if payload.display_name else None
             conn.execute(
                 """
                 INSERT INTO users (id, email, password_hash, display_name, email_verified, email_verified_at, created_at, updated_at)
@@ -1108,21 +1427,26 @@ def register(payload: RegisterRequest, request: Request):
                 """,
                 (user_id, email, hash_password(payload.password), display_name, timestamp, timestamp),
             )
-            row = conn.execute(
-                "SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?",
-                (user_id,),
-            ).fetchone()
+            _logger.info("[auth-register] user created user=%s", short_identifier(user_id))
+            outcome = "created_unverified"
             return _create_signup_verification(conn, user_id=user_id, email=email, now=timestamp)
     except Exception as exc:
         message = str(exc).lower()
         if "unique" in message or "duplicate key" in message:
-            raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese email.") from exc
+            raise HTTPException(status_code=401, detail="No se pudo continuar con el registro.") from exc
         raise
+    finally:
+        _logger.info(
+            "[auth-register] total duration outcome=%s duration_ms=%d",
+            outcome,
+            int((time.monotonic() - started) * 1000),
+        )
 
 
 @app.post("/auth/login", response_model=AuthResponse | EmailVerificationRequiredOut)
 def login(payload: LoginRequest, request: Request):
     email = normalize_email(payload.email)
+    enforce_rate_limit(request, "auth-login", identity=email, limit=8, window_seconds=300)
     with connect() as conn:
         row = conn.execute(
             "SELECT id, email, password_hash, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
@@ -1130,24 +1454,42 @@ def login(payload: LoginRequest, request: Request):
         ).fetchone()
 
     if row is None or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
+        with connect() as conn:
+            _security_audit(conn, "auth.login", outcome="denied", source_ip=client_ip(request), details={"email": mask_email(email)})
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
 
+    if password_needs_rehash(row["password_hash"]):
+        with connect() as conn:
+            conn.execute("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", (hash_password(payload.password), now_iso(), row["id"]))
+
     if not _email_is_verified(row):
-        now = now_iso()
         with connect() as conn:
             code_row = _active_signup_code(conn, row["id"])
-            if code_row is None or _seconds_until(code_row["expires_at"]) <= 0:
-                return _create_signup_verification(conn, user_id=row["id"], email=row["email"], now=now)
-            return _verification_required_response(user_id=row["id"], email=row["email"], expires_at=code_row["expires_at"])
+            if code_row is not None and _seconds_until(code_row["expires_at"]) > 0:
+                return _verification_required_response(
+                    user_id=row["id"],
+                    email=row["email"],
+                    expires_at=code_row["expires_at"],
+                    resend_available_in=_resend_wait_seconds(code_row),
+                )
+            return _verification_required_response(
+                user_id=row["id"],
+                email=row["email"],
+                resend_available_in=0,
+            )
 
     user = row_to_user(row)
     device_id, device_name = _extract_device_context(request)
     with connect() as conn:
-        return _issue_auth_response(conn, user, now=now_iso(), device_id=device_id, device_name=device_name)
+        response = _issue_auth_response(conn, user, now=now_iso(), device_id=device_id, device_name=device_name)
+        _security_audit(conn, "auth.login", outcome="success", actor_id=user.id, source_ip=client_ip(request))
+    reset_rate_limit("auth-login", request, identity=email)
+    return response
 
 
 @app.post("/auth/verify-email", response_model=AuthResponse)
 def verify_email(payload: VerifyEmailRequest, request: Request):
+    enforce_rate_limit(request, "auth-verify-email", identity=payload.verification_token[-24:], limit=8, window_seconds=600)
     raw_code = str(payload.code or "").strip()
     code = re.sub(r"\D", "", raw_code)
     if not VERIFICATION_CODE_RE.match(code):
@@ -1196,7 +1538,8 @@ def verify_email(payload: VerifyEmailRequest, request: Request):
 
 
 @app.post("/auth/resend-email-verification", response_model=EmailVerificationRequiredOut)
-def resend_email_verification(payload: ResendEmailVerificationRequest):
+def resend_email_verification(payload: ResendEmailVerificationRequest, request: Request):
+    enforce_rate_limit(request, "auth-resend-email", identity=payload.verification_token[-24:], limit=5, window_seconds=3600)
     now = now_iso()
     with connect() as conn:
         user_row = _verification_user_from_token(conn, payload.verification_token)
@@ -1204,12 +1547,9 @@ def resend_email_verification(payload: ResendEmailVerificationRequest):
             raise _email_verification_error(409, "email_already_verified", "El email ya fue verificado.")
         code_row = _active_signup_code(conn, user_row["id"])
         if code_row is not None:
-            last_sent = parse_sync_datetime(code_row["last_sent_at"])
-            if last_sent is not None:
-                elapsed = (datetime.now(timezone.utc) - last_sent).total_seconds()
-                wait = email_verification_resend_seconds() - int(elapsed)
-                if wait > 0:
-                    raise _email_verification_error(429, "verification_resend_too_soon", "Espera antes de pedir otro codigo.", retry_after=wait)
+            wait = _resend_wait_seconds(code_row)
+            if wait > 0:
+                raise _email_verification_error(429, "verification_resend_too_soon", "Espera antes de pedir otro codigo.", retry_after=wait)
         if _resend_limit_reached(conn, user_row["id"]):
             raise _email_verification_error(429, "verification_resend_limit_exceeded", "Pediste demasiados codigos. Intenta mas tarde.")
         return _create_signup_verification(conn, user_id=user_row["id"], email=user_row["email"], now=now)
@@ -1235,9 +1575,13 @@ def billing_entitlements(user: UserOut = Depends(get_current_user)):
 @app.post("/admin/billing/entitlements/by-email", response_model=BillingEntitlementsOut)
 def admin_set_billing_entitlements_by_email(
     payload: AdminBillingEntitlementsUpdateIn,
+    request: Request,
+    x_scisonomics_admin_id: str | None = Header(default=None),
     x_scisonomics_admin_token: str | None = Header(default=None),
+    x_scisonomics_admin_totp: str | None = Header(default=None),
 ):
-    _require_admin_billing_access(x_scisonomics_admin_token)
+    enforce_rate_limit(request, "admin-billing", limit=10, window_seconds=300)
+    admin_id = _require_admin_billing_access(x_scisonomics_admin_id, x_scisonomics_admin_token, x_scisonomics_admin_totp)
     now = now_iso()
     with connect() as conn:
         updated = _admin_update_user_entitlements(
@@ -1247,6 +1591,15 @@ def admin_set_billing_entitlements_by_email(
             subscription_status=payload.subscription_status,
             subscription_expires_at=payload.subscription_expires_at,
             now=now,
+        )
+        _security_audit(
+            conn,
+            "admin.billing_update",
+            outcome="success",
+            actor_id=admin_id,
+            target_id=updated["id"],
+            source_ip=client_ip(request),
+            details={"plan": _normalize_plan(payload.plan), "status": _normalize_subscription_status(payload.subscription_status)},
         )
     _logger.info(
         "[admin-billing] updated email=%s plan=%s status=%s",
@@ -1262,10 +1615,31 @@ def refresh_session(payload: RefreshRequest, request: Request):
     refresh_token = str(payload.refresh_token or "").strip()
     if not refresh_token:
         raise HTTPException(status_code=422, detail="Refresh token requerido.")
+    enforce_rate_limit(request, "auth-refresh", identity=hash_refresh_token(refresh_token)[:24], limit=20, window_seconds=300)
     now = now_iso()
     device_id, device_name = _extract_device_context(request)
     with connect() as conn:
         row, token_hash = _lookup_refresh_token(conn, refresh_token)
+        if row is not None and row["revoked_at"]:
+            family_id = str(row["family_id"] or row["id"])
+            conn.execute(
+                """
+                UPDATE cloud_refresh_tokens
+                SET revoked_at = COALESCE(revoked_at, ?), compromised_at = COALESCE(compromised_at, ?)
+                WHERE family_id = ?
+                """,
+                (now, now, family_id),
+            )
+            _security_audit(
+                conn,
+                "auth.refresh_reuse",
+                outcome="family_revoked",
+                actor_id=row["user_id"],
+                source_ip=client_ip(request),
+                details={"family_id": family_id[:12]},
+            )
+            conn.commit()
+            raise HTTPException(status_code=401, detail="La sesion fue revocada por seguridad. Inicia sesion nuevamente.")
         row = _validate_refresh_token_row(row, now=now)
         user_row = conn.execute(
             "SELECT id, email, display_name, created_at, updated_at, email_verified FROM users WHERE id = ?",
@@ -1315,7 +1689,9 @@ def sync_health(user: UserOut = Depends(get_current_user)):
 
 
 @app.post("/sync/push")
-async def sync_push(payload: dict[str, Any], user: UserOut = Depends(get_current_user)):
+async def sync_push(payload: dict[str, Any], request: Request, user: UserOut = Depends(get_current_user)):
+    enforce_rate_limit(request, "sync-push", identity=user.id, limit=30, window_seconds=60)
+    payload = _validate_sync_payload(payload)
     received = _payload_counts(payload)
     try:
         init_db()
@@ -1429,7 +1805,8 @@ def sync_devices(user: UserOut = Depends(get_current_user)):
 
 
 @app.post("/auth/google/start")
-def google_start():
+def google_start(request: Request):
+    enforce_rate_limit(request, "auth-google-start", limit=10, window_seconds=600)
     client_id, _, redirect_uri = _google_config()
     init_db()
     login_request_id = secrets.token_urlsafe(32)
