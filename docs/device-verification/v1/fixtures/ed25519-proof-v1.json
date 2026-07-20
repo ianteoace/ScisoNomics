@@ -1,0 +1,104 @@
+{
+  "schema": "scisonomics.device-proof.fixture",
+  "schema_version": 1,
+  "status": "test-only-public-material",
+  "warning": "All private keys and seeds in this fixture are deterministic public test vectors, never real key material. Never use them in production.",
+  "algorithm": "Ed25519",
+  "hash": "SHA-256",
+  "message_length": 237,
+  "encoding": {
+    "integers": "unsigned-big-endian",
+    "timestamps": "integer UTC seconds since Unix epoch",
+    "uuid_binary": "16 bytes in network order",
+    "binary_in_this_fixture": "lowercase-hex",
+    "binary_in_api": "base64url-without-padding"
+  },
+  "challenge_policy": {
+    "device_proof_challenge_max_seconds": 120,
+    "resend_code_ttl_seconds": 600,
+    "new_proof_nonce_sends_resend_code": false,
+    "nonce_source": "backend-csprng",
+    "nonce_length_bytes": 32
+  },
+  "test_key": {
+    "private_key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "public_key_hash_hex": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c"
+  },
+  "common": {
+    "magic_ascii": "SCISONOMICS-DEVICE-PROOF",
+    "version": 1,
+    "account_binding_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "device_id_hex": "00112233445566778899aabbccddeeff",
+    "challenge_id_hex": "102132435465768798a9babbdcddedef",
+    "nonce_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+    "issued_at": 1767225600,
+    "expires_at": 1767225720,
+    "family_id_hex": "ffeeddccbbaa99887766554433221100",
+    "target_device_id_hex": "0123456789abcdeffedcba9876543210",
+    "rename_normalized_name": "Notebook Oficina",
+    "rename_preimage_hex": "00104e6f7465626f6f6b204f666963696e61",
+    "rename_request_hash_hex": "23ea5f0d99ab2264d5a760e3abe214655e2afdca30fa39a8a12cda7763e0594e"
+  },
+  "vectors": [
+    {
+      "name": "device_enrollment",
+      "purpose": 1,
+      "family_present": false,
+      "target_present": false,
+      "request_hash_present": false,
+      "canonical_message_hex": "534349534f4e4f4d4943532d4445564943452d50524f4f460101a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c102132435465768798a9babbdcddedefc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf000000006955b900000000006955b97800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "signature_hex": "9a4b8288a1bf52b556d67898834fedec8d20bfba5bbe43eb384db4f33f6ebb19c765819a5fcf735e47e2235bee363e7e760c7a25b7fb6a65f4fdd89c6956b903"
+    },
+    {
+      "name": "device_authentication",
+      "purpose": 2,
+      "family_present": false,
+      "target_present": false,
+      "request_hash_present": false,
+      "canonical_message_hex": "534349534f4e4f4d4943532d4445564943452d50524f4f460102a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c102132435465768798a9babbdcddedefc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf000000006955b900000000006955b97800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "signature_hex": "016a87b9920e247a45a2c32ade78ee912cdd8905bed5b5014fefcc09cd4e8f77439346b7ae9fc104f3ab44ea920998a5588c2a3b1f570764a9398a30d1443a01"
+    },
+    {
+      "name": "refresh",
+      "purpose": 3,
+      "family_present": true,
+      "target_present": false,
+      "request_hash_present": false,
+      "canonical_message_hex": "534349534f4e4f4d4943532d4445564943452d50524f4f460103a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c102132435465768798a9babbdcddedefc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf000000006955b900000000006955b97801ffeeddccbbaa998877665544332211000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "signature_hex": "29aec13420f30f95a5a95a1b61f50076cc9d207b7399070d878c391477c621dedb524fd4cc783bb0b3c628c05a849483b6643da7b749fe21efe0efb605ebc307"
+    },
+    {
+      "name": "device_rename",
+      "purpose": 4,
+      "family_present": true,
+      "target_present": true,
+      "request_hash_present": true,
+      "canonical_message_hex": "534349534f4e4f4d4943532d4445564943452d50524f4f460104a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c102132435465768798a9babbdcddedefc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf000000006955b900000000006955b97801ffeeddccbbaa99887766554433221100010123456789abcdeffedcba98765432100123ea5f0d99ab2264d5a760e3abe214655e2afdca30fa39a8a12cda7763e0594e",
+      "signature_hex": "d9ad9dd17f25f602e101138ea512877d290c7bcc7628e99ef7d38934dedc3b763270c600a678af8a52760ccb3e4a9052ab0722ab7663f7b2fdfe4ae9eb901303"
+    },
+    {
+      "name": "device_revoke",
+      "purpose": 5,
+      "family_present": true,
+      "target_present": true,
+      "request_hash_present": false,
+      "canonical_message_hex": "534349534f4e4f4d4943532d4445564943452d50524f4f460105a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c102132435465768798a9babbdcddedefc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf000000006955b900000000006955b97801ffeeddccbbaa99887766554433221100010123456789abcdeffedcba9876543210000000000000000000000000000000000000000000000000000000000000000000",
+      "signature_hex": "6cc7ea8684e97074175f0e6485d13f0c57ce11cf91465c93dacbe414c40aa64dd978a2874499e7e82f588329eb42632408b5e496a67970694fc22fcfeb829302"
+    }
+  ],
+  "required_negative_checks": [
+    "reject_unknown_version_or_purpose",
+    "reject_message_length_not_237",
+    "reject_presence_byte_other_than_0_or_1",
+    "reject_nonzero_absent_slot",
+    "reject_wrong_account_binding",
+    "reject_wrong_device_or_public_key_hash",
+    "reject_wrong_challenge_or_nonce",
+    "reject_modified_backend_timestamp",
+    "reject_cross_purpose_signature",
+    "reject_wrong_family_or_target_or_request_hash",
+    "reject_expired_or_consumed_challenge",
+    "reject_replayed_signature_in_atomic_race"
+  ]
+}
