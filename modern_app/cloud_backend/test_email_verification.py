@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import httpx
 import smtplib
 import socket
 import tempfile
@@ -77,6 +78,44 @@ class AuthenticationFailureSMTP(SuccessfulSMTP):
         raise smtplib.SMTPAuthenticationError(535, b"simulated authentication failure")
 
 
+class FakeResendClient:
+    calls: list[dict] = []
+    timeouts: list[httpx.Timeout] = []
+    status_code = 200
+    response_body: object = {"id": "resend-message-test-id"}
+    transport_error: str | None = None
+
+    def __init__(self, *, timeout: httpx.Timeout, follow_redirects: bool) -> None:
+        self.timeout = timeout
+        self.follow_redirects = follow_redirects
+        type(self).timeouts.append(timeout)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def post(self, url: str, *, headers: dict[str, str], json: dict) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        type(self).calls.append({"url": url, "headers": dict(headers), "json": dict(json)})
+        if self.transport_error == "timeout":
+            raise httpx.ReadTimeout("simulated timeout", request=request)
+        if self.transport_error == "connection":
+            raise httpx.ConnectError("simulated connection failure", request=request)
+        if self.response_body == "invalid-json":
+            return httpx.Response(self.status_code, content=b"not-json", request=request)
+        return httpx.Response(self.status_code, json=self.response_body, request=request)
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.calls.clear()
+        cls.timeouts.clear()
+        cls.status_code = 200
+        cls.response_body = {"id": "resend-message-test-id"}
+        cls.transport_error = None
+
+
 class EmailVerificationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory(prefix="scisonomics-email-tests-", ignore_cleanup_errors=True)
@@ -102,6 +141,7 @@ class EmailVerificationTests(unittest.TestCase):
         SuccessfulSMTP.instances.clear()
         TimeoutSMTP.instances.clear()
         AuthenticationFailureSMTP.instances.clear()
+        FakeResendClient.reset()
         init_db()
         self.client = TestClient(cloud_main.app)
 
@@ -124,6 +164,21 @@ class EmailVerificationTests(unittest.TestCase):
                 "SELECT id, email_verified FROM users WHERE email = ?",
                 (email,),
             ).fetchone()
+
+    def _use_resend(self) -> None:
+        os.environ.update(
+            {
+                "SCISONOMICS_EMAIL_PROVIDER": "resend",
+                "SCISONOMICS_RESEND_API_KEY": "test-only-resend-key",
+                "SCISONOMICS_RESEND_API_URL": "https://api.resend.com/emails",
+                "SCISONOMICS_EMAIL_FROM": "ScisoNomics <no-reply@scisoftware.com.ar>",
+                "SCISONOMICS_EMAIL_REPLY_TO": "scisoftwareco@gmail.com",
+                "SCISONOMICS_RESEND_CONNECT_TIMEOUT_SECONDS": "4",
+                "SCISONOMICS_RESEND_WRITE_TIMEOUT_SECONDS": "4",
+                "SCISONOMICS_RESEND_READ_TIMEOUT_SECONDS": "9",
+                "SCISONOMICS_RESEND_TOTAL_TIMEOUT_SECONDS": "18",
+            }
+        )
 
     def test_new_unverified_account_and_successful_delivery(self) -> None:
         email = self._email("new")
@@ -229,6 +284,142 @@ class EmailVerificationTests(unittest.TestCase):
         self.assertEqual(resent.status_code, 200, resent.text)
         self.assertEqual(resent.json()["status"], "verification_required")
         self.assertEqual(len(SuccessfulSMTP.instances), 2)
+
+    def test_resend_https_success_uses_expected_payload_and_timeouts(self) -> None:
+        self._use_resend()
+        email = self._email("resend-success")
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            response = self._register(email)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "verification_required")
+        self.assertEqual(len(FakeResendClient.calls), 1)
+        call = FakeResendClient.calls[0]
+        self.assertEqual(call["url"], "https://api.resend.com/emails")
+        self.assertEqual(call["json"]["from"], "ScisoNomics <no-reply@scisoftware.com.ar>")
+        self.assertEqual(call["json"]["to"], [email])
+        self.assertEqual(call["json"]["reply_to"], "scisoftwareco@gmail.com")
+        self.assertIn("html", call["json"])
+        self.assertIn("text", call["json"])
+        self.assertLessEqual(len(call["headers"]["Idempotency-Key"]), 256)
+        timeout = FakeResendClient.timeouts[0]
+        self.assertEqual(timeout.connect, 4.0)
+        self.assertEqual(timeout.write, 4.0)
+        self.assertEqual(timeout.read, 9.0)
+        self.assertLessEqual(timeout.pool + timeout.connect + timeout.write + timeout.read, 18)
+
+    def test_resend_success_returns_provider_id(self) -> None:
+        self._use_resend()
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            status, provider_id = cloud_main.send_verification_email(
+                self._email("resend-id"),
+                "123456",
+                idempotency_key="stable-test-challenge",
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(provider_id, "resend-message-test-id")
+
+    def test_resend_missing_api_key_is_configuration_failure(self) -> None:
+        self._use_resend()
+        os.environ["SCISONOMICS_RESEND_API_KEY"] = ""
+        email = self._email("resend-config")
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            response = self._register(email)
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "email_delivery_failed")
+        self.assertEqual(self._user(email)["email_verified"], 0)
+        self.assertEqual(FakeResendClient.calls, [])
+
+    def test_resend_http_statuses_are_classified_internally(self) -> None:
+        self._use_resend()
+        cases = {
+            400: "rejected",
+            401: "authentication",
+            403: "authentication",
+            422: "rejected",
+            429: "rate_limited",
+            500: "provider_unavailable",
+            503: "provider_unavailable",
+        }
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            for status, expected_kind in cases.items():
+                with self.subTest(status=status):
+                    FakeResendClient.status_code = status
+                    FakeResendClient.response_body = {"message": "simulated provider response"}
+                    with self.assertRaises(cloud_main.EmailDeliveryError) as raised:
+                        cloud_main.send_verification_email(
+                            self._email("status"),
+                            "123456",
+                            idempotency_key="stable-test-challenge",
+                        )
+                    self.assertEqual(raised.exception.kind, expected_kind)
+                    self.assertEqual(raised.exception.status_code, status)
+
+    def test_resend_timeout_connection_and_invalid_response_are_classified(self) -> None:
+        self._use_resend()
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            for transport_error, expected_kind in (("timeout", "timeout"), ("connection", "connection")):
+                with self.subTest(transport_error=transport_error):
+                    FakeResendClient.transport_error = transport_error
+                    with self.assertRaises(cloud_main.EmailDeliveryError) as raised:
+                        cloud_main.send_verification_email(
+                            self._email("transport"),
+                            "123456",
+                            idempotency_key="stable-test-challenge",
+                        )
+                    self.assertEqual(raised.exception.kind, expected_kind)
+            FakeResendClient.transport_error = None
+            FakeResendClient.status_code = 200
+            FakeResendClient.response_body = "invalid-json"
+            with self.assertRaises(cloud_main.EmailDeliveryError) as raised:
+                cloud_main.send_verification_email(
+                    self._email("protocol"),
+                    "123456",
+                    idempotency_key="stable-test-challenge",
+                )
+            self.assertEqual(raised.exception.kind, "protocol")
+
+    def test_resend_idempotency_key_is_stable_for_same_challenge(self) -> None:
+        self._use_resend()
+        first = cloud_main._verification_delivery_idempotency_key(
+            user_id="user-test",
+            created_at="2026-07-20T12:00:00+00:00",
+            code_hash="hashed-code-test",
+        )
+        second = cloud_main._verification_delivery_idempotency_key(
+            user_id="user-test",
+            created_at="2026-07-20T12:00:00+00:00",
+            code_hash="hashed-code-test",
+        )
+        next_challenge = cloud_main._verification_delivery_idempotency_key(
+            user_id="user-test",
+            created_at="2026-07-20T12:01:00+00:00",
+            code_hash="hashed-code-test",
+        )
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, next_challenge)
+        self.assertLessEqual(len(first), 256)
+
+    def test_resend_failure_preserves_account_and_later_resend_recovers(self) -> None:
+        self._use_resend()
+        email = self._email("resend-recovery")
+        FakeResendClient.status_code = 503
+        FakeResendClient.response_body = {"message": "simulated unavailable"}
+        with patch.object(cloud_main.httpx, "Client", FakeResendClient):
+            failed = self._register(email)
+            first_key = FakeResendClient.calls[-1]["headers"]["Idempotency-Key"]
+            self.assertEqual(failed.status_code, 503, failed.text)
+            self.assertEqual(failed.json()["detail"]["code"], "email_delivery_failed")
+            self.assertEqual(self._user(email)["email_verified"], 0)
+            FakeResendClient.status_code = 200
+            FakeResendClient.response_body = {"id": "resend-recovery-id"}
+            recovered = self.client.post(
+                "/auth/resend-email-verification",
+                json={"verification_token": failed.json()["detail"]["verification"]["verification_token"]},
+            )
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        self.assertEqual(recovered.json()["status"], "verification_required")
+        second_key = FakeResendClient.calls[-1]["headers"]["Idempotency-Key"]
+        self.assertNotEqual(first_key, second_key)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+import html
 import hashlib
 import hmac
 import json
@@ -19,6 +20,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -271,9 +273,10 @@ def _email_provider() -> str:
 
 
 class EmailDeliveryError(RuntimeError):
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, *, status_code: int | None = None):
         super().__init__(kind)
         self.kind = kind
+        self.status_code = status_code
 
 
 def _smtp_timeout(name: str, default: int) -> int:
@@ -288,22 +291,126 @@ def _set_smtp_operation_timeout(smtp: smtplib.SMTP, *, deadline: float, operatio
         smtp.sock.settimeout(min(float(operation_timeout), remaining))
 
 
-def send_verification_email(email: str, code: str) -> None:
-    provider = _email_provider()
-    sender = os.getenv("SCISONOMICS_EMAIL_FROM", "").strip()
-    ttl_minutes = _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1)
-    body = (
+def _verification_email_content(code: str, ttl_minutes: int) -> tuple[str, str]:
+    text = (
         "ScisoNomics\n\n"
         f"Tu codigo de verificacion es: {code}\n\n"
         f"Este codigo vence en {ttl_minutes} minutos. Si no creaste una cuenta, podes ignorar este mensaje.\n\n"
         "Soporte: scisoftwareco@gmail.com"
     )
+    safe_code = html.escape(code, quote=True)
+    safe_ttl = html.escape(str(ttl_minutes), quote=True)
+    html_body = (
+        "<html><body>"
+        "<h1>ScisoNomics</h1>"
+        "<p>Tu codigo de verificacion es:</p>"
+        f"<p style=\"font-size:28px;font-weight:700;letter-spacing:6px\">{safe_code}</p>"
+        f"<p>Este codigo vence en {safe_ttl} minutos. "
+        "Si no creaste una cuenta, podes ignorar este mensaje.</p>"
+        "<p>Soporte: scisoftwareco@gmail.com</p>"
+        "</body></html>"
+    )
+    return text, html_body
+
+
+def _resend_timeouts() -> httpx.Timeout:
+    total = _env_int("SCISONOMICS_RESEND_TOTAL_TIMEOUT_SECONDS", 20, 4)
+    requested_connect = _env_int("SCISONOMICS_RESEND_CONNECT_TIMEOUT_SECONDS", 5, 1)
+    requested_write = _env_int("SCISONOMICS_RESEND_WRITE_TIMEOUT_SECONDS", 5, 1)
+    requested_read = _env_int("SCISONOMICS_RESEND_READ_TIMEOUT_SECONDS", 10, 1)
+    pool = 1
+    connect = min(requested_connect, total - pool - 2)
+    write = min(requested_write, total - pool - connect - 1)
+    read = min(requested_read, total - pool - connect - write)
+    return httpx.Timeout(connect=float(connect), write=float(write), read=float(read), pool=float(pool))
+
+
+def _send_resend_email(
+    email: str,
+    *,
+    sender: str,
+    reply_to: str,
+    text_body: str,
+    html_body: str,
+    idempotency_key: str | None,
+) -> tuple[int, str]:
+    api_key = os.getenv("SCISONOMICS_RESEND_API_KEY", "").strip()
+    api_url = os.getenv("SCISONOMICS_RESEND_API_URL", "https://api.resend.com/emails").strip()
+    if not api_key or not sender or not api_url.startswith("https://") or not idempotency_key:
+        raise EmailDeliveryError("configuration")
+    payload: dict[str, Any] = {
+        "from": sender,
+        "to": [email],
+        "subject": "Tu codigo de verificacion de ScisoNomics",
+        "html": html_body,
+        "text": text_body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    try:
+        with httpx.Client(timeout=_resend_timeouts(), follow_redirects=False) as client:
+            response = client.post(
+                api_url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": idempotency_key[:256],
+                },
+                json=payload,
+            )
+    except httpx.TimeoutException as exc:
+        raise EmailDeliveryError("timeout") from exc
+    except (httpx.ConnectError, httpx.NetworkError, httpx.TransportError) as exc:
+        raise EmailDeliveryError("connection") from exc
+
+    status = response.status_code
+    if status in {401, 403}:
+        raise EmailDeliveryError("authentication", status_code=status)
+    if status in {400, 422}:
+        raise EmailDeliveryError("rejected", status_code=status)
+    if status == 429:
+        raise EmailDeliveryError("rate_limited", status_code=status)
+    if 500 <= status <= 599:
+        raise EmailDeliveryError("provider_unavailable", status_code=status)
+    if status not in {200, 201}:
+        raise EmailDeliveryError("protocol", status_code=status)
+    try:
+        response_body = response.json()
+    except ValueError as exc:
+        raise EmailDeliveryError("protocol", status_code=status) from exc
+    provider_id = response_body.get("id") if isinstance(response_body, dict) else None
+    if not isinstance(provider_id, str) or not provider_id.strip():
+        raise EmailDeliveryError("protocol", status_code=status)
+    return status, provider_id.strip()
+
+
+def send_verification_email(
+    email: str,
+    code: str,
+    *,
+    idempotency_key: str | None = None,
+) -> tuple[int | None, str | None]:
+    provider = _email_provider()
+    sender = os.getenv("SCISONOMICS_EMAIL_FROM", "").strip()
+    reply_to = os.getenv("SCISONOMICS_EMAIL_REPLY_TO", "").strip()
+    ttl_minutes = _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1)
+    body, html_body = _verification_email_content(code, ttl_minutes)
 
     if provider in {"console", "memory", "fake"}:
         if os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production":
             raise RuntimeError("Proveedor de email dev-only deshabilitado en produccion.")
         _DEV_EMAIL_OUTBOX.append({"email": email, "code": code, "body": body})
-        return
+        return None, None
+
+    if provider == "resend":
+        return _send_resend_email(
+            email,
+            sender=sender,
+            reply_to=reply_to,
+            text_body=body,
+            html_body=html_body,
+            idempotency_key=idempotency_key,
+        )
 
     if provider == "smtp":
         host = os.getenv("SCISONOMICS_SMTP_HOST", "").strip()
@@ -344,9 +451,16 @@ def send_verification_email(email: str, code: str) -> None:
             raise EmailDeliveryError("connection") from exc
         except smtplib.SMTPException as exc:
             raise EmailDeliveryError("protocol") from exc
-        return
+        return None, None
 
     raise EmailDeliveryError("configuration")
+
+
+def _verification_delivery_idempotency_key(*, user_id: str, created_at: str, code_hash: str) -> str:
+    secret = get_jwt_secret().encode("utf-8")
+    challenge = f"email-verification:{user_id}:{created_at}:{code_hash}".encode("utf-8")
+    digest = hmac.new(secret, challenge, hashlib.sha256).hexdigest()
+    return f"scisonomics-verification-{digest}"
 
 
 _DEV_EMAIL_OUTBOX: list[dict[str, str]] = []
@@ -354,6 +468,12 @@ _DEV_EMAIL_OUTBOX: list[dict[str, str]] = []
 
 def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> EmailVerificationRequiredOut:
     code = _generate_verification_code()
+    code_hash = _hash_verification_code(user_id, "signup", code)
+    idempotency_key = _verification_delivery_idempotency_key(
+        user_id=user_id,
+        created_at=now,
+        code_hash=code_hash,
+    )
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=email_verification_ttl_seconds())).isoformat(timespec="seconds")
     conn.execute(
         """
@@ -369,9 +489,9 @@ def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> 
             (user_id, purpose, code_hash, expires_at, attempts, max_attempts, consumed_at, created_at, last_sent_at, invalidated_at)
         VALUES (?, 'signup', ?, ?, 0, 5, NULL, ?, ?, NULL)
         """,
-        (user_id, _hash_verification_code(user_id, "signup", code), expires_at, now, "1970-01-01T00:00:00+00:00"),
+        (user_id, code_hash, expires_at, now, "1970-01-01T00:00:00+00:00"),
     )
-    # La cuenta y el codigo deben sobrevivir aunque SMTP falle o el cliente se desconecte.
+    # La cuenta y el codigo deben sobrevivir aunque el proveedor falle o el cliente se desconecte.
     conn.commit()
     response = _verification_required_response(
         user_id=user_id,
@@ -380,14 +500,25 @@ def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> 
         resend_available_in=0,
     )
     send_started = time.monotonic()
-    _logger.info("[email-verification] email send start user=%s", short_identifier(user_id))
+    provider = _email_provider()
+    _logger.info(
+        "[email-verification] email send start provider=%s user=%s",
+        provider,
+        short_identifier(user_id),
+    )
     try:
-        send_verification_email(email, code)
+        delivery_status, provider_id = send_verification_email(
+            email,
+            code,
+            idempotency_key=idempotency_key,
+        )
     except EmailDeliveryError as exc:
         _logger.warning(
-            "[email-verification] email send failure user=%s kind=%s duration_ms=%d",
+            "[email-verification] email send failure provider=%s user=%s kind=%s status=%s duration_ms=%d",
+            provider,
             short_identifier(user_id),
             exc.kind,
+            exc.status_code if exc.status_code is not None else "none",
             int((time.monotonic() - send_started) * 1000),
         )
         raise _email_verification_error(
@@ -398,7 +529,8 @@ def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> 
         ) from exc
     except Exception as exc:
         _logger.warning(
-            "[email-verification] email send failure user=%s kind=unexpected duration_ms=%d",
+            "[email-verification] email send failure provider=%s user=%s kind=unexpected status=none duration_ms=%d",
+            provider,
             short_identifier(user_id),
             int((time.monotonic() - send_started) * 1000),
         )
@@ -415,8 +547,11 @@ def _create_signup_verification(conn, *, user_id: str, email: str, now: str) -> 
     )
     conn.commit()
     _logger.info(
-        "[email-verification] email send success user=%s duration_ms=%d",
+        "[email-verification] email send success provider=%s user=%s status=%s provider_id=%s duration_ms=%d",
+        provider,
         short_identifier(user_id),
+        delivery_status if delivery_status is not None else "none",
+        short_identifier(provider_id or ""),
         int((time.monotonic() - send_started) * 1000),
     )
     return _verification_required_response(user_id=user_id, email=email, expires_at=expires_at)
