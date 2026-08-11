@@ -6,7 +6,7 @@ authors = ["ScisoNomics"]
 license = ""
 repository = "https://github.com/iante/scisonomics"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -27,3 +27,8 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 keyring = "3"
+base64 = "=0.22.1"
+ed25519-dalek = { version = "=2.1.1", features = ["rand_core", "zeroize"] }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+sha2 = "=0.10.9"
+zeroize = { version = "=1.8.2", features = ["derive"] }

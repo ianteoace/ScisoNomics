@@ -11,6 +11,75 @@ permissions:
   contents: read
 
 jobs:
+  device-verification-postgres16:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres-test-only
+          POSTGRES_DB: scisonomics_device_verification_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d scisonomics_device_verification_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      SCISONOMICS_TEST_POSTGRES_URL: postgresql://postgres:postgres-test-only@127.0.0.1:5432/scisonomics_device_verification_test
+      SCISONOMICS_DEVICE_TEST_DESTRUCTIVE_OK: YES_DROP_EPHEMERAL_DEVICE_TEST_SCHEMAS
+      SCISONOMICS_DEVICE_TEST_EPHEMERAL_MARKER: github-actions-postgresql16-ephemeral
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: modern_app/cloud_backend/requirements.txt
+      - name: Install cloud test dependencies
+        run: python -m pip install --disable-pip-version-check -r modern_app/cloud_backend/requirements.txt
+      - name: Mark the dedicated PostgreSQL 16 database as ephemeral
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          with psycopg.connect(os.environ["SCISONOMICS_TEST_POSTGRES_URL"]) as conn:
+              conn.execute(
+                  "CREATE TABLE public.scisonomics_ephemeral_test_marker "
+                  "(marker TEXT PRIMARY KEY, purpose TEXT NOT NULL)"
+              )
+              conn.execute(
+                  "INSERT INTO public.scisonomics_ephemeral_test_marker (marker, purpose) VALUES (%s, %s)",
+                  (
+                      os.environ["SCISONOMICS_DEVICE_TEST_EPHEMERAL_MARKER"],
+                      "device_verification_phase1",
+                  ),
+              )
+          PY
+      - name: Device Verification Python and PostgreSQL 16 tests
+        run: >-
+          python -m unittest
+          modern_app.cloud_backend.test_device_verification_phase1
+          modern_app.cloud_backend.test_device_verification_postgres
+          -v
+
+  rust-tauri:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: modern_app/frontend/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Check Tauri Windows target
+        run: cargo +1.88.0 check --locked --target x86_64-pc-windows-msvc
+      - name: Test Tauri
+        run: cargo +1.88.0 test --locked --target x86_64-pc-windows-msvc
+
   application-security:
     runs-on: ubuntu-latest
     steps:

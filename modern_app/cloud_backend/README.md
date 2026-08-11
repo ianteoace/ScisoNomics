@@ -32,6 +32,7 @@ SCISONOMICS_JWT_SECRET=GENERAR_SECRET_SEGURO
 DATABASE_URL=postgresql://...
 SCISONOMICS_ALLOWED_ORIGINS=http://tauri.localhost,https://tauri.localhost,tauri://localhost
 SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES=240
+SCISONOMICS_DEVICE_VERIFICATION_MODE=off
 SCISONOMICS_GOOGLE_CLIENT_ID=...
 SCISONOMICS_GOOGLE_CLIENT_SECRET=...
 SCISONOMICS_GOOGLE_REDIRECT_URI=https://TU_BACKEND/auth/google/callback
@@ -67,6 +68,11 @@ La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso cen
 - `SCISONOMICS_ENV`
 - `SCISONOMICS_JWT_SECRET`
 - `SCISONOMICS_ACCESS_TOKEN_EXPIRE_MINUTES`
+- `SCISONOMICS_DEVICE_VERIFICATION_MODE`: ausente, vacio u `off` inicia Fase 1. Solo acepta los literales exactos en minusculas `off`, `observe` y `enforce`; valores como `OFF`, `Observe` o con espacios son invalidos. `observe` y `enforce` abortan el startup con `device_mode_not_implemented`; cualquier otro valor aborta con `invalid_device_verification_mode`. Nunca se degradan silenciosamente a `off`.
+
+Device Proof V1 es una especificacion criptografica congelada. La Fase 1 implementada prepara schema e identidad local con modo predeterminado `off`; la Fase 2, que incorporara `observe`, `enforce`, endpoints V1 e integracion frontend, sigue pendiente.
+- `SCISONOMICS_DB_MIGRATION_LOCK_TIMEOUT_MS` (PostgreSQL, predeterminado `15000`, rango `1000..600000`).
+- `SCISONOMICS_DB_MIGRATION_STATEMENT_TIMEOUT_MS` (PostgreSQL, predeterminado `120000`, rango `1000..600000`).
 - `SCISONOMICS_ALLOWED_ORIGINS`
 - `SCISONOMICS_GOOGLE_CLIENT_ID`
 - `SCISONOMICS_GOOGLE_CLIENT_SECRET`

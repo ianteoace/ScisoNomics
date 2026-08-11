@@ -18,7 +18,7 @@ import time
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -41,7 +41,8 @@ from .auth import (
     validate_entitlements_signing_config,
     verify_password,
 )
-from .db import connect, get_database_engine, init_db
+from .db import DEVICE_KEY_NAMESPACE_RETRIES, connect, get_database_engine, init_db
+from .device_verification import parse_device_verification_mode
 from .schemas import (
     AdminBillingEntitlementsUpdateIn,
     BillingEntitlementsOut,
@@ -126,6 +127,7 @@ VERIFICATION_CODE_RE = re.compile(r"^\d{6}$")
 
 @app.on_event("startup")
 def startup() -> None:
+    parse_device_verification_mode(os.getenv("SCISONOMICS_DEVICE_VERIFICATION_MODE"))
     get_jwt_secret()
     validate_entitlements_signing_config()
     _refresh_cloud_db_state(run_init=True)
@@ -158,7 +160,7 @@ def _refresh_cloud_db_state(*, run_init: bool) -> dict[str, Any]:
                 "error_type": None,
             }
         except Exception as exc:
-            _logger.exception("[cloud-db] initialization failed error_type=%s", type(exc).__name__)
+            _logger.error("[cloud-db] initialization failed error_type=%s", type(exc).__name__)
             _CLOUD_DB_STATE = {
                 "ok": False,
                 "status": "migration_failed",
@@ -168,7 +170,36 @@ def _refresh_cloud_db_state(*, run_init: bool) -> dict[str, Any]:
                 "repairable": False,
                 "error_type": type(exc).__name__,
             }
+            if os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production":
+                raise RuntimeError("db_migration_failed") from exc
     return dict(_CLOUD_DB_STATE)
+
+
+def _is_device_namespace_collision(exc: Exception) -> bool:
+    constraint_name = getattr(getattr(exc, "diag", None), "constraint_name", None)
+    return constraint_name == "idx_users_device_key_namespace" or "device_key_namespace" in str(exc).lower()
+
+
+def _insert_user_with_device_namespace(
+    conn,
+    sql: str,
+    params_for_namespace: Callable[[str], tuple[Any, ...]],
+) -> None:
+    for attempt in range(DEVICE_KEY_NAMESPACE_RETRIES + 1):
+        conn.execute("SAVEPOINT user_namespace_insert")
+        try:
+            conn.execute(sql, params_for_namespace(secrets.token_urlsafe(32)))
+        except Exception as exc:
+            conn.execute("ROLLBACK TO SAVEPOINT user_namespace_insert")
+            conn.execute("RELEASE SAVEPOINT user_namespace_insert")
+            if not _is_device_namespace_collision(exc):
+                raise
+            if attempt == DEVICE_KEY_NAMESPACE_RETRIES:
+                raise RuntimeError("device_key_namespace_retry_exhausted") from exc
+            continue
+        conn.execute("RELEASE SAVEPOINT user_namespace_insert")
+        return
+    raise RuntimeError("device_key_namespace_retry_exhausted")
 
 
 def now_iso() -> str:
@@ -1127,12 +1158,25 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
         False,
         short_identifier(user_id),
     )
-    conn.execute(
+    _insert_user_with_device_namespace(
+        conn,
         """
-        INSERT INTO users (id, email, password_hash, display_name, google_sub, avatar_url, auth_provider, email_verified, email_verified_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?, ?, ?)
+        INSERT INTO users (id, email, password_hash, display_name, google_sub, avatar_url, auth_provider, email_verified, email_verified_at, device_key_namespace, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'google', ?, ?, ?, ?, ?)
         """,
-        (user_id, email, "", display_name, google_sub, avatar_url, 1 if google_email_verified else 0, now if google_email_verified else None, now, now),
+        lambda namespace: (
+            user_id,
+            email,
+            "",
+            display_name,
+            google_sub,
+            avatar_url,
+            1 if google_email_verified else 0,
+            now if google_email_verified else None,
+            namespace,
+            now,
+            now,
+        ),
     )
     created = conn.execute("SELECT id, email, display_name, created_at, updated_at FROM users WHERE id = ?", (user_id,)).fetchone()
     return row_to_user(created)
@@ -1484,8 +1528,8 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
 def health():
     database = get_database_engine()
     db_state = _refresh_cloud_db_state(run_init=False)
-    return {
-        "ok": True,
+    payload = {
+        "ok": bool(db_state["ok"]),
         "service": "scisonomics-cloud-auth",
         "database": database,
         "version": app.version,
@@ -1500,6 +1544,9 @@ def health():
         },
         "capabilities": _cloud_capabilities(),
     }
+    if not db_state["ok"]:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @app.get("/ready")
@@ -1555,12 +1602,21 @@ def register(payload: RegisterRequest, request: Request):
             user_id = str(uuid4())
             timestamp = now_iso()
             display_name = payload.display_name.strip() if payload.display_name else None
-            conn.execute(
+            _insert_user_with_device_namespace(
+                conn,
                 """
-                INSERT INTO users (id, email, password_hash, display_name, email_verified, email_verified_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
+                INSERT INTO users (id, email, password_hash, display_name, email_verified, email_verified_at, device_key_namespace, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?)
                 """,
-                (user_id, email, hash_password(payload.password), display_name, timestamp, timestamp),
+                lambda namespace: (
+                    user_id,
+                    email,
+                    hash_password(payload.password),
+                    display_name,
+                    namespace,
+                    timestamp,
+                    timestamp,
+                ),
             )
             _logger.info("[auth-register] user created user=%s", short_identifier(user_id))
             outcome = "created_unverified"

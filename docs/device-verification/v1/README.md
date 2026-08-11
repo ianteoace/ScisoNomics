@@ -1,8 +1,8 @@
-# Verificacion de dispositivos V1 - Fase 0
+# Device Proof V1 - especificacion criptografica congelada
 
-Estado: propuesta tecnica para aprobacion antes de Fase 1.
+Estado: contrato criptografico V1 congelado. No describe por si solo funcionalidad habilitada.
 
-Esta carpeta congela el contrato criptografico de la prueba de posesion Ed25519. No implementa ni habilita verificacion de dispositivos.
+Esta carpeta congela el contrato criptografico de la prueba de posesion Ed25519. La Fase 1 ya implementa schema aditivo, parser de modo e identidad Ed25519 local, siempre inertes con el modo predeterminado `off`. La Fase 2 (flujos `observe`/`enforce`, endpoints V1 e integracion frontend) sigue pendiente y no esta habilitada.
 
 ## Documentos
 
@@ -23,11 +23,13 @@ Esta carpeta congela el contrato criptografico de la prueba de posesion Ed25519.
 - Al activar `enforce`, los refresh tokens legacy se invalidan. No existe `legacy_bootstrap` por mera posesion de un refresh token. Los access tokens anteriores expiran naturalmente.
 - Todo seed o clave privada presente en fixtures es material publico, determinista y exclusivo de pruebas; nunca es una credencial ni material reutilizable en produccion.
 
-## Alcance posterior aprobado
+## Separacion de fases
 
-La Fase 1 podra agregar tablas y migraciones, familias de refresh normalizadas, claims preparados, el parser `off|observe|enforce` y la identidad Ed25519 en Tauri/WinCred, con modo predeterminado `off` y sin cambios visibles de login.
+La especificacion congelada define bytes, validaciones y amenazas. La Fase 1 implementada agrega tablas y migraciones, familias de refresh preparadas, el parser `off|observe|enforce` y la identidad Ed25519 en Tauri/WinCred, con modo predeterminado `off` y sin cambios visibles de login. No implementa endpoints Device Proof V1 ni aplica verificacion.
 
-Toda migracion de Fase 1 debera:
+La Fase 2 pendiente implementara, despues de una auditoria y autorizacion separadas, los flujos `observe` y `enforce`, endpoints V1 e integracion frontend. En Fase 1 ambos modos abortan el startup explicitamente.
+
+Toda migracion de Fase 1 debe:
 
 1. ser aditiva y transaccional;
 2. probarse sobre copias sinteticas, nunca sobre la DB real;

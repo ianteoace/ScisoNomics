@@ -17,9 +17,15 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri::Emitter;
 use serde::Serialize;
+use zeroize::{Zeroize, Zeroizing};
+
+mod device_verification;
+use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
 const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
+const DEVICE_IDENTITY_SERVICE_NAME: &str = "com.scisonomics.desktop.device-identity-v1";
+static DEVICE_IDENTITY_CREATE_LOCK: Mutex<()> = Mutex::new(());
 fn cloud_api_url() -> &'static str {
   option_env!("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL").unwrap_or("")
 }
@@ -56,6 +62,13 @@ struct RefreshKeyringDebugStatus {
   account_id_hash: String,
   found: bool,
   error_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceIdentityResult {
+  created: bool,
+  identity: PublicIdentity,
 }
 
 #[derive(Clone)]
@@ -278,12 +291,12 @@ extern "system" {
 }
 
 #[cfg(target_os = "windows")]
-fn wincred_write_refresh_token(service_name: &str, account_id: &str, token: &str) -> Result<(), String> {
+fn wincred_write_secret(service_name: &str, account_id: &str, secret: &str, credential_comment: &str) -> Result<(), String> {
   let target = wincred_target_name(service_name, account_id);
   let mut target_name = to_wide(&target);
   let mut username = to_wide(account_id);
-  let mut comment = to_wide("ScisoNomics refresh token");
-  let mut blob = token.as_bytes().to_vec();
+  let mut comment = to_wide(credential_comment);
+  let mut blob = secret.as_bytes().to_vec();
   let mut credential = CredentialW {
     Flags: 0,
     Type: CRED_TYPE_GENERIC,
@@ -307,7 +320,7 @@ fn wincred_write_refresh_token(service_name: &str, account_id: &str, token: &str
 }
 
 #[cfg(target_os = "windows")]
-fn wincred_read_refresh_token(service_name: &str, account_id: &str) -> Result<Option<String>, String> {
+fn wincred_read_secret(service_name: &str, account_id: &str) -> Result<Option<String>, String> {
   let target = wincred_target_name(service_name, account_id);
   let target_name = to_wide(&target);
   let mut credential_ptr: *mut CredentialW = std::ptr::null_mut();
@@ -324,9 +337,14 @@ fn wincred_read_refresh_token(service_name: &str, account_id: &str) -> Result<Op
     Ok(None)
   } else {
     let bytes = unsafe { std::slice::from_raw_parts(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
-    String::from_utf8(bytes.to_vec())
-      .map(|value| Some(value))
-      .map_err(|_| "wincred_invalid_utf8".to_string())
+    match String::from_utf8(bytes.to_vec()) {
+      Ok(value) => Ok(Some(value)),
+      Err(error) => {
+        let mut invalid_bytes = error.into_bytes();
+        invalid_bytes.zeroize();
+        Err("wincred_invalid_utf8".to_string())
+      }
+    }
   };
   if !credential.CredentialBlob.is_null() && credential.CredentialBlobSize > 0 {
     let bytes = unsafe { std::slice::from_raw_parts_mut(credential.CredentialBlob, credential.CredentialBlobSize as usize) };
@@ -338,7 +356,7 @@ fn wincred_read_refresh_token(service_name: &str, account_id: &str) -> Result<Op
 }
 
 #[cfg(target_os = "windows")]
-fn wincred_delete_refresh_token(service_name: &str, account_id: &str) -> Result<(), String> {
+fn wincred_delete_secret(service_name: &str, account_id: &str) -> Result<(), String> {
   let target = wincred_target_name(service_name, account_id);
   let target_name = to_wide(&target);
   let result = unsafe { CredDeleteW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0) };
@@ -373,7 +391,7 @@ fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Res
     });
   }
   #[cfg(target_os = "windows")]
-  let write_result = wincred_write_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id, normalized_token);
+  let write_result = wincred_write_secret(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id, normalized_token, "ScisoNomics refresh token");
   #[cfg(not(target_os = "windows"))]
   let write_result = {
     let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
@@ -383,7 +401,7 @@ fn save_persistent_cloud_refresh_token(account_id: String, token: String) -> Res
   };
   write_result?;
   #[cfg(target_os = "windows")]
-  let roundtrip = match wincred_read_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id) {
+  let roundtrip = match wincred_read_secret(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id) {
     Ok(Some(saved_token)) => !saved_token.trim().is_empty(),
     Ok(None) => false,
     Err(_) => false,
@@ -420,7 +438,7 @@ fn load_persistent_cloud_refresh_token(account_id: String) -> Result<PersistentC
     });
   }
   #[cfg(target_os = "windows")]
-  let load_result = wincred_read_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id);
+  let load_result = wincred_read_secret(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id);
   #[cfg(not(target_os = "windows"))]
   let load_result = {
     let entry = secure_token_entry(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
@@ -470,8 +488,8 @@ fn delete_persistent_cloud_refresh_token(account_id: String) -> Result<Persisten
   }
   #[cfg(target_os = "windows")]
   {
-    wincred_delete_refresh_token(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
-    wincred_delete_refresh_token(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    wincred_delete_secret(CLOUD_REFRESH_TOKEN_SERVICE_NAME, normalized_account_id)?;
+    wincred_delete_secret(LEGACY_CLOUD_TOKEN_SERVICE_NAME, normalized_account_id)?;
   }
   #[cfg(not(target_os = "windows"))]
   {
@@ -528,6 +546,125 @@ fn debug_refresh_keyring_status(account_id: String) -> Result<RefreshKeyringDebu
     found: load_result.found,
     error_code: load_result.error_code,
   })
+}
+
+fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredIdentity>, String> {
+  let storage_key = device_verification::storage_account_key(account_binding)?;
+  #[cfg(target_os = "windows")]
+  let loaded = wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key);
+  #[cfg(not(target_os = "windows"))]
+  let loaded = {
+    let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
+    match entry.get_password() {
+      Ok(value) => Ok(Some(value)),
+      Err(keyring::Error::NoEntry) => Ok(None),
+      Err(_) => Err("device_identity_storage_failed".to_string()),
+    }
+  };
+  match loaded.map_err(|_| "device_identity_storage_failed".to_string())? {
+    None => Ok(None),
+    Some(value) => {
+      let protected = Zeroizing::new(value);
+      device_verification::decode_identity(protected.as_str()).map(Some)
+    }
+  }
+}
+
+fn persist_account_device_identity(account_binding: &str, identity: &StoredIdentity) -> Result<(), String> {
+  let storage_key = device_verification::storage_account_key(account_binding)?;
+  let encoded = device_verification::encode_identity(identity)?;
+  #[cfg(target_os = "windows")]
+  {
+    wincred_write_secret(
+      DEVICE_IDENTITY_SERVICE_NAME,
+      &storage_key,
+      encoded.as_str(),
+      "ScisoNomics device identity V1",
+    )
+    .map_err(|_| "device_identity_storage_failed".to_string())
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
+    entry.set_password(encoded.as_str()).map_err(|_| "device_identity_storage_failed".to_string())
+  }
+}
+
+fn require_account_device_identity(account_binding: &str) -> Result<StoredIdentity, String> {
+  load_account_device_identity(account_binding)?.ok_or_else(|| "device_identity_missing".to_string())
+}
+
+fn sign_account_device_proof(
+  account_binding: &str,
+  purpose: Purpose,
+  challenge: &ProofChallengeInput,
+) -> Result<SignedProof, String> {
+  let identity = require_account_device_identity(account_binding)?;
+  device_verification::sign_proof(&identity, account_binding, purpose, challenge)
+}
+
+#[tauri::command]
+fn get_or_create_account_device_identity(account_binding: String) -> Result<DeviceIdentityResult, String> {
+  device_verification::validate_account_binding(&account_binding)?;
+  let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
+    .lock()
+    .map_err(|_| "device_identity_lock_failed".to_string())?;
+  if let Some(identity) = load_account_device_identity(&account_binding)? {
+    return Ok(DeviceIdentityResult {
+      created: false,
+      identity: device_verification::public_identity(&identity)?,
+    });
+  }
+  let identity = device_verification::generate_identity();
+  persist_account_device_identity(&account_binding, &identity)?;
+  Ok(DeviceIdentityResult {
+    created: true,
+    identity: device_verification::public_identity(&identity)?,
+  })
+}
+
+#[tauri::command]
+fn sign_device_enrollment_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  sign_account_device_proof(&account_binding, Purpose::DeviceEnrollment, &challenge)
+}
+
+#[tauri::command]
+fn sign_device_authentication_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  sign_account_device_proof(&account_binding, Purpose::DeviceAuthentication, &challenge)
+}
+
+#[tauri::command]
+fn sign_refresh_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  sign_account_device_proof(&account_binding, Purpose::Refresh, &challenge)
+}
+
+#[tauri::command]
+fn sign_device_management_proof(
+  account_binding: String,
+  purpose: String,
+  challenge: ProofChallengeInput,
+) -> Result<SignedProof, String> {
+  sign_account_device_proof(&account_binding, Purpose::management(&purpose)?, &challenge)
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+fn delete_account_device_identity(account_binding: String) -> Result<bool, String> {
+  let storage_key = device_verification::storage_account_key(&account_binding)?;
+  #[cfg(target_os = "windows")]
+  {
+    wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)
+      .map_err(|_| "device_identity_storage_failed".to_string())?;
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
+    match entry.delete_credential() {
+      Ok(()) | Err(keyring::Error::NoEntry) => {}
+      Err(_) => return Err("device_identity_storage_failed".to_string()),
+    }
+  }
+  Ok(true)
 }
 
 #[tauri::command]
@@ -814,6 +951,11 @@ pub fn run() {
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
       debug_refresh_keyring_status,
+      get_or_create_account_device_identity,
+      sign_device_enrollment_proof,
+      sign_device_authentication_proof,
+      sign_refresh_proof,
+      sign_device_management_proof,
       complete_app_close_sync,
       set_app_close_sync_timeout
     ])
