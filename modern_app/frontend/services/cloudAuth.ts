@@ -27,6 +27,7 @@ export type EmailVerificationRequiredResponse = {
 export type CloudAuthRegisterOrLoginResponse = CloudAuthResponse | EmailVerificationRequiredResponse;
 
 export type StoredCloudAccount = {
+  authProvider?: "legacy" | "supabase";
   user: CloudUser;
   addedAt: string;
   lastUsedAt: string;
@@ -410,6 +411,7 @@ function readJsonState(storage: Storage, key: string): StoredAuthState | null {
             .filter((account) => account?.user?.id)
             .map((account) => ({
               user: account.user,
+              authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
               storage: account.storage === "session" ? "session" : "persistent",
               addedAt: account.addedAt || nowIso(),
               lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
@@ -436,6 +438,7 @@ function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
     activeOwnerId: state.activeOwnerId,
     accounts: state.accounts.map((account) => ({
       user: account.user,
+      authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
       storage: account.storage,
       addedAt: account.addedAt,
       lastUsedAt: account.lastUsedAt,
@@ -732,7 +735,9 @@ function normalizeState(state: StoredAuthState): StoredAuthState {
 
   const byEmail = new Map<string, StoredCloudAccount>();
   for (const account of byId.values()) {
-    const emailKey = normalizeEmail(account.user.email);
+    // External accounts are keyed by internal ID, never merged with another
+    // internal owner merely because provider emails match.
+    const emailKey = account.authProvider === "supabase" ? `supabase:${account.user.id}` : normalizeEmail(account.user.email);
     if (!emailKey) {
       byEmail.set(account.user.id, account);
       continue;
@@ -1319,6 +1324,26 @@ async function resolveCloudAvailability(
 }
 
 async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promise<StoredCloudSession | null> {
+  if (account.authProvider === "supabase") {
+    try {
+      const refreshed = await (await import("./supabaseCloudAuth")).refreshSession(account.user.id);
+      if (refreshed) return refreshed;
+    } catch (error) {
+      const retryable = error instanceof CloudAuthRequestError && error.kind !== "auth";
+      if (retryable) {
+        setAccountRuntimeAuthState(account.user.id, { availability: "refresh_failed", refreshTokenFound: false, accessTokenValid: false });
+        const runtime = mergeTokenIntoAccount(account);
+        return runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0) ? runtime : null;
+      }
+      (await import("./supabaseCloudAuth")).forgetSession(account.user.id);
+      setRuntimeAccessToken(account.user.id, null);
+    }
+    const runtime = mergeTokenIntoAccount(account);
+    if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) return runtime;
+    setRuntimeAccessToken(account.user.id, null);
+    setAccountRuntimeAuthState(account.user.id, { availability: "session_expired", refreshTokenFound: false, accessTokenValid: false });
+    return null;
+  }
   if (account.storage !== "persistent") return mergeTokenIntoAccount(account);
   const refreshToken = await loadCloudToken(account.user.id);
   if (!refreshToken) {
@@ -1354,6 +1379,8 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
   });
   try {
     const response = await cloudAuth.refresh(refreshToken);
+    // A late legacy refresh must not replace a newly selected auth provider.
+    if (getStoredAccounts().find((item) => item.user.id === account.user.id)?.authProvider === "supabase") return null;
     const runtime = buildRuntimeToken(response);
     const rotatedRefresh = Boolean(response.refresh_token && response.refresh_token !== refreshToken);
     const secureResult = await saveCloudToken(
@@ -1447,6 +1474,7 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
     });
     return { ...updatedAccount, token: runtime.accessToken, tokenType: runtime.tokenType, expiresAt: runtime.expiresAt };
   } catch (error) {
+    if (getStoredAccounts().find((item) => item.user.id === account.user.id)?.authProvider === "supabase") return null;
     const errorCode =
       error instanceof CloudAuthRequestError
         ? error.statusCode
@@ -1489,6 +1517,7 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
 }
 
 export async function getValidAccessToken(ownerId?: string): Promise<StoredCloudSession | null> {
+  if (ownerId === LOCAL_OWNER_ID) return null;
   const state = getStoredAuthState();
   const account =
     ownerId && ownerId !== LOCAL_OWNER_ID
@@ -1527,7 +1556,7 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
     });
     return runtime;
   }
-  if (account.storage === "session") {
+  if (account.storage === "session" && account.authProvider !== "supabase") {
     if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) {
       setAccountRuntimeAuthState(account.user.id, {
         availability: "active",
@@ -1577,10 +1606,10 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
   return refreshed;
 }
 
-export async function forceRefreshActiveCloudSession(): Promise<StoredCloudSession | null> {
-  const account = getActiveAccount();
+export async function forceRefreshActiveCloudSession(ownerId?: string): Promise<StoredCloudSession | null> {
+  const account = ownerId ? getStoredAccounts().find((item) => item.user.id === ownerId) : getActiveAccount();
   if (!account) return null;
-  if (account.storage !== "persistent") return getValidAccessToken(account.user.id);
+  if (account.storage !== "persistent" && account.authProvider !== "supabase") return getValidAccessToken(account.user.id);
   if (!activeRefreshPromises.has(account.user.id)) {
     activeRefreshPromises.set(
       account.user.id,
@@ -1694,9 +1723,9 @@ export async function getCloudAuthDiagnostics(): Promise<CloudAuthDiagnostics> {
   };
 }
 
-export async function addOrUpdateAccount(session: { user: CloudUser; tokens: CloudAuthTokens }, options: { remember?: boolean; makeActive?: boolean; notify?: boolean } = {}) {
+export async function addOrUpdateAccount(session: { user: CloudUser; tokens: CloudAuthTokens }, options: { remember?: boolean; makeActive?: boolean; notify?: boolean; authProvider?: "legacy" | "supabase" } = {}) {
   const state = getStoredAuthState();
-  const requestedStorage: "persistent" | "session" = options.remember === false ? "session" : "persistent";
+  const requestedStorage: "persistent" | "session" = options.authProvider === "supabase" || options.remember === false ? "session" : "persistent";
   const existing = state.accounts.find((account) => account.user.id === session.user.id);
   logAuthLifecycle("account store request", {
     accountId: shortAccountId(session.user.id),
@@ -1705,9 +1734,22 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
     refreshTokenPresent: Boolean(session.tokens.refreshToken),
     refreshTokenLength: session.tokens.refreshToken?.length || 0,
   });
-  const secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
+  // Supabase access tokens use the existing session cache; its refresh tokens
+  // remain in the dedicated memory module. Do not overwrite legacy WinCred.
+  let secureResult: SaveCloudTokenResult;
+  if (options.authProvider === "supabase") {
+    setRuntimeAccessToken(session.user.id, { accessToken: session.tokens.accessToken, expiresAt: session.tokens.expiresAt, tokenType: session.tokens.tokenType });
+    clearAccountAuthStatus(session.user.id);
+    setAccountRuntimeAuthState(session.user.id, { availability: "active", refreshTokenFound: false, accessTokenValid: true });
+    secureResult = { storedSecurely: false, fallbackUsed: false, roundtrip: false, secureStorageAvailable: canUseSecurePersistentTokenStorage() };
+  } else {
+    const previous = state.accounts.find((item) => item.user.id === session.user.id);
+    if (previous?.authProvider === "supabase") (await import("./supabaseCloudAuth")).forgetSession(session.user.id);
+    secureResult = await saveCloudToken(session.user.id, session.tokens, requestedStorage);
+  }
   const storage: "persistent" | "session" = requestedStorage;
   const account: StoredCloudAccount = {
+    authProvider: options.authProvider || "legacy",
     user: session.user,
     storage,
     addedAt: existing?.addedAt || nowIso(),
@@ -1751,6 +1793,7 @@ export function switchToLocalMode() {
 }
 
 export async function removeAccount(ownerId: string) {
+  if (getStoredAccounts().find((item) => item.user.id === ownerId)?.authProvider === "supabase") (await import("./supabaseCloudAuth")).forgetSession(ownerId);
   const state = getStoredAuthState();
   const accounts = state.accounts.filter((account) => account.user.id !== ownerId);
   const activeOwnerId = state.activeOwnerId === ownerId ? LOCAL_OWNER_ID : state.activeOwnerId;
@@ -1769,6 +1812,7 @@ export async function logoutAccount(ownerId: string) {
   const state = getStoredAuthState();
   const account = state.accounts.find((item) => item.user.id === ownerId) || null;
   if (!account) return;
+  if (account.authProvider === "supabase") return (await import("./supabaseCloudAuth")).signOut(ownerId);
   const refreshToken = account.storage === "persistent" ? await loadCloudToken(ownerId) : null;
   await cloudAuth.logout(refreshToken);
   return removeAccount(ownerId);
@@ -1776,6 +1820,10 @@ export async function logoutAccount(ownerId: string) {
 
 export async function clearAllAccounts() {
   const state = getStoredAuthState();
+  if (state.accounts.some((account) => account.authProvider === "supabase")) {
+    const external = await import("./supabaseCloudAuth");
+    for (const account of state.accounts) external.forgetSession(account.user.id);
+  }
   const results = await Promise.all(state.accounts.map((account) => deleteCloudToken(account.user.id)));
   saveStoredAuthState(emptyAuthState());
   if (results.some((result) => !result.ok)) {
@@ -2009,6 +2057,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
   logAuthLifecycle("verify start", { userId: shortUserId(session.user.id), email: maskEmail(session.user.email) });
   try {
     const user = await cloudAuth.me(session.token);
+    if (user.id !== session.user.id) throw new CloudAuthRequestError("La sesión no corresponde a la cuenta seleccionada.", { kind: "auth", code: "internal_identity_mismatch" });
     await addOrUpdateAccount({
       user,
       tokens: {
@@ -2017,7 +2066,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
         tokenType: session.tokenType,
         refreshToken: session.storage === "persistent" ? await loadCloudToken(session.user.id) : null,
       },
-    }, { remember: session.storage === "persistent", makeActive: state.activeOwnerId === session.user.id, notify: false });
+    }, { remember: session.storage === "persistent", makeActive: state.activeOwnerId === session.user.id, notify: false, authProvider: session.authProvider });
     logAuthLifecycle("verify success", { userId: shortUserId(user.id), email: maskEmail(user.email) });
     return { ...session, user };
   } catch (error) {

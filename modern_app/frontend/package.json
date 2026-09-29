@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev --webpack -p 3000",
     "build": "next build",
+    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
     "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",

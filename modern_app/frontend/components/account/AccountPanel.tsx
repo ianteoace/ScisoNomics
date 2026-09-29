@@ -50,6 +50,7 @@ import {
   type SyncOverview,
 } from "../../services/cloudSync";
 import { PasswordInput } from "../ui/PasswordInput";
+import { AddAccountModal } from "./AddAccountModal";
 
 type Mode = "login" | "register";
 type PendingVerification = EmailVerificationRequiredResponse & { source: Mode };
@@ -86,6 +87,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [showDevices, setShowDevices] = useState(false);
   const [showConflicts, setShowConflicts] = useState(false);
   const [showAddAccount, setShowAddAccount] = useState(false);
+  const [supabaseModalOpen, setSupabaseModalOpen] = useState(false);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
   const [activeOwnerId, setActiveOwnerId] = useState("local");
@@ -654,6 +656,7 @@ async function handleClearLocalSession() {
 
   return (
     <section className="space-y-4">
+      <AddAccountModal open={supabaseModalOpen} defaultProvider="supabase" onClose={() => setSupabaseModalOpen(false)} onAccountAdded={() => { refreshAuthState(); void handleRetrySessionCheck(); }} />
       {showHeader ? (
         <header className="card p-5">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
@@ -709,6 +712,7 @@ async function handleClearLocalSession() {
                   <p className="font-semibold">{account.user.display_name || account.user.email}</p>
                   {account.user.display_name ? <p className="text-xs text-slate-500 dark:text-slate-400">{account.user.email}</p> : null}
                   <p className="text-xs text-slate-500 dark:text-slate-400">Último uso: {formatDate(account.lastUsedAt)}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{account.authProvider === "supabase" ? "Supabase · sesión temporal" : "Acceso anterior"}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner(account.user.id)} disabled={activeOwnerId === account.user.id}>
@@ -723,9 +727,10 @@ async function handleClearLocalSession() {
           ))}
         </div>
         {configured ? (
-          <div className="mt-4">
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className="btn-secondary" type="button" onClick={() => setSupabaseModalOpen(true)}>Agregar con Supabase</button>
             <button className="btn-secondary" type="button" onClick={() => setShowAddAccount((value) => !value)}>
-              {showAddAccount ? "Cancelar agregado" : "Agregar cuenta"}
+              {showAddAccount ? "Cancelar agregado" : "Agregar con acceso anterior"}
             </button>
           </div>
         ) : null}

@@ -919,7 +919,7 @@ async function cloudFetch(
           ? (options.headers as Record<string, string>)["Authorization"]
           : null;
     if (response.status === 401 && authorizationHeader && !metadata.authRetryAttempted) {
-      const refreshedSession = await forceRefreshActiveCloudSession().catch(() => null);
+      const refreshedSession = await forceRefreshActiveCloudSession(metadata.ownerUsed || undefined).catch(() => null);
       if (refreshedSession?.token) {
         const nextHeaders = new Headers(options.headers || {});
         nextHeaders.set("Authorization", `Bearer ${refreshedSession.token}`);

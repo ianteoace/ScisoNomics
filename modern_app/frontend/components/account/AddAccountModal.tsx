@@ -17,6 +17,7 @@ import {
 } from "../../services/cloudAuth";
 import { Modal } from "../ui/Modal";
 import { PasswordInput } from "../ui/PasswordInput";
+import { SupabaseAccountForm } from "./SupabaseAccountForm";
 
 const inputClass =
   "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
@@ -26,13 +27,16 @@ export function AddAccountModal({
   open,
   onClose,
   onAccountAdded,
+  defaultProvider = "legacy",
 }: {
   open: boolean;
   onClose: () => void;
   onAccountAdded?: () => void;
+  defaultProvider?: "legacy" | "supabase";
 }) {
   const configured = isCloudAuthConfigured();
   const { showError, showSuccess } = useToast();
+  const [authProvider, setAuthProvider] = useState<"legacy" | "supabase">(defaultProvider);
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -50,6 +54,7 @@ export function AddAccountModal({
   const googlePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function resetForm() {
+    setAuthProvider(defaultProvider);
     setMode("login");
     setEmail("");
     setPassword("");
@@ -285,7 +290,17 @@ export function AddAccountModal({
   }
 
   return (
-    <Modal open={open} title={verification ? "Confirmá tu correo" : mode === "register" ? "Crear cuenta" : "Agregar cuenta"} onClose={closeModal} size="md">
+    <Modal open={open} title={authProvider === "supabase" ? "Cuenta con Supabase" : verification ? "Confirmá tu correo" : mode === "register" ? "Crear cuenta" : "Agregar cuenta"} onClose={closeModal} size="md">
+      <div className="mb-4 flex gap-2" role="group" aria-label="Método de acceso">
+        <button className="btn-secondary" type="button" aria-pressed={authProvider === "supabase"} disabled={submitting || googleWaiting} onClick={() => { resetForm(); setAuthProvider("supabase"); }}>Supabase</button>
+        <button className="btn-secondary" type="button" aria-pressed={authProvider === "legacy"} disabled={submitting || googleWaiting} onClick={() => { resetForm(); setAuthProvider("legacy"); }}>Acceso anterior</button>
+      </div>
+      {authProvider === "supabase" ? <SupabaseAccountForm onBusyChange={setSubmitting} onAuthenticated={() => {
+        resetForm();
+        onClose();
+        onAccountAdded?.();
+        showSuccess("Cuenta agregada con Supabase.");
+      }} /> : (
       <form className="space-y-4" onSubmit={verification ? handleVerifyEmail : handleSubmit}>
         {verification ? (
           <>
@@ -466,6 +481,7 @@ export function AddAccountModal({
           </>
         )}
       </form>
+      )}
     </Modal>
   );
 }
