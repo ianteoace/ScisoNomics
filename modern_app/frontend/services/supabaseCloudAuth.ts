@@ -5,9 +5,10 @@ import {
   getStoredAccounts, getValidAccessToken, isCloudAuthConfigured, removeAccount,
   type CloudUser, type StoredCloudSession,
 } from "./cloudAuth";
+import { deleteSupabaseRefreshToken, isSupabaseSecureStorageAvailable, loadSupabaseRefreshToken, saveSupabaseRefreshToken } from "./supabaseTokenStorage";
 
 type SupabaseIdentityClient = ReturnType<typeof createSupabaseAuthClient>;
-type MemorySession = { client: SupabaseIdentityClient; session: Session };
+type MemorySession = { client: SupabaseIdentityClient; session: Session | null; refreshToken: string; persistent: boolean };
 const sessions = new Map<string, MemorySession>();
 const refreshes = new Map<string, Promise<StoredCloudSession | null>>();
 
@@ -53,16 +54,16 @@ function providerError(error: AuthError): CloudAuthRequestError {
   });
 }
 
-async function resolveInternalUser(accessToken: string) {
+async function resolveInternalUser(accessToken: string, bootstrap = false) {
   try {
-    const user = await cloudAuth.me(accessToken);
+    const user = bootstrap ? await cloudAuth.supabaseBootstrap(accessToken) : await cloudAuth.me(accessToken);
     if (!user?.id || user.id === "local") {
       throw new CloudAuthRequestError("El servidor no devolvió una cuenta interna válida.", { code: "internal_identity_invalid", kind: "auth" });
     }
     return user;
   } catch (error) {
     if (error instanceof CloudAuthRequestError && error.code === "internal_account_required") {
-      throw new CloudAuthRequestError("Tu identidad de Supabase está confirmada, pero todavía no tiene una cuenta interna de ScisoNomics. El alta interna estará disponible en la siguiente fase. Podés continuar en modo local o con tu cuenta anterior.", {
+      throw new CloudAuthRequestError("No pudimos completar el alta interna de ScisoNomics. Intentá nuevamente o continuá en modo local.", {
         code: error.code, statusCode: error.statusCode, kind: "auth",
       });
     }
@@ -74,36 +75,52 @@ function expiresAt(session: Session) {
   return new Date((session.expires_at ?? Math.floor(Date.now() / 1000) + session.expires_in) * 1000).toISOString();
 }
 
-async function storeSession(user: CloudUser, session: Session, makeActive: boolean) {
+async function storeSession(user: CloudUser, session: Session, makeActive: boolean, persistent = false) {
   await addOrUpdateAccount({ user, tokens: {
     accessToken: session.access_token, expiresAt: expiresAt(session), tokenType: session.token_type || "bearer",
     // Refresh tokens never enter cloudAuth, sessionStorage or localStorage.
-  } }, { authProvider: "supabase", remember: false, makeActive });
+  } }, { authProvider: "supabase", remember: persistent, makeActive, externalPersistenceVerified: persistent });
 }
 
-async function acceptSession(client: SupabaseIdentityClient, session: Session | null): Promise<CloudUser> {
+async function acceptSession(client: SupabaseIdentityClient, session: Session | null, remember = isSupabaseSecureStorageAvailable()): Promise<CloudUser> {
   if (!session?.access_token || !session.refresh_token) {
     throw new CloudAuthRequestError("Supabase no devolvió una sesión válida.", { code: "supabase_session_missing", kind: "auth" });
   }
-  const user = await resolveInternalUser(session.access_token);
+  const user = await resolveInternalUser(session.access_token, true);
+  // Until bootstrap completes, the token stays in memory. No temporary native
+  // key based on sub is needed, and failures cannot leave such an entry behind.
   // Only the backend's users.id indexes accounts. The provider's subject stays
   // inside its memory session and is never an owner or storage key.
   const previous = sessions.get(user.id);
-  sessions.set(user.id, { client, session });
+  const entry = { client, session, refreshToken: session.refresh_token, persistent: remember };
+  sessions.set(user.id, entry);
+  try {
+    if (remember) await saveSupabaseRefreshToken(user.id, session.refresh_token);
+    else {
+      const deleted = await deleteSupabaseRefreshToken(user.id);
+      if (!deleted.ok) throw new CloudAuthRequestError("No pudimos quitar la sesión Supabase recordada. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
+    }
+    if (sessions.get(user.id) !== entry) throw new CloudAuthRequestError("Este acceso fue reemplazado. Volvé a iniciar sesión.", { code: "supabase_login_replaced", kind: "auth" });
+    await storeSession(user, session, true, remember);
+  } catch (failure) {
+    if (sessions.get(user.id) === entry) {
+      if (previous) sessions.set(user.id, previous); else sessions.delete(user.id);
+    }
+    throw failure;
+  }
   if (previous) await previous.client.auth.dispose();
-  await storeSession(user, session, true);
   return user;
 }
 
-export async function signInWithPassword(email: string, password: string) {
+export async function signInWithPassword(email: string, password: string, options: { remember?: boolean } = {}) {
   return withClient(async (client) => {
     const { data, error } = await client.auth.signInWithPassword({ email: email.trim(), password });
     if (error) throw providerError(error);
-    return acceptSession(client, data.session);
+    return acceptSession(client, data.session, options.remember);
   });
 }
 
-export async function signUpWithPassword(email: string, password: string, displayName?: string): Promise<SupabaseSignUpResult> {
+export async function signUpWithPassword(email: string, password: string, displayName?: string, options: { remember?: boolean } = {}): Promise<SupabaseSignUpResult> {
   return withClient(async (client): Promise<SupabaseSignUpResult> => {
     const normalizedEmail = email.trim();
     const { data, error } = await client.auth.signUp({
@@ -111,7 +128,7 @@ export async function signUpWithPassword(email: string, password: string, displa
     });
     if (error) throw providerError(error);
     if (!data.session) return { status: "verification_required", email: normalizedEmail };
-    return { status: "signed_in", user: await acceptSession(client, data.session) };
+    return { status: "signed_in", user: await acceptSession(client, data.session, options.remember) };
   });
 }
 
@@ -122,11 +139,11 @@ export async function resendSignupVerification(email: string) {
   });
 }
 
-export async function verifyEmailCode(email: string, token: string) {
+export async function verifyEmailCode(email: string, token: string, options: { remember?: boolean } = {}) {
   return withClient(async (client) => {
     const { data, error } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "email" });
     if (error) throw providerError(error);
-    return acceptSession(client, data.session);
+    return acceptSession(client, data.session, options.remember);
   });
 }
 
@@ -154,16 +171,33 @@ export async function getSession(ownerId = getActiveOwnerId()): Promise<StoredCl
 }
 
 async function refreshAccount(ownerId: string): Promise<StoredCloudSession | null> {
-  const entry = sessions.get(ownerId);
-  if (!entry || !getStoredAccounts().some((account) => account.user.id === ownerId && account.authProvider === "supabase")) return null;
-  const { data, error } = await entry.client.auth.refreshSession({ refresh_token: entry.session.refresh_token });
+  const account = getStoredAccounts().find((item) => item.user.id === ownerId && item.authProvider === "supabase");
+  if (!account) return null;
+  let entry = sessions.get(ownerId);
+  if (!entry) {
+    if (account.storage !== "persistent") return null;
+    entry = { client: newClient(), session: null, refreshToken: "", persistent: true };
+    sessions.set(ownerId, entry);
+    try {
+      const token = await loadSupabaseRefreshToken(ownerId);
+      if (sessions.get(ownerId) !== entry) return null;
+      if (!token) { forgetSession(ownerId); return null; }
+      entry.refreshToken = token;
+    } catch (error) { if (sessions.get(ownerId) === entry) forgetSession(ownerId); throw error; }
+  }
+  const { data, error } = await entry.client.auth.refreshSession({ refresh_token: entry.refreshToken });
   if (sessions.get(ownerId) !== entry) return null;
   if (error) throw providerError(error);
-  if (!data.session || data.session.user.id !== entry.session.user.id) {
+  if (!data.session || (entry.session && data.session.user.id !== entry.session.user.id)) {
     throw new CloudAuthRequestError("La identidad de la sesión cambió. Volvé a iniciar sesión.", { kind: "auth", code: "internal_identity_mismatch" });
   }
   // Preserve rotated refresh tokens across transient backend failures.
   entry.session = data.session;
+  entry.refreshToken = data.session.refresh_token;
+  // Save rotation before calling the backend: a transient /auth/me failure
+  // must not leave a stale one-use refresh token on disk.
+  if (entry.persistent) await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
+  if (sessions.get(ownerId) !== entry) return null;
   let user: CloudUser;
   try {
     user = await resolveInternalUser(data.session.access_token);
@@ -175,9 +209,9 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
     throw new CloudAuthRequestError("La sesión no corresponde a esta cuenta de ScisoNomics.", { kind: "auth", code: "internal_identity_mismatch" });
   }
   if (sessions.get(ownerId) !== entry || !getStoredAccounts().some((account) => account.user.id === ownerId && account.authProvider === "supabase")) return null;
-  await storeSession(user, data.session, false);
-  const account = getStoredAccounts().find((item) => item.user.id === ownerId)!;
-  return { ...account, token: data.session.access_token, tokenType: data.session.token_type, expiresAt: expiresAt(data.session) };
+  await storeSession(user, data.session, false, entry.persistent);
+  const updatedAccount = getStoredAccounts().find((item) => item.user.id === ownerId)!;
+  return { ...updatedAccount, token: data.session.access_token, tokenType: data.session.token_type, expiresAt: expiresAt(data.session) };
 }
 
 export function refreshSession(ownerId = getActiveOwnerId()): Promise<StoredCloudSession | null> {
@@ -191,6 +225,21 @@ export function forgetSession(ownerId: string) {
   if (entry) void entry.client.auth.dispose().catch(() => {});
 }
 
+export async function deleteSavedSession(ownerId: string) {
+  forgetSession(ownerId);
+  return deleteSupabaseRefreshToken(ownerId);
+}
+
+export async function hydrateStoredSessions() {
+  let restored = false;
+  for (const account of getStoredAccounts()) {
+    if (account.authProvider !== "supabase" || account.storage !== "persistent" || sessions.has(account.user.id)) continue;
+    try { restored = Boolean(await refreshSession(account.user.id)) || restored; }
+    catch { /* State is evaluated by getValidAccessToken; local mode stays usable. */ }
+  }
+  return restored;
+}
+
 export async function signOut(ownerId = getActiveOwnerId()) {
   const account = getStoredAccounts().find((item) => item.user.id === ownerId);
   if (account?.authProvider !== "supabase") return { ok: true };
@@ -200,7 +249,7 @@ export async function signOut(ownerId = getActiveOwnerId()) {
   try {
     if (entry) {
       const { error } = await entry.client.auth.signOut({ scope: "local" });
-      remoteRevoked = !error;
+      remoteRevoked = Boolean(entry.session) && !error;
     }
   } catch {
     // Local logout works offline. Never log provider errors or sessions.

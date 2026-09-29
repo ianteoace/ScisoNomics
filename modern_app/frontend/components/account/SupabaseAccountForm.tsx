@@ -6,6 +6,7 @@ import {
   resendSignupVerification, signInWithPassword, signUpWithPassword, verifyEmailCode,
 } from "../../services/supabaseCloudAuth";
 import { PasswordInput } from "../ui/PasswordInput";
+import { isSupabaseSecureStorageAvailable } from "../../services/supabaseTokenStorage";
 
 type Mode = "login" | "register" | "verify" | "recovery";
 const inputClass = "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400";
@@ -15,6 +16,8 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   onBusyChange: (busy: boolean) => void;
 }) {
   const configured = isSupabaseCloudAuthConfigured();
+  const secureStorageAvailable = isSupabaseSecureStorageAvailable();
+  const [remember, setRemember] = useState(secureStorageAvailable);
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -62,7 +65,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
     }
     void run(async () => {
       if (mode === "register") {
-        const result = await signUpWithPassword(email, password, displayName);
+        const result = await signUpWithPassword(email, password, displayName, { remember });
         setPassword("");
         setRepeatPassword("");
         if (result.status === "verification_required") {
@@ -71,7 +74,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
           return;
         }
       } else if (mode === "verify") {
-        await verifyEmailCode(email, code);
+        await verifyEmailCode(email, code, { remember });
       } else if (mode === "recovery") {
         if (!recoverySent) {
           await requestPasswordReset(email);
@@ -84,7 +87,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
         }
         return;
       } else {
-        await signInWithPassword(email, password);
+        await signInWithPassword(email, password, { remember });
       }
       setPassword("");
       setRepeatPassword("");
@@ -96,8 +99,8 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   return (
     <form className="space-y-4" onSubmit={submit}>
       <p className="text-sm text-slate-500 dark:text-slate-400">
-        {mode === "register" ? "Creá tu acceso con Supabase. Para usar la cuenta cloud necesitás una cuenta previa de ScisoNomics con el mismo email; el alta interna de cuentas nuevas llegará en la siguiente fase."
-          : mode === "verify" ? "Confirmá tu correo de Supabase. La verificación no crea una cuenta interna de ScisoNomics."
+        {mode === "register" ? "Creá tu acceso con Supabase. Al confirmar tu correo, ScisoNomics creará tu cuenta interna o vinculará tu cuenta anterior con el mismo email."
+          : mode === "verify" ? "Confirmá tu correo de Supabase para completar el alta de tu cuenta de ScisoNomics."
             : mode === "recovery" ? "Recuperá tu contraseña de Supabase mediante un código por correo."
               : "Ingresá con Supabase para activar tu cuenta de ScisoNomics en este dispositivo."}
       </p>
@@ -119,7 +122,12 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       {needsNewPassword ? <label className="block text-sm">Repetir contraseña
         <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={busy || !configured} />
       </label> : null}
-      <p className="text-xs text-slate-500 dark:text-slate-400">Esta sesión no se recuerda al cerrar la app. Podés cambiar entre tus cuentas mientras la sesión esté disponible.</p>
+      {mode !== "recovery" && secureStorageAvailable ? <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} />
+        Recordar esta cuenta en el almacenamiento seguro de este dispositivo
+      </label> : null}
+      <p className="text-xs text-slate-500 dark:text-slate-400">{secureStorageAvailable && remember ? "El acceso se restaura al iniciar la app. El refresh token se guarda en el almacenamiento seguro del sistema."
+        : "Esta sesión es temporal y no se recuerda al cerrar la app."}</p>
       <button className="btn w-full justify-center" type="submit" disabled={busy || !configured}>
         {busy ? "Procesando..." : mode === "register" ? "Registrarse con Supabase" : mode === "verify" ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar correo de recuperación" : "Ingresar con Supabase"}
       </button>

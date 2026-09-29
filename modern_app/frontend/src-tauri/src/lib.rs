@@ -20,6 +20,7 @@ use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
 mod device_verification;
+mod supabase_tokens;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
@@ -950,6 +951,9 @@ pub fn run() {
       save_persistent_cloud_refresh_token,
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
+      supabase_tokens::save_persistent_supabase_refresh_token,
+      supabase_tokens::load_persistent_supabase_refresh_token,
+      supabase_tokens::delete_persistent_supabase_refresh_token,
       debug_refresh_keyring_status,
       get_or_create_account_device_identity,
       sign_device_enrollment_proof,

@@ -26,7 +26,7 @@ class MemoryStorage {
 }
 
 function loadServices() {
-  for (const file of ["services/cloudAuth.ts", "services/supabaseCloudAuth.ts", "lib/supabase.ts"]) delete require.cache[path.join(root, file)];
+  for (const file of ["services/cloudAuth.ts", "services/supabaseCloudAuth.ts", "services/supabaseTokenStorage.ts", "lib/supabase.ts"]) delete require.cache[path.join(root, file)];
   return {
     cloud: require("../services/cloudAuth.ts"),
     external: require("../services/supabaseCloudAuth.ts"),
@@ -45,7 +45,20 @@ function setup(t, { configured = true, tauri = false } = {}) {
   browser.localStorage = new MemoryStorage();
   browser.sessionStorage = new MemoryStorage();
   if (tauri) browser.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+    if (command.includes("supabase")) {
+      ctx.nativeCalls.push({ command, accountId: args.accountId });
+      if (ctx.nativeError) throw new Error("Native failure with secret details");
+      const key = `supabase:${args.accountId}`;
+      if (command === "save_persistent_supabase_refresh_token") {
+        if (ctx.pauseSave) await ctx.pauseSave;
+        credentials.set(key, args.token);
+        return { ok: true, roundtrip: true };
+      }
+      if (command === "load_persistent_supabase_refresh_token") return { found: credentials.has(key), token: credentials.get(key) || null };
+      if (command === "delete_persistent_supabase_refresh_token") { credentials.delete(key); return { ok: true }; }
+    }
     if (command === "save_persistent_cloud_refresh_token") {
+      if (ctx.pauseLegacySave) await ctx.pauseLegacySave;
       credentials.set(args.accountId, args.token);
       return { ok: true, roundtrip: true, error_code: null };
     }
@@ -57,7 +70,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   const calls = [];
   const tokenOwners = new Map();
   let serial = 0;
-  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null };
+  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false };
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   function user(email) {
     return { id: internalIds[email], email: ctx.backendEmails[email] || email, created_at: "2026-01-01", updated_at: "2026-01-01", display_name: null };
@@ -77,6 +90,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
     assert.ok(["cloud.test", "identity.test"].includes(url.host), `Non-test network blocked: ${url.host}`);
     if (url.host === "identity.test") {
       if (url.pathname.endsWith("/token")) {
+        if (ctx.rejectRefresh && url.searchParams.get("grant_type") === "refresh_token") return json({ error_code: "refresh_token_not_found" }, 400);
         const email = url.searchParams.get("grant_type") === "refresh_token" ? tokenOwners.get(body.refresh_token) : body.email;
         if (!email || body.password === "wrong") return json({ error_code: "invalid_credentials", msg: "Secret error text must not leak" }, 400);
         return json(session(email));
@@ -90,7 +104,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
       if (["/auth/v1/logout", "/auth/v1/recover", "/auth/v1/resend"].includes(url.pathname)) return json({});
       throw new Error(`Unexpected provider API: ${url.pathname}`);
     }
-    if (url.pathname === "/auth/me") {
+    if (url.pathname === "/auth/me" || url.pathname === "/auth/supabase/bootstrap") {
       const email = tokenOwners.get(headers.get("Authorization")?.replace("Bearer ", ""));
       assert.ok(email, "Backend receives a provider access token");
       if (ctx.pauseMe) await ctx.pauseMe;
@@ -111,7 +125,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   return Object.assign(ctx, loadServices());
 }
 
-test("Supabase login resolves /auth/me and stores only the internal owner", async (t) => {
+test("Supabase login bootstraps the internal account and stores only the internal owner", async (t) => {
   const { cloud, external, calls, browser } = setup(t);
   const user = await external.signInWithPassword("alice@example.com", "correct password");
   assert.equal(user.id, "sciso-A");
@@ -121,7 +135,10 @@ test("Supabase login resolves /auth/me and stores only the internal owner", asyn
   const session = await external.getSession();
   assert.equal(session.user.id, "sciso-A");
   assert.match(session.token, /^supabase-access/);
-  assert.equal(calls.find((call) => call.url.pathname === "/auth/me").headers.get("Authorization"), `Bearer ${session.token}`);
+  const bootstrap = calls.find((call) => call.url.pathname === "/auth/supabase/bootstrap");
+  assert.equal(bootstrap.headers.get("Authorization"), `Bearer ${session.token}`);
+  assert.equal(bootstrap.method, "POST");
+  assert.deepEqual(bootstrap.body, {});
   assert.doesNotMatch(browser.localStorage.dump(), /supabase-(access|refresh)/);
   assert.doesNotMatch(browser.sessionStorage.dump(), /supabase-refresh/);
   assert.doesNotMatch(browser.sessionStorage.getItem("scisonomics_cloud_accounts_session_v1"), new RegExp(subjects["alice@example.com"]));
@@ -136,13 +153,13 @@ test("invalid Supabase login preserves the active legacy account", async (t) => 
   assert.equal((await cloud.getValidAccessToken()).token, "legacy-access");
 });
 
-test("identity without an internal link does not create or activate an account", async (t) => {
+test("failed bootstrap does not create or activate an account", async (t) => {
   const ctx = setup(t);
   ctx.backendError = { status: 403, detail: { code: "internal_account_required", message: "No internal account" } };
-  await assert.rejects(ctx.external.signInWithPassword("alice@example.com", "correct"), (error) => error.code === "internal_account_required" && error.message.includes("siguiente fase"));
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com", "correct"), (error) => error.code === "internal_account_required" && error.message.includes("alta interna"));
   assert.equal(ctx.cloud.getActiveOwnerId(), "local");
   assert.equal(ctx.cloud.getStoredAccounts().length, 0);
-  assert.deepEqual(ctx.calls.filter((call) => call.url.host === "cloud.test").map((call) => call.url.pathname), ["/auth/me"]);
+  assert.deepEqual(ctx.calls.filter((call) => call.url.host === "cloud.test").map((call) => call.url.pathname), ["/auth/supabase/bootstrap"]);
 });
 
 test("signup without a session asks for verification and never sets a provider owner", async (t) => {
@@ -325,4 +342,149 @@ test("a rejected late legacy refresh cannot clear a newer Supabase session", asy
   await pending;
   assert.equal(ctx.cloud.getStoredToken(), newAccess);
   assert.equal(ctx.cloud.getActiveAccount().authProvider, "supabase");
+});
+
+test("revoked persisted Supabase refresh is cleared without using legacy", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  ctx.browser.sessionStorage.data.clear();
+  ctx.rejectRefresh = true;
+  const reloaded = loadServices();
+  assert.equal(await reloaded.cloud.getValidAccessToken(), null);
+  assert.equal(ctx.credentials.size, 0);
+  assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, "session_expired");
+  assert.ok(!ctx.calls.some((call) => call.url.pathname === "/auth/refresh"));
+});
+
+test("native rotation failure is visible in persistence status and never falls back to localStorage", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  ctx.nativeError = true;
+  await ctx.cloud.forceRefreshActiveCloudSession();
+  assert.equal((await ctx.cloud.getActiveCloudAuthState()).persistenceStatus, "failed");
+  assert.doesNotMatch(ctx.browser.localStorage.dump(), /supabase-(access|refresh)/);
+  ctx.nativeError = false;
+  await ctx.cloud.forceRefreshActiveCloudSession();
+  assert.equal((await ctx.cloud.getActiveCloudAuthState()).persistenceStatus, "ok");
+});
+
+test("a late legacy native save cannot replace a newly activated Supabase provider", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  const response = await ctx.cloud.cloudAuth.login({ email: "alice@example.com", password: "correct" });
+  await ctx.cloud.addOrUpdateAccount({ user: response.user, tokens: ctx.cloud.getCloudAuthTokens(response) }, { remember: true });
+  let release;
+  ctx.pauseLegacySave = new Promise((resolve) => { release = resolve; });
+  const pending = ctx.cloud.forceRefreshActiveCloudSession();
+  await new Promise((resolve) => setImmediate(resolve));
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  release();
+  await pending;
+  assert.equal(ctx.cloud.getActiveAccount().authProvider, "supabase");
+  assert.match((await ctx.cloud.getValidAccessToken()).token, /^supabase-access/);
+});
+
+test("restoration never publishes a token for a different internal owner", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  ctx.browser.sessionStorage.data.clear();
+  const reloaded = loadServices();
+  const me = reloaded.cloud.cloudAuth.me;
+  t.mock.method(reloaded.cloud.cloudAuth, "me", async (token) => ({ ...(await me(token)), id: "wrong-owner" }));
+  assert.equal(await reloaded.cloud.getValidAccessToken(), null);
+  assert.equal(reloaded.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(ctx.credentials.size, 0);
+});
+
+test("Tauri stores only Supabase refresh in its separate project and internal owner namespace", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  assert.equal(ctx.cloud.getStoredAccounts()[0].storage, "persistent");
+  const [key, token] = [...ctx.credentials][0];
+  assert.match(key, /^supabase:[0-9a-f]{64}::sciso-A$/);
+  assert.match(token, /^supabase-refresh/);
+  assert.doesNotMatch(key, new RegExp(subjects["alice@example.com"]));
+  assert.doesNotMatch(ctx.browser.localStorage.dump(), /supabase-(access|refresh)/);
+  assert.doesNotMatch(ctx.browser.sessionStorage.dump(), /supabase-refresh/);
+  assert.equal((await ctx.cloud.getActiveCloudAuthState()).persistenceStatus, "ok");
+});
+
+test("persistent Supabase accounts restore and rotate after a fresh boot with separate owners", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await ctx.external.signInWithPassword("bob@example.com", "correct");
+  const previous = new Map(ctx.credentials);
+  ctx.browser.sessionStorage.data.clear();
+  const reloaded = loadServices();
+  assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id, "sciso-A");
+  assert.equal((await reloaded.cloud.getValidAccessToken("sciso-B")).user.id, "sciso-B");
+  assert.equal(reloaded.cloud.getActiveOwnerId(), "sciso-B");
+  assert.ok([...ctx.credentials].every(([key, token]) => previous.get(key) !== token));
+  assert.ok(!ctx.nativeCalls.some((call) => !call.command.includes("supabase")));
+  assert.ok(!ctx.calls.some((call) => call.url.pathname === "/auth/refresh"));
+});
+
+test("bootstrap rejection writes no native Supabase credential and preserves legacy", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  const legacy = await ctx.cloud.cloudAuth.login({ email: "alice@example.com", password: "correct" });
+  await ctx.cloud.addOrUpdateAccount({ user: legacy.user, tokens: ctx.cloud.getCloudAuthTokens(legacy) }, { remember: true });
+  ctx.backendError = { status: 409, detail: { code: "auth_provider_conflict", message: "Identity conflict" } };
+  await assert.rejects(ctx.external.signInWithPassword("bob@example.com", "correct"), (error) => error.code === "auth_provider_conflict");
+  assert.deepEqual([...ctx.credentials.keys()], ["sciso-A"]);
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+});
+
+test("native save failure is explicit and never publishes a remembered account", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  ctx.nativeError = true;
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com", "correct"), (error) => error.code === "supabase_secure_storage_failed" && !error.message.includes("secret"));
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
+  assert.equal(ctx.credentials.size, 0);
+});
+
+test("rotation survives backend failure and another boot", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  const [key, old] = [...ctx.credentials][0];
+  ctx.backendError = { status: 503, detail: { code: "backend_offline", message: "Try again" } };
+  await assert.rejects(ctx.external.refreshSession("sciso-A"), (error) => error.statusCode === 503);
+  assert.notEqual(ctx.credentials.get(key), old);
+  ctx.backendError = null;
+  ctx.browser.sessionStorage.data.clear();
+  const reloaded = loadServices();
+  assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id, "sciso-A");
+});
+
+test("Supabase logout deletes its namespace and preserves legacy and another external account", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  ctx.credentials.set("sciso-A", "dormant-legacy-refresh");
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await ctx.external.signInWithPassword("bob@example.com", "correct");
+  await ctx.cloud.logoutAccount("sciso-A");
+  assert.equal(ctx.credentials.get("sciso-A"), "dormant-legacy-refresh");
+  assert.ok([...ctx.credentials.keys()].some((key) => key.endsWith("::sciso-B")));
+  assert.ok(![...ctx.credentials.keys()].some((key) => key.endsWith("::sciso-A")));
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-B");
+});
+
+test("temporary Supabase login in Tauri stores no refresh credential", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct", { remember: false });
+  assert.equal(ctx.credentials.size, 0);
+  assert.equal(ctx.cloud.getStoredAccounts()[0].storage, "session");
+});
+
+test("a native delete waits for an in-flight rotation and cannot leave a resurrected credential", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  let release;
+  ctx.pauseSave = new Promise((resolve) => { release = resolve; });
+  const refresh = ctx.external.refreshSession("sciso-A");
+  await new Promise((resolve) => setImmediate(resolve));
+  const deletion = ctx.cloud.removeAccount("sciso-A");
+  release();
+  assert.equal(await refresh, null);
+  assert.equal((await deletion).ok, true);
+  assert.equal(ctx.credentials.size, 0);
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
 });

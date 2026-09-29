@@ -437,6 +437,9 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
 def _ensure_external_auth_schema(conn: CloudConnection) -> None:
     # Additive identity mapping; users.id and all financial foreign keys stay intact.
     _ensure_column(conn, "users", "auth_provider_id", "TEXT")
+    # SQLite cannot relax NOT NULL without rebuilding users. Empty means no
+    # password, never a fabricated hash; legacy credentials remain unchanged.
+    _ensure_column(conn, "users", "password_auth_enabled", "INTEGER NOT NULL DEFAULT 1")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_provider_id "
         "ON users(auth_provider_id) WHERE auth_provider_id IS NOT NULL AND auth_provider_id <> ''"

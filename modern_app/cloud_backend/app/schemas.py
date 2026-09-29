@@ -21,6 +21,11 @@ class LoginRequest(StrictModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class SupabaseBootstrapRequest(StrictModel):
+    # All identity/display fields come from verified Supabase, never the body.
+    pass
+
+
 class UserOut(BaseModel):
     id: str
     email: str

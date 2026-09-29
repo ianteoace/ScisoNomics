@@ -712,7 +712,7 @@ async function handleClearLocalSession() {
                   <p className="font-semibold">{account.user.display_name || account.user.email}</p>
                   {account.user.display_name ? <p className="text-xs text-slate-500 dark:text-slate-400">{account.user.email}</p> : null}
                   <p className="text-xs text-slate-500 dark:text-slate-400">Último uso: {formatDate(account.lastUsedAt)}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{account.authProvider === "supabase" ? "Supabase · sesión temporal" : "Acceso anterior"}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{account.authProvider === "supabase" ? account.storage === "persistent" ? "Supabase · acceso recordado" : "Supabase · sesión temporal" : "Acceso anterior"}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner(account.user.id)} disabled={activeOwnerId === account.user.id}>

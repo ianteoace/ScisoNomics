@@ -55,11 +55,13 @@ from .schemas import (
     RefreshRequest,
     RegisterRequest,
     ResendEmailVerificationRequest,
+    SupabaseBootstrapRequest,
     UserOut,
     VerifyEmailRequest,
 )
 from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, reset_rate_limit, sync_max_records
 from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supabase_access_token
+from .supabase_bootstrap import audit_link, bootstrap_user
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -1556,6 +1558,7 @@ def _get_supabase_user(token: str) -> UserOut:
             ).fetchone()
             if row is None:
                 raise _auth_provider_conflict()
+            audit_link(conn, row["id"], "supabase_account_linked")
             return row_to_user(row)
     except Exception as exc:
         # Both engines roll the transaction back before returning a conflict.
@@ -1711,11 +1714,11 @@ def login(payload: LoginRequest, request: Request):
     enforce_rate_limit(request, "auth-login", identity=email, limit=8, window_seconds=300)
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
+            "SELECT id, email, password_hash, password_auth_enabled, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
             (email,),
         ).fetchone()
 
-    if row is None or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
+    if row is None or not row["password_auth_enabled"] or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
         with connect() as conn:
             _security_audit(conn, "auth.login", outcome="denied", source_ip=client_ip(request), details={"email": mask_email(email)})
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
@@ -1815,6 +1818,18 @@ def resend_email_verification(payload: ResendEmailVerificationRequest, request: 
         if _resend_limit_reached(conn, user_row["id"]):
             raise _email_verification_error(429, "verification_resend_limit_exceeded", "Pediste demasiados codigos. Intenta mas tarde.")
         return _create_signup_verification(conn, user_id=user_row["id"], email=user_row["email"], now=now)
+
+
+@app.post("/auth/supabase/bootstrap", response_model=UserOut)
+def supabase_bootstrap(payload: SupabaseBootstrapRequest, request: Request, authorization: str | None = Header(default=None)):
+    enforce_rate_limit(request, "supabase-bootstrap", limit=30, window_seconds=60)
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, detail={"code": "invalid_supabase_token", "message": "Sesion Supabase requerida."})
+    try:
+        identity = verify_supabase_access_token(authorization.split(" ", 1)[1].strip())
+    except SupabaseAuthError as exc:
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
+    return row_to_user(bootstrap_user(identity, _insert_user_with_device_namespace))
 
 
 @app.get("/auth/me")

@@ -63,7 +63,7 @@ def _supabase_config() -> tuple[str, str]:
     return url, publishable_key
 
 
-def verify_supabase_access_token(token: str) -> dict[str, str]:
+def verify_supabase_access_token(token: str) -> dict[str, str | None]:
     """Validate with Supabase Auth's GET /auth/v1/user (the getUser API).
 
     Supabase validates the JWT against the configured project; the returned
@@ -116,8 +116,18 @@ def verify_supabase_access_token(token: str) -> dict[str, str]:
     if not isinstance(confirmed_at, str) or not confirmed_at.strip():
         raise SupabaseAuthError("email_verification_required", "Confirma tu email en Supabase para continuar.", 403)
 
+    metadata = payload.get("user_metadata")
+    display_name = None
+    if isinstance(metadata, dict):
+        for key in ("display_name", "full_name", "name"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                # Metadata is only a display label, never an identity or role.
+                display_name = " ".join(value.split())[:120]
+                break
     return {
         "sub": user_id,
         "email": email,
         "email_confirmed_at": confirmed_at,
+        "display_name": display_name,
     }

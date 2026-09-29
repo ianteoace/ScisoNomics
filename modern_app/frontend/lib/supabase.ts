@@ -17,6 +17,11 @@ export function isSupabaseAuthConfigured() {
 
 let clientNumber = 0;
 
+export function getSupabaseProjectUrl() {
+  if (!isSupabaseAuthConfigured()) throw new Error("Supabase no está configurado.");
+  return new URL(supabaseUrl!.replace(/\/$/, "")).href.replace(/\/$/, "");
+}
+
 // Each account/attempt gets an isolated in-memory SDK session. Creating the
 // client lazily keeps local mode and static builds working without auth.
 export function createSupabaseAuthClient() {
