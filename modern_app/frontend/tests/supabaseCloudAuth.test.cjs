@@ -70,7 +70,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   const calls = [];
   const tokenOwners = new Map();
   let serial = 0;
-  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false };
+  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false, otpError: null, resendError: null };
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   function user(email) {
     return { id: internalIds[email], email: ctx.backendEmails[email] || email, created_at: "2026-01-01", updated_at: "2026-01-01", display_name: null };
@@ -96,11 +96,15 @@ function setup(t, { configured = true, tauri = false } = {}) {
         return json(session(email));
       }
       if (url.pathname.endsWith("/signup")) return json(ctx.signupSession ? session(body.email) : { id: subjects[body.email], email: body.email, identities: [] });
-      if (url.pathname.endsWith("/verify")) return json(session(body.email));
+      if (url.pathname.endsWith("/verify")) {
+        if (ctx.otpError) return json({ error_code: ctx.otpError.code, msg: "Secret provider response must not leak" }, ctx.otpError.status);
+        return json(session(body.email));
+      }
       if (url.pathname.endsWith("/user")) {
         const email = tokenOwners.get(headers.get("Authorization")?.replace("Bearer ", ""));
         return json({ id: subjects[email], email, aud: "authenticated", app_metadata: {}, user_metadata: {} });
       }
+      if (url.pathname === "/auth/v1/resend" && ctx.resendError) return json({ error_code: ctx.resendError.code, msg: "Secret provider response must not leak" }, ctx.resendError.status);
       if (["/auth/v1/logout", "/auth/v1/recover", "/auth/v1/resend"].includes(url.pathname)) return json({});
       throw new Error(`Unexpected provider API: ${url.pathname}`);
     }
@@ -162,13 +166,91 @@ test("failed bootstrap does not create or activate an account", async (t) => {
   assert.deepEqual(ctx.calls.filter((call) => call.url.host === "cloud.test").map((call) => call.url.pathname), ["/auth/supabase/bootstrap"]);
 });
 
-test("signup without a session asks for verification and never sets a provider owner", async (t) => {
+test("signup without a session requires OTP without activating or persisting an account", async (t) => {
   const { external, cloud, calls } = setup(t);
   const result = await external.signUpWithPassword("alice@example.com", "long test password", "Alice");
   assert.equal(result.status, "verification_required");
+  assert.equal(result.email, "alice@example.com");
   assert.equal(cloud.getActiveOwnerId(), "local");
   assert.equal(cloud.getStoredAccounts().length, 0);
   assert.equal(calls.filter((call) => call.url.host === "cloud.test").length, 0);
+  assert.equal(calls.find((call) => call.url.pathname.endsWith("/signup")).body.email_redirect_to, undefined);
+});
+
+test("signup OTP verifies with email type, bootstraps and remembers the internal owner in Tauri", async (t) => {
+  const ctx = setup(t, { tauri: true });
+  const result = await ctx.external.signUpWithPassword(" alice@example.com ", "long test password");
+  assert.equal(result.status, "verification_required");
+  assert.equal(ctx.credentials.size, 0);
+  const user = await ctx.external.verifyEmailCode(result.email, " 001234 ", { remember: true });
+  assert.equal(user.id, "sciso-A");
+  assert.notEqual(user.id, subjects["alice@example.com"]);
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(ctx.cloud.getActiveAccount().storage, "persistent");
+  const verify = ctx.calls.find((call) => call.url.pathname.endsWith("/verify"));
+  assert.equal(verify.body.email, "alice@example.com");
+  assert.equal(verify.body.token, "001234");
+  assert.equal(verify.body.type, "email");
+  const bootstrap = ctx.calls.find((call) => call.url.pathname === "/auth/supabase/bootstrap");
+  assert.ok(ctx.calls.indexOf(verify) < ctx.calls.indexOf(bootstrap));
+  assert.deepEqual(bootstrap.body, {});
+  assert.equal(bootstrap.headers.get("Authorization"), `Bearer ${(await ctx.external.getSession()).token}`);
+  assert.equal(ctx.credentials.size, 1);
+  assert.ok([...ctx.credentials.keys()].every((key) => key.endsWith("::sciso-A")));
+  assert.doesNotMatch(ctx.browser.localStorage.dump(), /001234|supabase-(refresh|access)/);
+  assert.doesNotMatch(ctx.browser.sessionStorage.dump(), /001234|supabase-refresh/);
+});
+
+test("malformed OTP is rejected clearly without making a network request", async (t) => {
+  const ctx = setup(t);
+  await assert.rejects(ctx.external.verifyEmailCode("alice@example.com", "not-a-code"), (error) => error.code === "invalid_otp" && error.message.includes("Código inválido"));
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
+});
+
+for (const reason of ["incorrect", "expired"]) {
+  test(`${reason} signup OTP never bootstraps, stores a credential or replaces the active legacy owner`, async (t) => {
+    const ctx = setup(t, { tauri: true });
+    const legacy = await ctx.cloud.cloudAuth.login({ email: "alice@example.com", password: "correct" });
+    await ctx.cloud.addOrUpdateAccount({ user: legacy.user, tokens: ctx.cloud.getCloudAuthTokens(legacy) }, { remember: true });
+    // Supabase uses otp_expired for both wrong and expired numeric tokens.
+    ctx.otpError = { code: "otp_expired", status: 403 };
+    await assert.rejects(ctx.external.verifyEmailCode("bob@example.com", reason === "incorrect" ? "999999" : "111111"),
+      (error) => error.code === "otp_expired" && /inválido|venció/.test(error.message) && !error.message.includes("Secret"));
+    assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+    assert.equal(ctx.cloud.getActiveAccount().authProvider, "legacy");
+    assert.deepEqual([...ctx.credentials.keys()], ["sciso-A"]);
+    assert.ok(!ctx.calls.some((call) => call.url.pathname === "/auth/supabase/bootstrap"));
+  });
+}
+
+test("verification rate limit tells the user to wait without activating an owner", async (t) => {
+  const ctx = setup(t);
+  ctx.otpError = { code: "over_request_rate_limit", status: 429 };
+  await assert.rejects(ctx.external.verifyEmailCode("alice@example.com", "123456"),
+    (error) => error.statusCode === 429 && error.message.includes("Demasiados intentos"));
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+});
+
+test("resending signup uses the existing signup email and never sends an OTP or creates an owner", async (t) => {
+  const ctx = setup(t);
+  await ctx.external.resendSignupVerification(" alice@example.com ");
+  const resend = ctx.calls.find((call) => call.url.pathname.endsWith("/resend"));
+  assert.equal(resend.body.type, "signup");
+  assert.equal(resend.body.email, "alice@example.com");
+  assert.equal(resend.body.token, undefined);
+  assert.equal(resend.body.email_redirect_to, undefined);
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
+});
+
+test("temporarily blocked resend shows a clear error and keeps verification usable", async (t) => {
+  const ctx = setup(t);
+  ctx.resendError = { code: "over_email_send_rate_limit", status: 429 };
+  await assert.rejects(ctx.external.resendSignupVerification("alice@example.com"),
+    (error) => error.code === "over_email_send_rate_limit" && error.message.includes("temporalmente bloqueado"));
+  ctx.resendError = null;
+  await ctx.external.resendSignupVerification("alice@example.com");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
 });
 
 test("signup with a session still requires backend resolution", async (t) => {

@@ -122,14 +122,53 @@ Sin memoria SDK, logout puede limpiar el dispositivo sin revocar remotamente.
 
 El registro puede devolver una sesion o requerir confirmacion, como documenta
 [Supabase signUp](https://supabase.com/docs/reference/javascript/auth-signup).
-La confirmacion mediante enlace se realiza en Supabase; despues se vuelve
-a iniciar sesion en la app. Si el correo incluye un OTP se puede usar
-`verifyEmailCode`, que aplica la misma resolucion del usuario interno.
+La confirmacion desktop usa OTP dentro de ScisoNomics, sin enlace web,
+redirect ni navegador. Signup sin sesion devuelve `verification_required`;
+la UI conserva el email pendiente solo en memoria, bloquea su edicion para
+evitar verificar otra identidad y muestra el campo de codigo. Usar otro email
+reinicia el formulario; cerrar el modal descarta el estado pendiente.
+`verifyEmailCode` usa la API oficial `auth.verifyOtp({ email, token, type: "email" })`;
+la sesion confirmada pasa al bootstrap y solo despues activa users.id interno
+y guarda el refresh en WinCred si corresponde. El OTP nunca se persiste ni
+se imprime en logs. `persistSession=false` se mantiene.
+
+Reenvio usa `auth.resend({ type: "signup", email })`, no otro signup ni login
+passwordless. La UI espera 60 segundos despues de signup, reenvio exitoso o
+reenvio limitado. Es una ayuda de UI; los limites/expiracion del proyecto
+Supabase siguen siendo la autoridad. Errores de formato, codigo invalido o
+vencido, demasiados intentos y reenvio bloqueado tienen mensajes explicitos.
+Supabase puede usar `otp_expired` tanto para un codigo incorrecto como vencido;
+la app informa ambas posibilidades sin inventar una distincion del servidor.
+
+### Configuracion manual de Supabase (no aplicada automaticamente)
+
+1. Mantener habilitada la confirmacion de email para el proveedor Email.
+2. En Authentication -> Email Templates -> **Confirm sign up**, reemplazar el
+   enlace `{{ .ConfirmationURL }}` por el codigo `{{ .Token }}`. No editar Magic
+   Link para este flujo: el registro sigue siendo por email/password.
+3. Usar, por ejemplo, este cuerpo y guardar la plantilla manualmente:
+
+   ```html
+   <h2>Confirmá tu correo en ScisoNomics</h2>
+   <p>Ingresá este código dentro de la app:</p>
+   <p><strong>{{ .Token }}</strong></p>
+   <p>Si no solicitaste esta cuenta, ignorá este correo.</p>
+   ```
+
+4. Revisar expiracion de Email OTP, limites de envio y SMTP del proyecto. El
+   input admite 6 a 10 digitos (preserva ceros iniciales); pegar el codigo
+   completo del correo. No requiere modificar Site URL ni redirects de otros
+   flujos. Correos viejos con links siguen sin servir para este flujo desktop;
+   pedir un nuevo codigo despues de guardar la plantilla.
+
+Referencias oficiales: [Email Templates](https://supabase.com/docs/guides/auth/auth-email-templates),
+[verifyOtp](https://supabase.com/docs/reference/javascript/auth-verifyotp) y
+[resend](https://supabase.com/docs/reference/javascript/auth-resend).
 
 Recuperacion en la app usa `resetPasswordForEmail`, `verifyOtp(type=recovery)`
 y `updateUser(password)`. Para que este flujo por codigo funcione, la plantilla
 de recuperacion debe incluir `{{ .Token }}`. La plantilla de confirmacion
-tambien puede incluirlo para verificar dentro de la app, siguiendo
+requiere el codigo para el flujo desktop anterior, siguiendo
 [Email Templates](https://supabase.com/docs/guides/auth/auth-email-templates)
 y [verifyOtp](https://supabase.com/docs/reference/javascript/auth-verifyotp).
 No se modifica la configuracion real del proyecto desde este trabajo.
@@ -161,10 +200,17 @@ Backend: compileall de app y unittest de test_supabase_bootstrap,
 test_supabase_auth, test_email_verification y test_security. DBs SQLite
 temporales, incluyendo carreras reales con threads. Rust agrega roundtrip,
 rotacion y aislamiento de legacy con credenciales dummy unicas que se eliminan.
-La validacion de esta fase paso 63 tests backend, 31 frontend y 5 Rust, mas
+La validacion de la fase bootstrap/persistencia paso 63 tests backend, 31 frontend y 5 Rust, mas
 build y cargo check. WinCred requirio ejecutar cargo test fuera del sandbox
 (Windows 1312 dentro del sandbox); no se omitieron tests ni se uso un mock
 para declarar correcto el roundtrip nativo.
+
+La fase OTP paso 38 tests frontend (`npm run test:auth`) y `npm run build`.
+La verificacion de UI con APIs simuladas cubrio signup pendiente, OTP
+incorrecto/vencido, reenvio limitado y exitoso, bootstrap con users.id distinto
+del sub y navegacion a Inicio, sin errores de consola ni overlay. No uso
+Supabase ni Railway reales ni cambio plantillas del proyecto. La entrega real
+del codigo por correo queda pendiente de la configuracion manual anterior.
 No usan datos reales ni Railway. No sustituyen una prueba nativa empaquetada
 de Tauri ni un rollout contra un proyecto Supabase de staging.
 

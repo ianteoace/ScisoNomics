@@ -36,16 +36,19 @@ async function withClient<T>(action: (client: SupabaseIdentityClient) => Promise
   }
 }
 
-function providerError(error: AuthError): CloudAuthRequestError {
-  const code = error.code || "supabase_auth_failed";
+function providerError(error: AuthError, operation?: "verify_email" | "resend_signup"): CloudAuthRequestError {
+  const code = error.code || (error.status === 429 ? "over_request_rate_limit" : "supabase_auth_failed");
   const messages: Record<string, string> = {
     invalid_credentials: "Email o contraseña incorrectos.",
     email_not_confirmed: "Confirmá tu correo en Supabase antes de iniciar sesión.",
     weak_password: "La contraseña no cumple los requisitos de seguridad.",
-    otp_expired: "El código venció o no es válido. Pedí uno nuevo.",
-    over_email_send_rate_limit: "Esperá unos minutos antes de pedir otro correo.",
-    over_request_rate_limit: "Esperá unos minutos antes de volver a intentar.",
+    otp_expired: "El código es inválido o venció. Revisalo o pedí uno nuevo.",
+    over_email_send_rate_limit: "El reenvío de códigos está temporalmente bloqueado. Esperá unos minutos antes de pedir otro.",
+    over_request_rate_limit: operation === "resend_signup"
+      ? "El reenvío de códigos está temporalmente bloqueado por demasiadas solicitudes. Esperá unos minutos."
+      : "Demasiados intentos. Esperá unos minutos antes de volver a intentar.",
   };
+  if (operation === "verify_email") messages.validation_failed = "Código inválido. Ingresá los dígitos del código recibido por correo.";
   const retryable = !error.status || error.status >= 500 || error.status === 429;
   return new CloudAuthRequestError(messages[code] || (retryable
     ? "No pudimos conectar con Supabase. Intentá nuevamente."
@@ -135,14 +138,17 @@ export async function signUpWithPassword(email: string, password: string, displa
 export async function resendSignupVerification(email: string) {
   return withClient(async (client) => {
     const { error } = await client.auth.resend({ type: "signup", email: email.trim() });
-    if (error) throw providerError(error);
+    if (error) throw providerError(error, "resend_signup");
   });
 }
 
 export async function verifyEmailCode(email: string, token: string, options: { remember?: boolean } = {}) {
+  const code = token.trim();
+  if (!/^[0-9]{6,10}$/.test(code)) throw new CloudAuthRequestError(
+    "Código inválido. Ingresá los dígitos del código recibido por correo.", { code: "invalid_otp", kind: "auth" });
   return withClient(async (client) => {
-    const { data, error } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "email" });
-    if (error) throw providerError(error);
+    const { data, error } = await client.auth.verifyOtp({ email: email.trim(), token: code, type: "email" });
+    if (error) throw providerError(error, "verify_email");
     return acceptSession(client, data.session, options.remember);
   });
 }
