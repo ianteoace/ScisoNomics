@@ -1,6 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ScisoNomics",
+  "mainBinaryName": "ScisoNomics",
   "version": "3.2.0",
   "identifier": "com.scisonomics.desktop",
   "plugins": {
@@ -32,6 +33,7 @@
     }
   },
   "bundle": {
+    "active": true,
     "targets": "all",
     "homepage": "https://github.com/ianteoace/scisonomics/releases",
     "licenseFile": "LICENSE.txt",
