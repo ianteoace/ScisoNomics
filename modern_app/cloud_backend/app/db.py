@@ -434,6 +434,15 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
 
 
+def _ensure_external_auth_schema(conn: CloudConnection) -> None:
+    # Additive identity mapping; users.id and all financial foreign keys stay intact.
+    _ensure_column(conn, "users", "auth_provider_id", "TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_provider_id "
+        "ON users(auth_provider_id) WHERE auth_provider_id IS NOT NULL AND auth_provider_id <> ''"
+    )
+
+
 def _ensure_refresh_token_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "cloud_refresh_tokens", "device_id", "TEXT")
     _ensure_column(conn, "cloud_refresh_tokens", "device_name", "TEXT")
@@ -996,6 +1005,7 @@ def _init_sqlite() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_external_auth_schema(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
@@ -1262,6 +1272,7 @@ def _init_postgres() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_external_auth_schema(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)

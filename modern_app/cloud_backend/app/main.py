@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import socket
+import sqlite3
 import smtplib
 import time
 from urllib.parse import urlencode
@@ -58,6 +59,7 @@ from .schemas import (
     VerifyEmailRequest,
 )
 from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, reset_rate_limit, sync_max_records
+from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supabase_access_token
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -1498,6 +1500,73 @@ def _validate_sync_payload(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _auth_provider_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "auth_provider_conflict", "message": "La identidad externa ya tiene otro vinculo. Requiere revision manual."},
+    )
+
+
+def _get_supabase_user(token: str) -> UserOut:
+    try:
+        identity = verify_supabase_access_token(token)
+    except SupabaseAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
+
+    provider_id = identity["sub"]
+    email = identity["email"]
+    columns = "id, email, display_name, created_at, updated_at, auth_provider_id"
+    try:
+        with connect() as conn:
+            # The provider identity is authoritative once linked. Email changes
+            # must never move it to another internal account.
+            row = conn.execute(
+                f"SELECT {columns} FROM users WHERE auth_provider_id = ?",
+                (provider_id,),
+            ).fetchone()
+            if row is not None:
+                return row_to_user(row)
+
+            rows = conn.execute(
+                f"SELECT {columns} FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 2",
+                (email,),
+            ).fetchall()
+            if not rows:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "internal_account_required", "message": "No existe una cuenta interna. Completa el alta o la migracion de ScisoNomics antes de continuar."},
+                )
+            if len(rows) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "auth_email_ambiguous", "message": "Hay varias cuentas con ese email. Requiere revision manual."},
+                )
+            row = rows[0]
+            if row["auth_provider_id"] not in (None, "", provider_id):
+                raise _auth_provider_conflict()
+
+            # Compare-and-set prevents replacing a concurrently established
+            # link. The partial unique index also protects the provider ID.
+            row = conn.execute(
+                f"UPDATE users SET auth_provider_id = ? "
+                f"WHERE id = ? AND LOWER(TRIM(email)) = ? "
+                f"AND (auth_provider_id IS NULL OR auth_provider_id = '' OR auth_provider_id = ?) "
+                f"RETURNING {columns}",
+                (provider_id, row["id"], email, provider_id),
+            ).fetchone()
+            if row is None:
+                raise _auth_provider_conflict()
+            return row_to_user(row)
+    except Exception as exc:
+        # Both engines roll the transaction back before returning a conflict.
+        constraint = getattr(getattr(exc, "diag", None), "constraint_name", None)
+        postgres_collision = getattr(exc, "sqlstate", None) == "23505" and constraint == "idx_users_auth_provider_id"
+        sqlite_collision = isinstance(exc, sqlite3.IntegrityError) and "users.auth_provider_id" in str(exc)
+        if postgres_collision or sqlite_collision:
+            raise _auth_provider_conflict() from None
+        raise
+
+
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -1505,7 +1574,9 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
     try:
         payload = decode_access_token(token)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if not supabase_auth_enabled():
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return _get_supabase_user(token)
 
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Sesion no valida.")
