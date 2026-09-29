@@ -1,9 +1,9 @@
-# Instalador Windows 3.2.0: validación de release
+# Instalador Windows 3.2.1: validación de release
 
-Este build de 3.2.0 valida el empaquetado de la fase de auth externo. No cambia
-la versión del backend local ni los datos. Para publicar una versión nueva,
-actualizar juntos `package.json`, `tauri.conf.json`, `Cargo.toml`, el backend
-local y su EXE PyInstaller; `prepare:sidecar` exige que coincidan.
+Este build de 3.2.1 valida el empaquetado de la fase de auth externo. Mantiene
+alineada la versión del backend local y no cambia los datos. Para publicar una
+versión nueva, actualizar juntos `package.json`, `tauri.conf.json`, `Cargo.toml`,
+el backend local y su EXE PyInstaller; `prepare:sidecar` exige que coincidan.
 
 ## Build reproducible
 
@@ -42,7 +42,7 @@ PyInstaller; no necesita Python ni venv en la máquina de destino.
    backups. El hook NSIS bloquea la instalación si quedan procesos de la app
    o el sidecar; no los termina a la fuerza. Si Windows informa archivos en
    uso, cancelar, cerrar la app y volver a instalar: no elegir Omitir.
-2. **Instalar:** ejecutar el `ScisoNomics_3.2.0_x64-setup.exe` NSIS para el
+2. **Instalar:** ejecutar el `ScisoNomics_3.2.1_x64-setup.exe` NSIS para el
    usuario actual. Confirmar en Windows que `scisonomics://` queda asociado al
    ejecutable instalado. El MSI registra el scheme a nivel máquina (HKLM);
    preferir NSIS para esta prueba por usuario. No desinstalar una versión previa

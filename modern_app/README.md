@@ -91,12 +91,12 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health`, y al cerrar la app termina el proceso backend.
 
-El instalador NSIS 3.2.0 bloquea la instalación si siguen abiertos estos procesos de ScisoNomics:
+El instalador NSIS 3.2.1 bloquea la instalación si siguen abiertos estos procesos de ScisoNomics:
 - `ScisoNomics.exe`
 - `scisonomics-backend.exe`
 - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
 
-No fuerza su cierre porque podría interrumpir escrituras o el cierre seguro. Si Windows avisa que un archivo está en uso, cancelar, cerrar esos procesos y volver a instalar; no usar "Omitir". La actualización no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.2.0_x64-setup.exe`.
+No fuerza su cierre porque podría interrumpir escrituras o el cierre seguro. Si Windows avisa que un archivo está en uso, cancelar, cerrar esos procesos y volver a instalar; no usar "Omitir". La actualización no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.2.1_x64-setup.exe`.
 
 ### Desarrollo
 
