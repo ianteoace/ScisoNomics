@@ -61,10 +61,10 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   const resendWait = Math.max(0, Math.ceil((resendAvailableAt - clockNow) / 1000));
 
   useEffect(() => {
-    if (!verifyingSignup || resendWait <= 0) return;
+    if (!(verifyingSignup || (mode === "recovery" && recoverySent)) || resendWait <= 0) return;
     const timer = window.setTimeout(() => setClockNow(Date.now()), 1000);
     return () => window.clearTimeout(timer);
-  }, [verifyingSignup, resendWait, resendAvailableAt, clockNow]);
+  }, [verifyingSignup, mode, recoverySent, resendWait, resendAvailableAt, clockNow]);
 
   function startResendCooldown() {
     const now = Date.now();
@@ -96,6 +96,21 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       } catch (failure) {
         if (failure instanceof CloudAuthRequestError && (failure.statusCode === 429
           || failure.code === "over_email_send_rate_limit" || failure.code === "over_request_rate_limit")) startResendCooldown();
+        throw failure;
+      }
+    });
+  }
+
+  function resendRecoveryCode() {
+    if (resendWait > 0) return;
+    void run(async () => {
+      try {
+        await requestPasswordReset(email);
+        setCode("");
+        startResendCooldown();
+        setNotice("Si existe una cuenta con ese email, recibirás un nuevo código de recuperación.");
+      } catch (failure) {
+        if (failure instanceof CloudAuthRequestError && failure.statusCode === 429) startResendCooldown();
         throw failure;
       }
     });
@@ -140,7 +155,8 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
         if (!recoverySent) {
           await requestPasswordReset(email);
           setRecoverySent(true);
-          setNotice("Si existe una cuenta, recibirás un correo de recuperación. Usá su código para cambiar la contraseña acá. Los enlaces de recuperación todavía no se abren dentro de esta app.");
+          startResendCooldown();
+          setNotice("Si existe una cuenta con ese email, recibirás un código de recuperación. Ingresalo acá para cambiar la contraseña.");
         } else {
           await completePasswordRecovery(email, code, password);
           changeMode("login");
@@ -161,27 +177,14 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   return (
     <form className="space-y-4" onSubmit={submit}>
       <p className="text-sm text-slate-500 dark:text-slate-400">
-        {mode === "register" ? "Creá tu acceso con Supabase. Al confirmar tu correo, ScisoNomics creará tu cuenta interna o vinculará tu cuenta anterior con el mismo email."
-          : verifyingSignup ? "Correo pendiente de verificación. Ingresá el código de Supabase para completar el alta de tu cuenta de ScisoNomics."
-            : mode === "recovery" ? "Recuperá tu contraseña de Supabase mediante un código por correo."
-              : "Ingresá con Supabase para activar tu cuenta de ScisoNomics en este dispositivo."}
+        {mode === "register" ? "Creá tu cuenta. Confirmarás tu correo con un código dentro de ScisoNomics."
+          : verifyingSignup ? "Ingresá el código que enviamos a tu correo para completar el registro."
+            : mode === "recovery" ? "Recuperá tu contraseña con un código enviado a tu correo."
+              : "Ingresá para acceder a tu cuenta en este dispositivo. También podés seguir en modo local."}
       </p>
-      {!configured ? <p role="status" className="text-sm text-amber-700 dark:text-amber-200">Supabase no está configurado. Podés usar el acceso anterior o continuar en modo local.</p> : null}
+      {!configured ? <p role="status" className="text-sm text-amber-700 dark:text-amber-200">El servicio de cuenta no está configurado. Podés continuar en modo local.</p> : null}
       {notice ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">{notice}</p> : null}
       {error || google.status === "error" ? <p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-200">{error || google.message}</p> : null}
-      {mode === "login" || mode === "register" ? <>
-        <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || !secureStorageAvailable} onClick={() => {
-          startedGoogleHere.current = true;
-          setError("");
-          setNotice("");
-          void signInWithGoogleSupabase({ remember }).catch((failure) => setError(failure instanceof CloudAuthRequestError ? failure.message : "No pudimos iniciar Google. Volvé a intentar."));
-        }}>Continuar con Google</button>
-        {!secureStorageAvailable ? <p className="text-xs text-slate-500 dark:text-slate-400">Google con Supabase requiere la app de escritorio.</p> : null}
-      </> : null}
-      {googleBusy ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">
-        {google.status === "opening" ? "Abriendo Google..." : google.status === "waiting" ? "Esperando confirmación..." : "Procesando inicio de sesión..."}
-        {google.status !== "processing" ? <button type="button" className="ml-2 font-semibold underline" onClick={() => void cancelGoogleSupabaseSignIn()}>Cancelar</button> : null}
-      </p> : null}
       <label className="block text-sm">Email
         <input className={inputClass} type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); if (verifyingSignup) setCode(""); }} required disabled={formBusy || !configured || (verifyingSignup && verificationEmail !== null) || (mode === "recovery" && recoverySent)} />
       </label>
@@ -201,22 +204,43 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
         <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={formBusy} />
         Recordar esta cuenta en el almacenamiento seguro de este dispositivo
       </label> : null}
-      <p className="text-xs text-slate-500 dark:text-slate-400">{secureStorageAvailable && remember ? "El acceso se restaura al iniciar la app. El refresh token se guarda en el almacenamiento seguro del sistema."
+      <p className="text-xs text-slate-500 dark:text-slate-400">{secureStorageAvailable && remember ? "Tu sesión se restaura al iniciar la app y se guarda de forma segura en este dispositivo."
         : "Esta sesión es temporal y no se recuerda al cerrar la app."}</p>
       <button className="btn w-full justify-center" type="submit" disabled={formBusy || !configured}>
-        {busy ? "Procesando..." : mode === "register" ? "Registrarse con Supabase" : verifyingSignup ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar correo de recuperación" : "Ingresar con Supabase"}
+        {busy ? "Procesando..." : mode === "register" ? "Crear cuenta" : verifyingSignup ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar código" : "Iniciar sesión"}
       </button>
+      {mode === "login" || mode === "register" ? <>
+        <div className="my-4 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-slate-400" aria-hidden="true">
+          <span className="h-px flex-1 bg-slate-700" />o<span className="h-px flex-1 bg-slate-700" />
+        </div>
+        <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || !secureStorageAvailable} onClick={() => {
+          startedGoogleHere.current = true;
+          setError("");
+          setNotice("");
+          void signInWithGoogleSupabase({ remember }).catch((failure) => setError(failure instanceof CloudAuthRequestError ? failure.message : "No pudimos iniciar Google. Volvé a intentar."));
+        }}>Continuar con Google</button>
+        {!secureStorageAvailable ? <p className="text-xs text-slate-500 dark:text-slate-400">El acceso con Google requiere la app de escritorio.</p> : null}
+      </> : null}
+      {googleBusy ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">
+        {google.status === "opening" ? "Abriendo Google..." : google.status === "waiting" ? "Esperando confirmación..." : "Procesando inicio de sesión..."}
+        {google.status !== "processing" ? <button type="button" className="ml-2 font-semibold underline" onClick={() => void cancelGoogleSupabaseSignIn()}>Cancelar</button> : null}
+      </p> : null}
       {verifyingSignup ? <>
         <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || resendWait > 0 || !(verificationEmail || email).trim()} onClick={resendCode}>
           {resendWait > 0 ? `Reenviar código en ${resendWait}s` : "Reenviar código"}
         </button>
         {verificationEmail ? <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("register")}>Usar otro email</button> : null}
       </> : null}
+      {mode === "recovery" && recoverySent ? (
+        <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || resendWait > 0} onClick={resendRecoveryCode}>
+          {resendWait > 0 ? `Reenviar código en ${resendWait}s` : "Reenviar código"}
+        </button>
+      ) : null}
       <div className="flex flex-wrap gap-3 text-sm">
-        <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "Crear acceso Supabase" : "Volver al login"}</button>
+        <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "¿No tenés cuenta? Crear cuenta" : "Volver al inicio de sesión"}</button>
         {mode === "login" ? <>
           <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("verification_required")}>Confirmar correo con código</button>
-          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("recovery")}>Olvidé mi contraseña</button>
+          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("recovery")}>¿Olvidaste tu contraseña?</button>
         </> : null}
       </div>
     </form>

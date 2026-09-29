@@ -1,30 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { useToast } from "../../hooks/useToast";
 import {
-  DEFAULT_REMEMBER_CLOUD_ACCOUNT,
   clearAllAccounts,
   clearActiveAccountSession,
-  cloudAuth,
   getActiveAccount,
   getActiveCloudAuthState,
   getAuthUIState,
   getActiveCloudSessionAsync,
   getActiveOwnerId,
-  getCloudAuthTokens,
   getStoredAccounts,
-  isCloudAuthRequestError,
-  isEmailVerificationRequiredResponse,
   isCloudAuthConfigured,
   logoutAccount,
   removeAccount,
   switchActiveOwner,
-  addOrUpdateAccount,
   type CloudSessionAvailability,
-  type EmailVerificationRequiredResponse,
   type StoredCloudAccount,
   type CloudUser,
 } from "../../services/cloudAuth";
@@ -49,24 +41,17 @@ import {
   type SyncHistoryItem,
   type SyncOverview,
 } from "../../services/cloudSync";
-import { PasswordInput } from "../ui/PasswordInput";
 import { AddAccountModal } from "./AddAccountModal";
+import { SupabaseAccountForm } from "./SupabaseAccountForm";
 
-type Mode = "login" | "register";
-type PendingVerification = EmailVerificationRequiredResponse & { source: Mode };
-
-const inputClass =
-  "w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-400";
+const ignoreFormBusy = () => {};
 
 export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { showHeader?: boolean; hideSyncCenter?: boolean }) {
   const configured = isCloudAuthConfigured();
   const { showError, showSuccess } = useToast();
-  const [mode, setMode] = useState<Mode>("login");
   const [loadingSession, setLoadingSession] = useState(true);
   const [sessionCheckError, setSessionCheckError] = useState("");
   const [sessionAvailability, setSessionAvailability] = useState<CloudSessionAvailability>("none");
-  const [submitting, setSubmitting] = useState(false);
-  const [remember, setRemember] = useState(DEFAULT_REMEMBER_CLOUD_ACCOUNT);
   const [tokenMode, setTokenMode] = useState<"persistent" | "session" | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState("Sin sincronizar");
@@ -86,61 +71,12 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
   const [showHistory, setShowHistory] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
   const [showConflicts, setShowConflicts] = useState(false);
-  const [showAddAccount, setShowAddAccount] = useState(false);
-  const [supabaseModalOpen, setSupabaseModalOpen] = useState(false);
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [user, setUser] = useState<CloudUser | null>(null);
   const [accounts, setAccounts] = useState<StoredCloudAccount[]>([]);
   const [activeOwnerId, setActiveOwnerId] = useState("local");
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [registerEmail, setRegisterEmail] = useState("");
-  const [registerPassword, setRegisterPassword] = useState("");
-  const [repeatPassword, setRepeatPassword] = useState("");
-  const [verification, setVerification] = useState<PendingVerification | null>(null);
-  const [verificationCode, setVerificationCode] = useState("");
-  const [resendAvailableIn, setResendAvailableIn] = useState(0);
   const hasCheckedSessionRef = useRef(false);
   const sessionAvailable = sessionAvailability === "active";
-
-  function clearAuthForms() {
-    setLoginEmail("");
-    setLoginPassword("");
-    setDisplayName("");
-    setRegisterEmail("");
-    setRegisterPassword("");
-    setRepeatPassword("");
-    setVerificationCode("");
-  }
-
-  async function completeVerifiedLogin(response: Awaited<ReturnType<typeof cloudAuth.verifyEmail>>, successMessage: string) {
-    const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
-    const authState = await getActiveCloudAuthState();
-    setTokenMode(authState.account?.storage || null);
-    setSessionAvailability(authState.availability);
-    setUser(authState.account?.user || response.user);
-    setAccounts(getStoredAccounts());
-    setActiveOwnerId(response.user.id);
-    setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
-    setShowAddAccount(false);
-    setVerification(null);
-    clearAuthForms();
-    if (remember && !stored.secureResult.storedSecurely) {
-      showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
-    }
-    showSuccess(successMessage);
-  }
-
-  function enterVerification(
-    response: EmailVerificationRequiredResponse,
-    source: Mode,
-    delivered = response.resend_available_in > 0,
-  ) {
-    setVerification({ ...response, source });
-    setVerificationCode("");
-    setResendAvailableIn(response.resend_available_in || 0);
-    if (delivered) showSuccess("Te enviamos un código de verificación por correo.");
-  }
 
   function refreshAuthState() {
     const currentAccounts = getStoredAccounts();
@@ -168,8 +104,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
       try {
         if (window.sessionStorage.getItem("scisonomics_account_panel_add") === "1") {
           window.sessionStorage.removeItem("scisonomics_account_panel_add");
-          setShowAddAccount(true);
-          setMode("login");
+          setAccountModalOpen(true);
         }
       } catch {
         // El panel debe seguir funcionando aunque sessionStorage no este disponible.
@@ -197,13 +132,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
     };
   }, [configured]);
 
-  useEffect(() => {
-    if (!verification || resendAvailableIn <= 0) return;
-    const timer = window.setTimeout(() => setResendAvailableIn((value) => Math.max(0, value - 1)), 1000);
-    return () => window.clearTimeout(timer);
-  }, [verification, resendAvailableIn]);
-
-async function handleClearLocalSession() {
+  async function handleClearLocalSession() {
     const activeSession = getActiveAccount();
     if (activeSession?.user.id) clearAutoSyncPreference(activeSession.user.id);
     const cleared = await clearActiveAccountSession();
@@ -293,140 +222,6 @@ async function handleClearLocalSession() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configured, user?.id]);
 
-  async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!configured || submitting) return;
-    setSubmitting(true);
-    console.info("[auth] login submit", JSON.stringify({ mode: "login", remember }));
-    try {
-      const response = await cloudAuth.login({ email: loginEmail, password: loginPassword });
-      if (isEmailVerificationRequiredResponse(response)) {
-        enterVerification(response, "login");
-        return;
-      }
-      const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
-      const authState = await getActiveCloudAuthState();
-      setTokenMode(authState.account?.storage || null);
-      setSessionAvailability(authState.availability);
-      setUser(authState.account?.user || response.user);
-      setAccounts(getStoredAccounts());
-      setActiveOwnerId(response.user.id);
-      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
-      setShowAddAccount(false);
-      clearAuthForms();
-      if (remember && !stored.secureResult.storedSecurely) {
-        showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
-      }
-      showSuccess("Sesión iniciada.");
-    } catch (error) {
-      console.error("Error iniciando sesión:", error);
-      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
-        enterVerification(error.verification, "login", false);
-        showError("La cuenta sigue sin verificar y el correo no pudo enviarse. Podés reintentar el envío.");
-        return;
-      }
-      showError(error instanceof Error ? error.message : "No se pudo iniciar sesión.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleRegister(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!configured || submitting) return;
-    if (registerPassword.length < 12) {
-      showError("La contraseña debe tener al menos 12 caracteres.");
-      return;
-    }
-    if (registerPassword !== repeatPassword) {
-      showError("Las contraseñas no coinciden.");
-      return;
-    }
-    setSubmitting(true);
-    console.info("[auth] login submit", JSON.stringify({ mode: "register", remember }));
-    try {
-      const response = await cloudAuth.register({
-        display_name: displayName || null,
-        email: registerEmail,
-        password: registerPassword,
-      });
-      if (isEmailVerificationRequiredResponse(response)) {
-        enterVerification(response, "register");
-        return;
-      }
-      const stored = await addOrUpdateAccount({ user: response.user, tokens: getCloudAuthTokens(response) }, { remember, makeActive: true });
-      const authState = await getActiveCloudAuthState();
-      setTokenMode(authState.account?.storage || null);
-      setSessionAvailability(authState.availability);
-      setUser(authState.account?.user || response.user);
-      setAccounts(getStoredAccounts());
-      setActiveOwnerId(response.user.id);
-      setSessionCheckError(authState.availability === "active" ? "" : getAuthUIState(authState.availability).message);
-      setShowAddAccount(false);
-      clearAuthForms();
-      if (remember && !stored.secureResult.storedSecurely) {
-        showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
-      }
-      showSuccess("Cuenta creada.");
-    } catch (error) {
-      console.error("Error creando cuenta:", error);
-      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
-        enterVerification(error.verification, "register", false);
-        showError("La cuenta quedó creada, pero el correo no pudo enviarse. Podés reintentar el envío.");
-        return;
-      }
-      if (isCloudAuthRequestError(error) && error.kind === "timeout") {
-        setMode("login");
-        showError("La solicitud tardó demasiado. La cuenta puede haberse creado; probá iniciar sesión para recuperar la verificación.");
-        return;
-      }
-      showError(error instanceof Error ? error.message : "No se pudo crear la cuenta.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!verification || submitting) return;
-    const code = verificationCode.replace(/\D/g, "");
-    if (code.length !== 6) {
-      showError("Ingresá el código de 6 dígitos.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const response = await cloudAuth.verifyEmail({ verification_token: verification.verification_token, code });
-      await completeVerifiedLogin(response, verification.source === "register" ? "Cuenta verificada." : "Sesión iniciada.");
-    } catch (error) {
-      console.error("Error verificando email:", error);
-      showError(error instanceof Error ? error.message : "No se pudo verificar el código.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleResendVerificationCode() {
-    if (!verification || submitting || resendAvailableIn > 0) return;
-    setSubmitting(true);
-    try {
-      const response = await cloudAuth.resendEmailVerification({ verification_token: verification.verification_token });
-      setVerification({ ...response, source: verification.source });
-      setVerificationCode("");
-      setResendAvailableIn(response.resend_available_in || 60);
-      showSuccess("Te enviamos un nuevo código.");
-    } catch (error) {
-      console.error("Error reenviando código:", error);
-      if (isCloudAuthRequestError(error) && error.code === "email_delivery_failed" && error.verification) {
-        setVerification({ ...error.verification, source: verification.source });
-        setResendAvailableIn(0);
-      }
-      showError(error instanceof Error ? error.message : "No se pudo reenviar el código.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function handleLogout() {
     const activeSession = await getActiveCloudSessionAsync();
     let cleanupOk = true;
@@ -451,7 +246,6 @@ async function handleClearLocalSession() {
     setSyncHistory([]);
     setSyncConflicts([]);
     setCloudDevices([]);
-    clearAuthForms();
     if (cleanupOk) showSuccess("Sesión cerrada. Tus datos de cuenta no se muestran en modo local.");
     else showError("Cerramos la sesión, pero no pudimos limpiar por completo la sesión recordada.");
   }
@@ -606,57 +400,9 @@ async function handleClearLocalSession() {
     return labels[reason] || (item.mode === "auto" ? "Automática" : "Manual");
   }
 
-  async function handleGoogleLogin() {
-    if (!configured || submitting) {
-      showError("El servicio de cuenta no está configurado en este entorno.");
-      return;
-    }
-    setSubmitting(true);
-    console.info("[auth] login submit", JSON.stringify({ mode: "google", remember }));
-    try {
-      const result = await cloudAuth.googleStart();
-      if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-        await openUrl(result.auth_url);
-      } else {
-        window.open(result.auth_url, "_blank", "noopener,noreferrer");
-      }
-      const startedAt = Date.now();
-      while (Date.now() - startedAt < 3 * 60 * 1000) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const status = await cloudAuth.googleStatus(result.login_request_id);
-        if (status.status === "pending") continue;
-        if (status.status === "completed") {
-          const stored = await addOrUpdateAccount({ user: status.user, tokens: getCloudAuthTokens(status) }, { remember, makeActive: true });
-          const authState = await getActiveCloudAuthState();
-          setTokenMode(authState.account?.storage || null);
-          setSessionAvailability(authState.availability);
-          setUser(authState.account?.user || status.user);
-          setAccounts(getStoredAccounts());
-          setActiveOwnerId(status.user.id);
-          setSessionCheckError("");
-          setShowAddAccount(false);
-          clearAuthForms();
-          if (remember && !stored.secureResult.storedSecurely) {
-            showError("No pudimos guardar la sesión de forma segura. Vas a tener que iniciar sesión nuevamente al abrir la app.");
-          }
-          showSuccess("Cuenta agregada con Google.");
-          return;
-        }
-        showError(status.message || "No se pudo completar Google Login.");
-        return;
-      }
-      showError("No pudimos confirmar el inicio de sesión con Google. Intentá nuevamente.");
-    } catch (error) {
-      console.error("Error iniciando Google OAuth:", error);
-      showError(error instanceof Error ? error.message : "El inicio con Google todavía no está configurado en este entorno.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
     <section className="space-y-4">
-      <AddAccountModal open={supabaseModalOpen} defaultProvider="supabase" onClose={() => setSupabaseModalOpen(false)} onAccountAdded={() => { refreshAuthState(); void handleRetrySessionCheck(); }} />
+      <AddAccountModal open={accountModalOpen} onClose={() => setAccountModalOpen(false)} onAccountAdded={() => { refreshAuthState(); void handleRetrySessionCheck(); }} />
       {showHeader ? (
         <header className="card p-5">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
@@ -712,7 +458,7 @@ async function handleClearLocalSession() {
                   <p className="font-semibold">{account.user.display_name || account.user.email}</p>
                   {account.user.display_name ? <p className="text-xs text-slate-500 dark:text-slate-400">{account.user.email}</p> : null}
                   <p className="text-xs text-slate-500 dark:text-slate-400">Último uso: {formatDate(account.lastUsedAt)}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{account.authProvider === "supabase" ? account.storage === "persistent" ? "Supabase · acceso recordado" : "Supabase · sesión temporal" : "Acceso anterior"}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{account.storage === "persistent" ? "Acceso recordado" : "Sesión temporal"}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button className="btn-secondary" type="button" onClick={() => handleSwitchOwner(account.user.id)} disabled={activeOwnerId === account.user.id}>
@@ -728,10 +474,7 @@ async function handleClearLocalSession() {
         </div>
         {configured ? (
           <div className="mt-4 flex flex-wrap gap-2">
-            <button className="btn-secondary" type="button" onClick={() => setSupabaseModalOpen(true)}>Agregar con Supabase</button>
-            <button className="btn-secondary" type="button" onClick={() => setShowAddAccount((value) => !value)}>
-              {showAddAccount ? "Cancelar agregado" : "Agregar con acceso anterior"}
-            </button>
+            <button className="btn-secondary" type="button" onClick={() => setAccountModalOpen(true)}>Agregar cuenta</button>
           </div>
         ) : null}
         <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
@@ -746,18 +489,7 @@ async function handleClearLocalSession() {
             Limpiar sesión local
           </button>
         </section>
-      ) : sessionCheckError && !user ? (
-        <section className="card p-5">
-          <h3 className="text-lg font-semibold">No pudimos verificar la sesión</h3>
-          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            {sessionCheckError}
-          </p>
-          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <button className="btn-secondary" type="button" onClick={handleRetrySessionCheck}>Reintentar</button>
-            <button className="btn" type="button" onClick={handleClearLocalSession}>Limpiar sesión local</button>
-          </div>
-        </section>
-      ) : user && !showAddAccount ? (
+      ) : user ? (
         <section className="card p-6">
           <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta</p>
           <h3 className="mt-2 text-2xl font-semibold">
@@ -1002,156 +734,22 @@ async function handleClearLocalSession() {
       ) : (
         <section className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="card p-6 lg:p-8">
-            {verification ? (
-              <>
-                <div className="text-center">
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Verificación de email</p>
-                  <h3 className="mt-2 text-3xl font-bold">Confirmá tu correo</h3>
-                  <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
-                    Ingresá el código de 6 dígitos que enviamos a {verification.email}.
-                  </p>
+            <h3 className="mb-5 text-2xl font-bold">Iniciar sesión</h3>
+            {sessionCheckError ? (
+              <div role="alert" className="mb-5 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+                <p>{sessionCheckError}</p>
+                <div className="mt-2 flex gap-3">
+                  <button className="font-semibold underline" type="button" onClick={handleRetrySessionCheck}>Reintentar</button>
+                  <button className="font-semibold underline" type="button" onClick={handleClearLocalSession}>Limpiar sesión local</button>
                 </div>
-
-                <form className="mt-6 space-y-4" onSubmit={handleVerifyEmail}>
-                  <label className="block text-sm">
-                    Código de verificación
-                    <input
-                      className={`${inputClass} mt-1 text-center text-lg tracking-[0.4em]`}
-                      inputMode="numeric"
-                      maxLength={6}
-                      pattern="[0-9]{6}"
-                      value={verificationCode}
-                      onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                      required
-                      disabled={submitting}
-                    />
-                  </label>
-                  <button className="btn w-full justify-center" type="submit" disabled={submitting || verificationCode.length !== 6}>
-                    {submitting ? "Confirmando..." : "Confirmar"}
-                  </button>
-                </form>
-
-                <div className="mt-5 flex flex-col gap-3 text-center text-sm text-slate-500 dark:text-slate-400">
-                  <button
-                    className="font-semibold text-sky-600 hover:underline disabled:text-slate-400 disabled:no-underline dark:text-sky-300"
-                    type="button"
-                    onClick={handleResendVerificationCode}
-                    disabled={submitting || resendAvailableIn > 0}
-                  >
-                    {resendAvailableIn > 0 ? `Reenviar código en ${resendAvailableIn}s` : "Reenviar código"}
-                  </button>
-                  <button
-                    className="font-semibold text-slate-600 hover:underline dark:text-slate-300"
-                    type="button"
-                    onClick={() => {
-                      setVerification(null);
-                      setVerificationCode("");
-                      setMode("login");
-                    }}
-                    disabled={submitting}
-                  >
-                    Volver al login
-                  </button>
-                </div>
-              </>
-            ) : mode === "login" ? (
-              <>
-                <div className="text-center">
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">ScisoNomics</p>
-                  <h3 className="mt-2 text-3xl font-bold">Iniciá sesión en ScisoNomics</h3>
-                  <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
-                    Podés usar ScisoNomics sin cuenta. En futuras versiones, una cuenta te permitirá respaldar y sincronizar tus datos entre dispositivos.
-                  </p>
-                </div>
-
-                <div className="mt-6 grid gap-3">
-                  <button className="btn-secondary w-full justify-center" type="button" onClick={handleGoogleLogin}>
-                    Continuar con Google
-                  </button>
-                </div>
-
-                <div className="my-6 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-slate-400">
-                  <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                  o
-                  <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
-                </div>
-
-                <form className="space-y-4" onSubmit={handleLogin}>
-                  <label className="block text-sm">
-                    Correo electrónico
-                    <input className={`${inputClass} mt-1`} type="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} required disabled={!configured} />
-                  </label>
-                  <label className="block text-sm">
-                    Contraseña
-                    <PasswordInput className={inputClass} value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required disabled={!configured} />
-                  </label>
-                  <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-                    <label className="inline-flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-slate-300"
-                        checked={remember}
-                        onChange={(event) => setRemember(event.target.checked)}
-                      />
-                      Recordarme
-                    </label>
-                    <span className="text-slate-400">¿Olvidaste tu contraseña? Próximamente</span>
-                  </div>
-                  <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
-                    {submitting ? "Ingresando..." : "Iniciar sesión"}
-                  </button>
-                </form>
-
-                <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
-                  No tenés una cuenta?{" "}
-                  <button className="font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={() => setMode("register")}>
-                    Registrate ahora.
-                  </button>
-                </p>
-              </>
-            ) : (
-              <>
-                <div className="text-center">
-                  <p className="text-xs uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">Cuenta opcional</p>
-                  <h3 className="mt-2 text-3xl font-bold">Crear cuenta</h3>
-                  <p className="mx-auto mt-2 max-w-xl text-sm text-slate-500 dark:text-slate-400">
-                    La cuenta no activa sincronización de datos financieros. Tus movimientos siguen guardándose localmente.
-                  </p>
-                </div>
-
-                <form className="mt-6 space-y-4" onSubmit={handleRegister}>
-                  <label className="block text-sm">
-                    Nombre opcional
-                    <input className={`${inputClass} mt-1`} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={!configured} />
-                  </label>
-                  <label className="block text-sm">
-                    Correo electrónico
-                    <input className={`${inputClass} mt-1`} type="email" value={registerEmail} onChange={(event) => setRegisterEmail(event.target.value)} required disabled={!configured} />
-                  </label>
-                  <label className="block text-sm">
-                    Contraseña
-                    <PasswordInput className={inputClass} value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={!configured} />
-                    <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">Mínimo 12 caracteres.</span>
-                  </label>
-                  <label className="block text-sm">
-                    Repetir contraseña
-                    <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={!configured} />
-                  </label>
-                  <button className="btn w-full justify-center" type="submit" disabled={!configured || submitting}>
-                    {submitting ? "Creando..." : "Crear cuenta"}
-                  </button>
-                </form>
-
-                <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
-                  Ya tenés cuenta?{" "}
-                  <button className="font-semibold text-sky-600 hover:underline dark:text-sky-300" type="button" onClick={() => setMode("login")}>
-                    Iniciá sesión.
-                  </button>
-                </p>
-              </>
-            )}
+              </div>
+            ) : null}
+            <SupabaseAccountForm onBusyChange={ignoreFormBusy} onAuthenticated={() => {
+              refreshAuthState();
+              void handleRetrySessionCheck();
+              showSuccess("Sesión iniciada.");
+            }} />
           </div>
-
           <aside className="card p-6">
             <h3 className="text-lg font-semibold">Modo local-first</h3>
             <div className="mt-4 space-y-3 text-sm text-slate-600 dark:text-slate-300">

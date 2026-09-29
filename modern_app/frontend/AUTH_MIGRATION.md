@@ -22,10 +22,11 @@ el cliente no puede enviar identidad, email, plan ni privilegios.
 - `services/cloudAuth.ts` conserva `StoredCloudAccount`, `activeOwnerId` y
   la cache central de access tokens. Agrega `authProvider` opcional; los
   metadatos anteriores sin ese campo se interpretan como legacy.
-- `AddAccountModal` ofrece Supabase y Acceso anterior; `SupabaseAccountForm`
-  concentra la nueva UI. `AccountPanel` permite abrir el modal y distingue
-  las cuentas Supabase temporales/recordadas del acceso anterior. Recordar
-  cuenta esta disponible solamente en Tauri; en navegador es temporal.
+- `AddAccountModal` y `AccountPanel` muestran el mismo formulario de cuenta:
+  email/password, registro y OTP, recuperación por código y Google. La UI no
+  ofrece acceso legacy. Las cuentas previas aún se pueden restaurar, cambiar y
+  cerrar desde el estado compartido. Recordar cuenta está disponible solamente
+  en Tauri; en navegador la sesión es temporal.
 - Sync y entitlements consumen la misma interfaz de token central. El unico
   cambio en `cloudSync.ts` pasa el owner original al refresh del retry 401
   para evitar usar el token de otra cuenta si se cambio de owner mientras
@@ -169,18 +170,32 @@ Referencias oficiales: [Email Templates](https://supabase.com/docs/guides/auth/a
 [verifyOtp](https://supabase.com/docs/reference/javascript/auth-verifyotp) y
 [resend](https://supabase.com/docs/reference/javascript/auth-resend).
 
-Recuperacion en la app usa `resetPasswordForEmail`, `verifyOtp(type=recovery)`
-y `updateUser(password)`. Para que este flujo por codigo funcione, la plantilla
-de recuperacion debe incluir `{{ .Token }}`. La plantilla de confirmacion
-requiere el codigo para el flujo desktop anterior, siguiendo
+Recuperación en la app usa `resetPasswordForEmail`, `verifyOtp(type=recovery)`
+y `updateUser(password)`. La UI permite reenviar tras 60 segundos y confirmar
+el código y la nueva contraseña dentro de ScisoNomics. El servicio verifica
+que la sesión emitida por el OTP corresponde al email ingresado antes de
+actualizar la contraseña. Después cierra esa sesión temporal: no activa owner,
+no llama a bootstrap y no guarda refresh en WinCred; el usuario inicia sesión
+con la contraseña nueva. Para que este flujo por código funcione, configurar
+manualmente Authentication -> Email Templates -> **Reset Password** con
+`{{ .Token }}` en lugar de depender solo de `{{ .ConfirmationURL }}`. Por ejemplo:
+
+```html
+<h2>Recuperá tu cuenta de ScisoNomics</h2>
+<p>Ingresá este código dentro de la app:</p>
+<p><strong>{{ .Token }}</strong></p>
+<p>Si no pediste restablecer tu contraseña, ignorá este correo.</p>
+```
+
+La plantilla de confirmación requiere el código para el flujo desktop anterior, siguiendo
 [Email Templates](https://supabase.com/docs/guides/auth/auth-email-templates)
 y [verifyOtp](https://supabase.com/docs/reference/javascript/auth-verifyotp).
 No se modifica la configuracion real del proyecto desde este trabajo.
 Un correo que solo contiene un enlace no permite completar la recuperacion
-dentro de Tauri en esta fase; la UI explicita esa limitacion.
+dentro de Tauri. Solicitar un nuevo código después de cambiar la plantilla.
 
-Google con Supabase usa ahora el callback nativo fijo y PKCE descritos abajo.
-Google legacy sigue disponible exclusivamente en Acceso anterior; no se borra.
+Google usa el callback nativo fijo y PKCE descritos abajo. Los endpoints y el
+storage de Google legacy siguen intactos para compatibilidad interna.
 
 ## Google desktop: Supabase + PKCE + deep link
 
@@ -276,7 +291,7 @@ key para ese entorno antes de arrancar. Sin backend configurado Google no se hab
    Debe haber una sola instancia; el sidecar inicia como antes. Si el registro
    del scheme falla, revisar permisos de Windows. Dev asocia `scisonomics` al
    ejecutable debug actual y puede reemplazar la asociacion de una instalacion.
-2. Cuenta -> Agregar con Supabase -> marcar/desmarcar Recordar -> Continuar con
+2. Cuenta -> Agregar cuenta -> marcar/desmarcar Recordar -> Continuar con
    Google. Verificar navegador externo, elegir cuenta y aceptar abrir ScisoNomics.
    Debe activar la cuenta interna despues de bootstrap; no sincronizar finanzas
    como parte de esta prueba. Cancelar debe dejar la cuenta anterior/local intacta.
@@ -299,7 +314,7 @@ key para ese entorno antes de arrancar. Sin backend configurado Google no se hab
    callback debe recuperar el verificador de WinCred; tras vencimiento pedir
    login nuevamente. Con Recordar, cerrar/reabrir debe restaurar el refresh.
 5. Probar dos cuentas Google, cambiar entre ellas y Modo local, y repetir
-   password/OTP y Acceso anterior. Reinstalar el bundle de produccion al terminar
+   password/OTP y recuperación por código. Reinstalar el bundle de producción al terminar
    las pruebas dev para restaurar la asociacion al ejecutable instalado.
 
 Riesgos pendientes: otras aplicaciones pueden registrar el mismo custom scheme;
@@ -358,9 +373,7 @@ manual en staging descrita arriba.
 2. Probar restauracion y logout en el paquete Tauri y ante cierre abrupto entre
    rotacion del proveedor y guardado nativo. Esa ventana no es atomica entre
    servicios; si se pierde la rotacion puede requerir re-login.
-3. Preparar plantillas de OTP, SMTP/rate limits y callbacks de recuperacion/OAuth
-   en staging. Probar el paquete Tauri y los retornos del navegador.
-4. Preparar rollout coordinado backend/frontend y recovery para conflictos de
-   email historicos. El cliente actualizado requiere el endpoint bootstrap.
-5. Mantener registro/login/refresh/logout legacy, Google legacy y su storage
-   seguro hasta una migracion explicita de las cuentas existentes.
+3. Configurar y probar manualmente la plantilla **Reset Password** con
+   `{{ .Token }}`. Comprobar entrega, expiración y límites de reenvío en Tauri.
+4. Mantener registro/login/refresh/logout legacy, Google legacy y su storage
+   seguro como compatibilidad interna hasta una fase de retiro explícita.

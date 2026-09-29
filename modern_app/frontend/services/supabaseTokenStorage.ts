@@ -19,14 +19,14 @@ async function storageKey(ownerId: string) {
 
 async function invokeCommand<T>(name: string, ownerId: string, extra = {}): Promise<T> {
   if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError(
-    "El almacenamiento seguro de Supabase requiere Tauri. Usá una sesión temporal.", { code: "supabase_secure_unavailable" });
+    "El almacenamiento seguro requiere la app de escritorio. Usá una sesión temporal.", { code: "supabase_secure_unavailable" });
   try {
     const accountId = await storageKey(ownerId);
     const { invoke } = await import("@tauri-apps/api/core");
     return await invoke<T>(name, { accountId, ...extra });
   } catch (error) {
     if (error instanceof CloudAuthRequestError) throw error;
-    throw new CloudAuthRequestError("No pudimos acceder al almacenamiento seguro de Supabase. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
+    throw new CloudAuthRequestError("No pudimos acceder al almacenamiento seguro. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
   }
 }
 
@@ -43,12 +43,12 @@ function command<T>(name: string, ownerId: string, extra = {}): Promise<T> {
 export async function saveSupabaseRefreshToken(ownerId: string, token: string) {
   const result = await command<{ ok: boolean; roundtrip: boolean }>("save_persistent_supabase_refresh_token", ownerId, { token });
   if (!result?.ok || !result.roundtrip) throw new CloudAuthRequestError(
-    "No pudimos verificar el guardado seguro de la sesión Supabase.", { code: "supabase_secure_storage_failed" });
+    "No pudimos verificar el guardado seguro de la sesión.", { code: "supabase_secure_storage_failed" });
 }
 
 export async function loadSupabaseRefreshToken(ownerId: string): Promise<string | null> {
   const result = await command<{ found: boolean; token: string | null; error_code?: string | null }>("load_persistent_supabase_refresh_token", ownerId);
-  if (result?.error_code) throw new CloudAuthRequestError("No pudimos leer la sesión Supabase guardada.", { code: "supabase_secure_storage_failed" });
+  if (result?.error_code) throw new CloudAuthRequestError("No pudimos leer la sesión guardada.", { code: "supabase_secure_storage_failed" });
   return result?.found && result.token ? result.token : null;
 }
 

@@ -22,7 +22,7 @@ export function isSupabaseCloudAuthConfigured() {
 
 function newClient() {
   if (!isSupabaseCloudAuthConfigured()) {
-    throw new CloudAuthRequestError("Supabase no está configurado en este entorno. Podés seguir usando el modo local o el acceso anterior.", { code: "supabase_not_configured" });
+    throw new CloudAuthRequestError("El servicio de cuenta no está configurado. Podés seguir en modo local.", { code: "supabase_not_configured" });
   }
   return createSupabaseAuthClient();
 }
@@ -40,7 +40,7 @@ function providerError(error: AuthError, operation?: "verify_email" | "resend_si
   const code = error.code || (error.status === 429 ? "over_request_rate_limit" : "supabase_auth_failed");
   const messages: Record<string, string> = {
     invalid_credentials: "Email o contraseña incorrectos.",
-    email_not_confirmed: "Confirmá tu correo en Supabase antes de iniciar sesión.",
+    email_not_confirmed: "Confirmá tu correo antes de iniciar sesión.",
     weak_password: "La contraseña no cumple los requisitos de seguridad.",
     otp_expired: "El código es inválido o venció. Revisalo o pedí uno nuevo.",
     over_email_send_rate_limit: "El reenvío de códigos está temporalmente bloqueado. Esperá unos minutos antes de pedir otro.",
@@ -51,8 +51,8 @@ function providerError(error: AuthError, operation?: "verify_email" | "resend_si
   if (operation === "verify_email") messages.validation_failed = "Código inválido. Ingresá los dígitos del código recibido por correo.";
   const retryable = !error.status || error.status >= 500 || error.status === 429;
   return new CloudAuthRequestError(messages[code] || (retryable
-    ? "No pudimos conectar con Supabase. Intentá nuevamente."
-    : "No se pudo completar la autenticación con Supabase."), {
+    ? "No pudimos conectar con el servicio de cuenta. Intentá nuevamente."
+    : "No se pudo completar el inicio de sesión."), {
     code, statusCode: error.status || null, kind: retryable ? "network" : "auth",
   });
 }
@@ -87,7 +87,7 @@ async function storeSession(user: CloudUser, session: Session, makeActive: boole
 
 async function acceptSession(client: SupabaseIdentityClient, session: Session | null, remember = isSupabaseSecureStorageAvailable()): Promise<CloudUser> {
   if (!session?.access_token || !session.refresh_token) {
-    throw new CloudAuthRequestError("Supabase no devolvió una sesión válida.", { code: "supabase_session_missing", kind: "auth" });
+    throw new CloudAuthRequestError("No recibimos una sesión válida.", { code: "supabase_session_missing", kind: "auth" });
   }
   const user = await resolveInternalUser(session.access_token, true);
   // Until bootstrap completes, the token stays in memory. No temporary native
@@ -101,7 +101,7 @@ async function acceptSession(client: SupabaseIdentityClient, session: Session | 
     if (remember) await saveSupabaseRefreshToken(user.id, session.refresh_token);
     else {
       const deleted = await deleteSupabaseRefreshToken(user.id);
-      if (!deleted.ok) throw new CloudAuthRequestError("No pudimos quitar la sesión Supabase recordada. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
+      if (!deleted.ok) throw new CloudAuthRequestError("No pudimos quitar la sesión recordada. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
     }
     if (sessions.get(user.id) !== entry) throw new CloudAuthRequestError("Este acceso fue reemplazado. Volvé a iniciar sesión.", { code: "supabase_login_replaced", kind: "auth" });
     await storeSession(user, session, true, remember);
@@ -175,8 +175,11 @@ export async function requestPasswordReset(email: string) {
 
 export async function completePasswordRecovery(email: string, token: string, password: string) {
   return withClient(async (client) => {
-    const { error: verificationError } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "recovery" });
+    const { data, error: verificationError } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "recovery" });
     if (verificationError) throw providerError(verificationError);
+    if (!data.session?.access_token || data.session.user.email?.trim().toLowerCase() !== email.trim().toLowerCase()) {
+      throw new CloudAuthRequestError("El código no confirmó esta cuenta. Pedí uno nuevo e intentá nuevamente.", { code: "recovery_identity_invalid", kind: "auth" });
+    }
     const { error } = await client.auth.updateUser({ password });
     if (error) throw providerError(error);
     // Recovery changes credentials, never a financial owner; resolve /auth/me at login.

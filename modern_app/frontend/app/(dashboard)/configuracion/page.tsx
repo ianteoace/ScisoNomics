@@ -573,7 +573,7 @@ export default function ConfiguracionPage() {
         <div>
           <h3 className="text-2xl font-black">Cuenta</h3>
           <p className="mt-1 text-sm text-slate-400">
-            Administra modo local, multicuentas, Google Login y cuentas guardadas en este dispositivo.
+            Administrá el modo local, tus cuentas y el acceso con Google en este dispositivo.
           </p>
         </div>
         <AccountPanel showHeader={false} hideSyncCenter />
@@ -848,9 +848,9 @@ export default function ConfiguracionPage() {
             <li>Sincronización durante el uso configurable por cuenta e intervalo.</li>
             <li>Sincronización reforzada con snapshot de owner por corrida.</li>
             <li>API local protegida con token de sidecar en app instalada.</li>
-            <li>Google Login consume el resultado de polling una sola vez.</li>
+            <li>Acceso con Google y confirmación de correo desde la app.</li>
             <li>Verificación de cuenta más segura ante errores de red.</li>
-            <li>Migración legacy de movimientos preservando metadata.</li>
+            <li>Los movimientos existentes conservan su cuenta y sus datos.</li>
           </ul>
         </div>
         <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades en modal</button>
@@ -1010,7 +1010,7 @@ export default function ConfiguracionPage() {
             <li>La sincronización usa owner/token congelados durante toda la corrida.</li>
             <li>La app no elimina cuentas guardadas por fallas temporales de conexión.</li>
             <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>
-            <li>Google Login invalida el resultado de polling tras el primer consumo.</li>
+            <li>El acceso con Google vuelve a la app de forma segura.</li>
             <li>Se redujo PII en logs cloud y se corrigieron mensajes visibles.</li>
           </ul>
         </div>

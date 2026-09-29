@@ -13,6 +13,13 @@ require.extensions[".ts"] = (module, filename) => {
   });
   module._compile(outputText, filename);
 };
+require.extensions[".tsx"] = (module, filename) => {
+  const { outputText } = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    fileName: filename,
+  });
+  module._compile(outputText, filename);
+};
 const root = path.resolve(__dirname, "..");
 const internalIds = { "alice@example.com": "sciso-A", "bob@example.com": "sciso-B" };
 const subjects = { "alice@example.com": "11111111-1111-4111-8111-111111111111", "bob@example.com": "22222222-2222-4222-8222-222222222222" };
@@ -85,7 +92,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   const calls = [];
   const tokenOwners = new Map();
   let serial = 0;
-  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false, otpError: null, resendError: null, openedUrls: [], openerError: false, exchangeError: false, oauthUnconfirmed: false, pauseExchange: null };
+  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false, otpError: null, recoveryEmailOverride: null, resendError: null, openedUrls: [], openerError: false, exchangeError: false, oauthUnconfirmed: false, pauseExchange: null };
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   function user(email) {
     return { id: internalIds[email], email: ctx.backendEmails[email] || email, created_at: "2026-01-01", updated_at: "2026-01-01", display_name: null };
@@ -124,7 +131,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
       if (url.pathname.endsWith("/signup")) return json(ctx.signupSession ? session(body.email) : { id: subjects[body.email], email: body.email, identities: [] });
       if (url.pathname.endsWith("/verify")) {
         if (ctx.otpError) return json({ error_code: ctx.otpError.code, msg: "Secret provider response must not leak" }, ctx.otpError.status);
-        return json(session(body.email));
+        return json(session(body.type === "recovery" && ctx.recoveryEmailOverride || body.email));
       }
       if (url.pathname.endsWith("/user")) {
         const email = tokenOwners.get(headers.get("Authorization")?.replace("Bearer ", ""));
@@ -140,6 +147,14 @@ function setup(t, { configured = true, tauri = false } = {}) {
       if (ctx.pauseMe) await ctx.pauseMe;
       if (ctx.backendError) return json({ detail: ctx.backendError.detail }, ctx.backendError.status);
       return json(user(email));
+    }
+    if (url.pathname === "/billing/entitlements") {
+      const email = tokenOwners.get(headers.get("Authorization")?.replace("Bearer ", ""));
+      assert.ok(email, "Premium lookup uses the active cloud access token");
+      const premium = email === "alice@example.com";
+      return json({ plan: premium ? "premium" : "free", status: "active",
+        features: { budgets: premium, saving_goals: premium, fixed_expenses: premium, planning: premium },
+        expires_at: premium ? "2030-01-01T00:00:00Z" : null });
     }
     if (url.pathname === "/auth/login" || url.pathname === "/auth/refresh") {
       if (url.pathname === "/auth/refresh" && ctx.pauseLegacyRefresh) {
@@ -634,6 +649,58 @@ test("email OTP resolves the internal user and password recovery never activates
   assert.equal(cloud.getActiveOwnerId(), "local");
   assert.ok(calls.some((call) => call.method === "PUT" && call.url.pathname.endsWith("/user")));
   assert.equal(cloud.getStoredAccounts().length, 1);
+});
+
+test("Premium remains scoped to the internal owner across cloud and local accounts", async (t) => {
+  const ctx = setup(t);
+  const entitlements = require("../services/entitlements.ts");
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  assert.equal(ctx.cloud.getActiveOwnerId(), internalIds["alice@example.com"]);
+  assert.notEqual(ctx.cloud.getActiveOwnerId(), subjects["alice@example.com"]);
+  assert.equal((await entitlements.loadEntitlements({ force: true })).plan, "premium");
+  ctx.cloud.switchToLocalMode();
+  assert.equal((await entitlements.loadEntitlements({ force: true })).plan, "free");
+  assert.equal(entitlements.getCachedEntitlements("sciso-A").plan, "premium");
+  await ctx.external.signInWithPassword("bob@example.com", "correct");
+  assert.equal((await entitlements.loadEntitlements({ force: true })).plan, "free");
+  assert.equal(entitlements.getCachedEntitlements("sciso-A").plan, "premium");
+});
+
+test("password recovery rejects an invalid or expired code without changing a password", async (t) => {
+  const ctx = setup(t);
+  ctx.otpError = { code: "otp_expired", status: 403 };
+  await assert.rejects(ctx.external.completePasswordRecovery("alice@example.com", "000000", "new long password"),
+    (error) => error.code === "otp_expired" && /venció/.test(error.message));
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.ok(!ctx.calls.some((call) => call.method === "PUT" && call.url.pathname.endsWith("/user")));
+});
+
+test("password recovery cannot update a different verified email or internal owner", async (t) => {
+  const ctx = setup(t);
+  ctx.recoveryEmailOverride = "bob@example.com";
+  await assert.rejects(ctx.external.completePasswordRecovery("alice@example.com", "123456", "new long password"),
+    (error) => error.code === "recovery_identity_invalid");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.deepEqual(ctx.cloud.getStoredAccounts(), []);
+  assert.ok(!ctx.calls.some((call) => call.method === "PUT" && call.url.pathname.endsWith("/user")));
+  assert.ok(!ctx.calls.some((call) => call.url.pathname === "/auth/supabase/bootstrap"));
+});
+
+test("visible account form offers only email, Google, signup and in-app recovery", (t) => {
+  setup(t);
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { SupabaseAccountForm } = require("../components/account/SupabaseAccountForm.tsx");
+  const html = renderToStaticMarkup(React.createElement(SupabaseAccountForm,
+    { onAuthenticated() {}, onBusyChange() {} }));
+  for (const label of ["Iniciar sesión", "Email", "Contraseña", "Continuar con Google",
+    "¿No tenés cuenta? Crear cuenta", "¿Olvidaste tu contraseña?"]) assert.ok(html.includes(label), label);
+  for (const hidden of ["Acceso anterior", "Legacy", "Supabase", "Google legacy"]) assert.ok(!html.includes(hidden), hidden);
+  const modal = fs.readFileSync(path.join(root, "components/account/AddAccountModal.tsx"), "utf8");
+  const panel = fs.readFileSync(path.join(root, "components/account/AccountPanel.tsx"), "utf8");
+  assert.match(modal, /<SupabaseAccountForm/);
+  assert.match(panel, /<SupabaseAccountForm/);
+  for (const source of [modal, panel]) assert.doesNotMatch(source, /cloudAuth\.(login|register|googleStart)|Acceso anterior|defaultProvider/);
 });
 
 test("backend outage preserves rotated Supabase refresh tokens for retry", async (t) => {

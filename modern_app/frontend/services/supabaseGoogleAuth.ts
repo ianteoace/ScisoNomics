@@ -55,8 +55,8 @@ export async function cancelGoogleSupabaseSignIn(message?: string) {
 }
 
 export async function signInWithGoogleSupabase(options: { remember?: boolean } = {}) {
-  if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError("Google con Supabase está disponible dentro de la app de escritorio.", { code: "supabase_oauth_desktop_required" });
-  if (!isSupabaseCloudAuthConfigured()) throw new CloudAuthRequestError("Supabase no está configurado. Podés seguir en modo local.", { code: "supabase_not_configured" });
+  if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError("El acceso con Google está disponible en la app de escritorio.", { code: "supabase_oauth_desktop_required" });
+  if (!isSupabaseCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado. Podés seguir en modo local.", { code: "supabase_not_configured" });
   if (!globalThis.crypto?.subtle || !globalThis.crypto?.randomUUID) throw new CloudAuthRequestError("Este entorno no permite iniciar Google con PKCE seguro. Usá la app de escritorio actualizada.", { code: "supabase_pkce_unavailable" });
   if (attempt || callbackBusy || ["opening", "waiting", "processing"].includes(state.status)) throw new CloudAuthRequestError("Ya hay un inicio de sesión con Google en curso.", { code: "supabase_oauth_pending" });
   publish({ status: "opening" });
@@ -90,7 +90,7 @@ export async function signInWithGoogleSupabase(options: { remember?: boolean } =
     attempt = null;
     try { await release(current); } catch { /* No secrets or native errors reach logs/UI. */ }
     publish({ status: "error", message: failure instanceof CloudAuthRequestError ? failure.message
-      : "No pudimos abrir Google. Revisá la configuración de Supabase y volvé a intentar." });
+      : "No pudimos abrir Google. Volvé a intentar más tarde." });
   }
 }
 
