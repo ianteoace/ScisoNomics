@@ -92,7 +92,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   const calls = [];
   const tokenOwners = new Map();
   let serial = 0;
-  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false, otpError: null, recoveryEmailOverride: null, resendError: null, openedUrls: [], openerError: false, exchangeError: false, oauthUnconfirmed: false, pauseExchange: null };
+  const ctx = { calls, credentials, browser, backendError: null, backendEmails: {}, signupSession: false, signupError: null, signupIdentities: [{ provider: "email", id: "email-identity" }], pauseMe: null, pauseLegacyRefresh: null, nativeCalls: [], nativeError: false, pauseSave: null, pauseLegacySave: null, rejectRefresh: false, otpError: null, recoveryEmailOverride: null, resendError: null, openedUrls: [], openerError: false, exchangeError: false, oauthUnconfirmed: false, pauseExchange: null };
   const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
   function user(email) {
     return { id: internalIds[email], email: ctx.backendEmails[email] || email, created_at: "2026-01-01", updated_at: "2026-01-01", display_name: null };
@@ -128,7 +128,10 @@ function setup(t, { configured = true, tauri = false } = {}) {
         if (!email || body.password === "wrong") return json({ error_code: "invalid_credentials", msg: "Secret error text must not leak" }, 400);
         return json(session(email));
       }
-      if (url.pathname.endsWith("/signup")) return json(ctx.signupSession ? session(body.email) : { id: subjects[body.email], email: body.email, identities: [] });
+      if (url.pathname.endsWith("/signup")) {
+        if (ctx.signupError) return json({ error_code: ctx.signupError.code, msg: "Sensitive provider response must not leak" }, ctx.signupError.status);
+        return json(ctx.signupSession ? session(body.email) : { id: subjects[body.email], email: body.email, identities: ctx.signupIdentities });
+      }
       if (url.pathname.endsWith("/verify")) {
         if (ctx.otpError) return json({ error_code: ctx.otpError.code, msg: "Secret provider response must not leak" }, ctx.otpError.status);
         return json(session(body.type === "recovery" && ctx.recoveryEmailOverride || body.email));
@@ -449,6 +452,40 @@ test("signup without a session requires OTP without activating or persisting an 
   assert.equal(cloud.getStoredAccounts().length, 0);
   assert.equal(calls.filter((call) => call.url.host === "cloud.test").length, 0);
   assert.equal(calls.find((call) => call.url.pathname.endsWith("/signup")).body.email_redirect_to, undefined);
+});
+
+for (const code of ["email_exists", "user_already_exists"]) {
+  test(`signup with explicit ${code} does not enter OTP or reveal provider details`, async (t) => {
+    const ctx = setup(t);
+    ctx.signupError = { code, status: 422 };
+    const result = await ctx.external.signUpWithPassword("alice@example.com", "long test password");
+    assert.deepEqual(result, { status: "account_exists" });
+    assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+    assert.deepEqual(ctx.cloud.getStoredAccounts(), []);
+    assert.deepEqual(ctx.calls.map((call) => call.url.pathname), ["/auth/v1/signup"]);
+    assert.doesNotMatch(JSON.stringify(result), /Sensitive|email|alice@example.com/);
+  });
+}
+
+for (const identities of [[], undefined]) {
+  test(`ambiguous signup identities ${identities ? "empty" : "missing"} uses neutral outcome without OTP`, async (t) => {
+    const ctx = setup(t);
+    ctx.signupIdentities = identities;
+    const result = await ctx.external.signUpWithPassword("alice@example.com", "long test password");
+    assert.deepEqual(result, { status: "generic_signup_error" });
+    assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+    assert.deepEqual(ctx.cloud.getStoredAccounts(), []);
+    assert.deepEqual(ctx.calls.map((call) => call.url.pathname), ["/auth/v1/signup"]);
+  });
+}
+
+test("unstructured signup error never claims the email exists or exposes provider text", async (t) => {
+  const ctx = setup(t);
+  ctx.signupError = { status: 400 };
+  const result = await ctx.external.signUpWithPassword("alice@example.com", "long test password");
+  assert.deepEqual(result, { status: "generic_signup_error" });
+  assert.doesNotMatch(JSON.stringify(result), /Sensitive|alice@example.com/);
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
 });
 
 test("signup OTP verifies with email type, bootstraps and remembers the internal owner in Tauri", async (t) => {

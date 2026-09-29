@@ -13,7 +13,9 @@ const sessions = new Map<string, MemorySession>();
 const refreshes = new Map<string, Promise<StoredCloudSession | null>>();
 
 export type SupabaseSignUpResult =
+  | { status: "account_exists" }
   | { status: "verification_required"; email: string }
+  | { status: "generic_signup_error" }
   | { status: "signed_in"; user: CloudUser };
 
 export function isSupabaseCloudAuthConfigured() {
@@ -142,9 +144,18 @@ export async function signUpWithPassword(email: string, password: string, displa
     const { data, error } = await client.auth.signUp({
       email: normalizedEmail, password, options: { data: { display_name: displayName?.trim() || undefined } },
     });
-    if (error) throw providerError(error);
-    if (!data.session) return { status: "verification_required", email: normalizedEmail };
-    return { status: "signed_in", user: await acceptSession(client, data.session, options.remember) };
+    if (error) {
+      // Only a structured provider code can justify the explicit account message.
+      if (error.code === "email_exists" || error.code === "user_already_exists") return { status: "account_exists" };
+      if (error.code === "weak_password" || error.status === 429 || !error.status || error.status >= 500) throw providerError(error);
+      return { status: "generic_signup_error" };
+    }
+    if (data.session) return { status: "signed_in", user: await acceptSession(client, data.session, options.remember) };
+    // With email confirmation, Supabase can return an obfuscated user for an
+    // existing email. Empty/missing identities cannot prove what happened;
+    // never turn that anti-enumeration response into an "account exists" signal.
+    if (!data.user?.identities?.some((identity) => identity.provider === "email")) return { status: "generic_signup_error" };
+    return { status: "verification_required", email: normalizedEmail };
   });
 }
 

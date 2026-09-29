@@ -13,7 +13,7 @@ import {
   getGoogleOAuthState, signInWithGoogleSupabase, subscribeGoogleOAuth,
 } from "../../services/supabaseGoogleAuth";
 
-type Mode = "login" | "register" | "verification_required" | "recovery";
+type Mode = "login" | "register" | "account_exists" | "verification_required" | "generic_signup_error" | "recovery";
 const RESEND_COOLDOWN_SECONDS = 60;
 const inputClass = "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400";
 
@@ -140,6 +140,10 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
         const result = await signUpWithPassword(email, password, displayName, { remember });
         setPassword("");
         setRepeatPassword("");
+        if (result.status === "account_exists" || result.status === "generic_signup_error") {
+          setMode(result.status);
+          return;
+        }
         if (result.status === "verification_required") {
           setEmail(result.email);
           setVerificationEmail(result.email);
@@ -173,6 +177,20 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       onAuthenticated();
     });
   }
+
+  if (mode === "account_exists" || mode === "generic_signup_error") return (
+    <div className="space-y-4">
+      <p role="status" className="text-sm text-slate-200">
+        {mode === "account_exists" ? "Ya existe una cuenta con este email."
+          : "No pudimos confirmar el registro. Si recibiste un código, podés confirmarlo desde Iniciar sesión; también podés probar iniciar sesión o recuperar tu contraseña."}
+      </p>
+      <div className="flex flex-wrap gap-3">
+        <button className="btn" type="button" onClick={() => changeMode("login")}>Iniciar sesión</button>
+        <button className="btn-secondary" type="button" onClick={() => changeMode("recovery")}>Recuperar contraseña</button>
+        {mode === "generic_signup_error" ? <button className="btn-secondary" type="button" onClick={() => changeMode("register")}>Intentar de nuevo</button> : null}
+      </div>
+    </div>
+  );
 
   return (
     <form className="space-y-4" onSubmit={submit}>

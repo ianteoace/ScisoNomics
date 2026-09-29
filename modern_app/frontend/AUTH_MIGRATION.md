@@ -127,8 +127,19 @@ Sin memoria SDK, logout puede limpiar el dispositivo sin revocar remotamente.
 
 El registro puede devolver una sesion o requerir confirmacion, como documenta
 [Supabase signUp](https://supabase.com/docs/reference/javascript/auth-signup).
+Si el proveedor devuelve el código estructurado `email_exists` o
+`user_already_exists`, el formulario muestra `account_exists` con acceso a
+login y recuperación, sin abrir OTP. Con confirmación de email activa,
+Supabase puede devolver un usuario ficticio para ocultar si el email ya existe.
+Una respuesta sin sesión y sin identidad de email presente muestra
+`generic_signup_error`: mensaje neutro, sin OTP ni afirmación de existencia,
+con acceso a login, recuperación y reintento. Tampoco se interpreta el texto
+libre del error del proveedor como prueba. Solo una respuesta sin sesión con
+identidad email presente pasa a `verification_required`. No se hacen consultas
+administrativas ni se buscan usuarios desde el cliente.
 La confirmacion desktop usa OTP dentro de ScisoNomics, sin enlace web,
-redirect ni navegador. Signup sin sesion devuelve `verification_required`;
+redirect ni navegador. Signup nuevo con identidad de email y sin sesión
+devuelve `verification_required`;
 la UI conserva el email pendiente solo en memoria, bloquea su edicion para
 evitar verificar otra identidad y muestra el campo de codigo. Usar otro email
 reinicia el formulario; cerrar el modal descarta el estado pendiente.
