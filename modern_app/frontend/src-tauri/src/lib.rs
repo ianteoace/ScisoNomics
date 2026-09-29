@@ -15,12 +15,13 @@ use std::process::Command;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
 mod device_verification;
 mod supabase_tokens;
+mod supabase_oauth;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
@@ -935,7 +936,18 @@ pub fn run() {
   let close_local_api_token = local_api_token.clone();
   let exit_local_api_token = local_api_token.clone();
 
-  tauri::Builder::default()
+  let builder = tauri::Builder::default();
+  #[cfg(desktop)]
+  let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    // The deep-link feature forwards the event. Never log argv/callback URLs.
+    if let Some(window) = app.get_webview_window("main") {
+      let _ = window.unminimize();
+      let _ = window.show();
+      let _ = window.set_focus();
+    }
+  }));
+  builder
+    .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
@@ -954,6 +966,9 @@ pub fn run() {
       supabase_tokens::save_persistent_supabase_refresh_token,
       supabase_tokens::load_persistent_supabase_refresh_token,
       supabase_tokens::delete_persistent_supabase_refresh_token,
+      supabase_oauth::save_pending_supabase_oauth,
+      supabase_oauth::load_pending_supabase_oauth,
+      supabase_oauth::delete_pending_supabase_oauth,
       debug_refresh_keyring_status,
       get_or_create_account_device_identity,
       sign_device_enrollment_proof,
@@ -964,10 +979,21 @@ pub fn run() {
       set_app_close_sync_timeout
     ])
     .setup(move |app| {
+      #[cfg(all(debug_assertions, any(windows, target_os = "linux")))]
+      {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        // Development only; production registration belongs to the installer.
+        if app.deep_link().register_all().is_err() {
+          log::warn!("No se pudo registrar el callback de ScisoNomics para desarrollo");
+        }
+      }
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
             .level(log::LevelFilter::Info)
+            // Upstream deep-link warnings can include the raw CLI URL.
+            .level_for("tauri_plugin_deep_link", log::LevelFilter::Off)
+            .level_for("tauri_plugin_single_instance", log::LevelFilter::Off)
             .build(),
         )?;
       }

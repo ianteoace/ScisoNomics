@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { SupabaseOAuthListener } from "../account/SupabaseOAuthListener";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
@@ -15,5 +16,5 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  return <>{children}</>;
+  return <><SupabaseOAuthListener />{children}</>;
 }

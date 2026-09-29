@@ -8,9 +8,11 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "deep-link:allow-get-current",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
+        { "url": "https://egwxtvroruvjwhpizbeg.supabase.co/auth/v1/authorize*" },
         { "url": "https://github.com/ianteoace/scisonomics/**" },
         { "url": "https://scisonomics-production-d8a3.up.railway.app/**" },
         { "url": "http://127.0.0.1:9000/**" },

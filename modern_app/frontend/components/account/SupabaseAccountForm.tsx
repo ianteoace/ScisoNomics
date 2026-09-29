@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import {
   completePasswordRecovery, isSupabaseCloudAuthConfigured, requestPasswordReset,
   resendSignupVerification, signInWithPassword, signUpWithPassword, verifyEmailCode,
@@ -8,6 +8,10 @@ import {
 import { PasswordInput } from "../ui/PasswordInput";
 import { isSupabaseSecureStorageAvailable } from "../../services/supabaseTokenStorage";
 import { CloudAuthRequestError } from "../../services/cloudAuth";
+import {
+  cancelGoogleSupabaseSignIn, dismissGoogleOAuthNotice, getGoogleOAuthServerState,
+  getGoogleOAuthState, signInWithGoogleSupabase, subscribeGoogleOAuth,
+} from "../../services/supabaseGoogleAuth";
 
 type Mode = "login" | "register" | "verification_required" | "recovery";
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -33,6 +37,23 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const google = useSyncExternalStore(subscribeGoogleOAuth, getGoogleOAuthState, getGoogleOAuthServerState);
+  const startedGoogleHere = useRef(false);
+  const googleBusy = ["opening", "waiting", "processing"].includes(google.status);
+  const formBusy = busy || googleBusy;
+  useEffect(() => {
+    onBusyChange(formBusy);
+    return () => onBusyChange(false);
+  }, [formBusy, onBusyChange]);
+  useEffect(() => {
+    if (google.status === "succeeded" && startedGoogleHere.current) {
+      startedGoogleHere.current = false;
+      onAuthenticated();
+    }
+  }, [google.status, onAuthenticated]);
+  useEffect(() => () => {
+    if (startedGoogleHere.current && ["opening", "waiting"].includes(getGoogleOAuthState().status)) void cancelGoogleSupabaseSignIn();
+  }, []);
   const needsNewPassword = mode === "register" || (mode === "recovery" && recoverySent);
   const needsPassword = mode === "login" || needsNewPassword;
   const verifyingSignup = mode === "verification_required";
@@ -52,6 +73,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   }
 
   function changeMode(next: Mode) {
+    dismissGoogleOAuthNotice();
     setMode(next);
     setPassword("");
     setRepeatPassword("");
@@ -80,9 +102,8 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   }
 
   async function run(action: () => Promise<void>) {
-    if (busy || !configured) return;
+    if (formBusy || !configured) return;
     setBusy(true);
-    onBusyChange(true);
     setError("");
     try {
       await action();
@@ -90,7 +111,6 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       setError(failure instanceof Error ? failure.message : "No se pudo completar la acción. Intentá nuevamente.");
     } finally {
       setBusy(false);
-      onBusyChange(false);
     }
   }
 
@@ -148,42 +168,55 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       </p>
       {!configured ? <p role="status" className="text-sm text-amber-700 dark:text-amber-200">Supabase no está configurado. Podés usar el acceso anterior o continuar en modo local.</p> : null}
       {notice ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">{notice}</p> : null}
-      {error ? <p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-200">{error}</p> : null}
+      {error || google.status === "error" ? <p role="alert" className="rounded-xl bg-rose-500/10 p-3 text-sm text-rose-700 dark:text-rose-200">{error || google.message}</p> : null}
+      {mode === "login" || mode === "register" ? <>
+        <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || !secureStorageAvailable} onClick={() => {
+          startedGoogleHere.current = true;
+          setError("");
+          setNotice("");
+          void signInWithGoogleSupabase({ remember }).catch((failure) => setError(failure instanceof CloudAuthRequestError ? failure.message : "No pudimos iniciar Google. Volvé a intentar."));
+        }}>Continuar con Google</button>
+        {!secureStorageAvailable ? <p className="text-xs text-slate-500 dark:text-slate-400">Google con Supabase requiere la app de escritorio.</p> : null}
+      </> : null}
+      {googleBusy ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">
+        {google.status === "opening" ? "Abriendo Google..." : google.status === "waiting" ? "Esperando confirmación..." : "Procesando inicio de sesión..."}
+        {google.status !== "processing" ? <button type="button" className="ml-2 font-semibold underline" onClick={() => void cancelGoogleSupabaseSignIn()}>Cancelar</button> : null}
+      </p> : null}
       <label className="block text-sm">Email
-        <input className={inputClass} type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); if (verifyingSignup) setCode(""); }} required disabled={busy || !configured || (verifyingSignup && verificationEmail !== null) || (mode === "recovery" && recoverySent)} />
+        <input className={inputClass} type="email" autoComplete="email" value={email} onChange={(event) => { setEmail(event.target.value); if (verifyingSignup) setCode(""); }} required disabled={formBusy || !configured || (verifyingSignup && verificationEmail !== null) || (mode === "recovery" && recoverySent)} />
       </label>
       {mode === "register" ? <label className="block text-sm">Nombre opcional
-        <input className={inputClass} autoComplete="name" maxLength={120} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={busy || !configured} />
+        <input className={inputClass} autoComplete="name" maxLength={120} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={formBusy || !configured} />
       </label> : null}
       {needsCode ? <label className="block text-sm">Código del correo
-        <input className={inputClass} autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} minLength={verifyingSignup ? 6 : undefined} maxLength={verifyingSignup ? 10 : 128} pattern={verifyingSignup ? "[0-9]{6,10}" : undefined} title={verifyingSignup ? "Ingresá los dígitos del código recibido por correo." : undefined} required disabled={busy || !configured} />
+        <input className={inputClass} autoComplete="one-time-code" inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} minLength={verifyingSignup ? 6 : undefined} maxLength={verifyingSignup ? 10 : 128} pattern={verifyingSignup ? "[0-9]{6,10}" : undefined} title={verifyingSignup ? "Ingresá los dígitos del código recibido por correo." : undefined} required disabled={formBusy || !configured} />
       </label> : null}
       {needsPassword ? <label className="block text-sm">{needsNewPassword ? "Nueva contraseña" : "Contraseña"}
-        <PasswordInput className={inputClass} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={needsNewPassword ? "new-password" : "current-password"} minLength={needsNewPassword ? 12 : undefined} required disabled={busy || !configured} />
+        <PasswordInput className={inputClass} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={needsNewPassword ? "new-password" : "current-password"} minLength={needsNewPassword ? 12 : undefined} required disabled={formBusy || !configured} />
       </label> : null}
       {needsNewPassword ? <label className="block text-sm">Repetir contraseña
-        <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={busy || !configured} />
+        <PasswordInput className={inputClass} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} autoComplete="new-password" minLength={12} required disabled={formBusy || !configured} />
       </label> : null}
       {mode !== "recovery" && secureStorageAvailable ? <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} />
+        <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={formBusy} />
         Recordar esta cuenta en el almacenamiento seguro de este dispositivo
       </label> : null}
       <p className="text-xs text-slate-500 dark:text-slate-400">{secureStorageAvailable && remember ? "El acceso se restaura al iniciar la app. El refresh token se guarda en el almacenamiento seguro del sistema."
         : "Esta sesión es temporal y no se recuerda al cerrar la app."}</p>
-      <button className="btn w-full justify-center" type="submit" disabled={busy || !configured}>
+      <button className="btn w-full justify-center" type="submit" disabled={formBusy || !configured}>
         {busy ? "Procesando..." : mode === "register" ? "Registrarse con Supabase" : verifyingSignup ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar correo de recuperación" : "Ingresar con Supabase"}
       </button>
       {verifyingSignup ? <>
-        <button className="btn-secondary w-full justify-center" type="button" disabled={busy || !configured || resendWait > 0 || !(verificationEmail || email).trim()} onClick={resendCode}>
+        <button className="btn-secondary w-full justify-center" type="button" disabled={formBusy || !configured || resendWait > 0 || !(verificationEmail || email).trim()} onClick={resendCode}>
           {resendWait > 0 ? `Reenviar código en ${resendWait}s` : "Reenviar código"}
         </button>
-        {verificationEmail ? <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={busy} onClick={() => changeMode("register")}>Usar otro email</button> : null}
+        {verificationEmail ? <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("register")}>Usar otro email</button> : null}
       </> : null}
       <div className="flex flex-wrap gap-3 text-sm">
-        <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={busy} onClick={() => changeMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "Crear acceso Supabase" : "Volver al login"}</button>
+        <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode(mode === "login" ? "register" : "login")}>{mode === "login" ? "Crear acceso Supabase" : "Volver al login"}</button>
         {mode === "login" ? <>
-          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={busy} onClick={() => changeMode("verification_required")}>Confirmar correo con código</button>
-          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={busy} onClick={() => changeMode("recovery")}>Olvidé mi contraseña</button>
+          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("verification_required")}>Confirmar correo con código</button>
+          <button className="font-semibold text-sky-600 dark:text-sky-300" type="button" disabled={formBusy} onClick={() => changeMode("recovery")}>Olvidé mi contraseña</button>
         </> : null}
       </div>
     </form>

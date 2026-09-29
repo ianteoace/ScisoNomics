@@ -71,7 +71,11 @@ no se fusionan por coincidencia de email.
 
 ## Persistencia y sesiones
 
-`persistSession=false`, `autoRefreshToken=false`, `detectSessionInUrl=false`.
+Password/OTP usa `persistSession=false`; todos los clientes usan PKCE,
+`autoRefreshToken=false` y `detectSessionInUrl=false`. Google usa un adaptador
+SDK exclusivamente en memoria con `persistSession=true`: el SDK solo admite
+el adaptador personalizado con esa opcion. No habilita localStorage/cookies.
+Solo se copia el snapshot PKCE pendiente a WinCred antes de abrir el navegador.
 No hay service_role, claves secretas ni JWT signing secrets en el cliente.
 Los SDK temporales y los de cuentas retiradas se liberan con `auth.dispose()`.
 
@@ -175,9 +179,134 @@ No se modifica la configuracion real del proyecto desde este trabajo.
 Un correo que solo contiene un enlace no permite completar la recuperacion
 dentro de Tauri en esta fase; la UI explicita esa limitacion.
 
-Supabase Google OAuth se posterga: faltan un redirect/callback PKCE seguro
-para la app desktop, deep links o loopback controlado y pruebas del retorno
-de navegador a Tauri. Google legacy sigue disponible en Acceso anterior.
+Google con Supabase usa ahora el callback nativo fijo y PKCE descritos abajo.
+Google legacy sigue disponible exclusivamente en Acceso anterior; no se borra.
+
+## Google desktop: Supabase + PKCE + deep link
+
+1. **Continuar con Google** crea un cliente SDK aislado para ese intento.
+   `signInWithOAuth(provider=google, redirectTo=scisonomics://auth/callback,
+   skipBrowserRedirect=true)` genera la URL con PKCE S256. Se rechaza cualquier
+   URL que no corresponda al `/auth/v1/authorize` del proyecto configurado.
+2. Antes de abrirla mediante `plugin-opener`, el snapshot del verificador SDK,
+   la expiracion (cinco minutos) y Recordar sesion se guardan en WinCred bajo
+   el servicio independiente `scisonomics-supabase-pending-pkce`, por hash de
+   proyecto. No es una cuenta ni un owner financiero. Cada intento usa una
+   clave SDK unica, que evita compartir sesiones/BroadcastChannel entre cuentas.
+3. Tauri v2 registra `scisonomics`; single-instance con feature `deep-link` es
+   el primer plugin y enfoca la ventana existente sin loggear los argumentos.
+   Produccion registra el scheme mediante el bundle/installer. Windows/Linux
+   dev usa `register_all` solo con debug assertions y no admite otros schemes.
+4. Un listener global fuera de los modales escucha `onOpenUrl` y despues lee
+   `getCurrent`, evitando perder el retorno tanto en caliente como al arrancar.
+   Solo admite exactamente `scisonomics://auth/callback`, sin usuario, puerto,
+   fragmento, rutas alternativas, parametros desconocidos/duplicados o tokens
+   implicit. Admite `code` o los parametros de error del proveedor.
+5. Se reclama el callback antes de cualquier await. Solo se conservan hashes
+   SHA-256 de codigos procesados en memoria para ignorar duplicados. El estado
+   PKCE seguro se consume antes de `exchangeCodeForSession(code)`; un reinicio
+   posterior no puede reusarlo. El SDK y Supabase gestionan PKCE y el state de
+   Google. La app no inventa un state propio ni usa flow implicit.
+6. Se exige una sesion con email confirmado, luego POST `/auth/supabase/bootstrap`.
+   Solo su users.id activa la cuenta y sirve de clave para el refresh WinCred
+   existente si Recordar sesion aplica. Access permanece en memoria/sessionStorage.
+   Codigo, verificador, refresh y tokens Google nunca van a localStorage; la app
+   no necesita persistir tokens propios de Google ni pedir acceso offline a Google.
+
+Abriendo Google / Esperando confirmacion / Procesando inicio de sesion muestran
+el progreso. Cancelar o timeout limpia el verificador. Cerrar el navegador no
+produce un evento de cancelacion: usar Cancelar o esperar el timeout. Una vez
+iniciado el exchange no se permite cancelarlo/reemplazarlo. Callbacks sin codigo,
+fallos de exchange, correo sin confirmar, bootstrap o WinCred muestran errores
+sin detalles sensibles. Password/OTP y modo local siguen disponibles. Google con
+Supabase se habilita solo en Tauri, no en una pestaña web normal.
+
+### Configuracion manual: Supabase y Google Cloud (no aplicada)
+
+1. En Google Cloud Console / Google Auth Platform configurar Branding, Audience
+   y Data Access para `openid`, email y profile. En modo Testing incluir las
+   cuentas de prueba en Audience/Test users.
+2. En Clients crear un OAuth Client ID de tipo **Web application**: Google
+   retorna a Supabase, que es quien conserva el Client Secret. No crear un
+   cliente desktop con secretos en Tauri. Agregar como Authorized redirect URI
+   el **Callback URL** que muestra Authentication -> Providers -> Google de
+   Supabase. Segun `NEXT_PUBLIC_SUPABASE_URL` actual y la ruta oficial, corresponde a:
+
+   ```text
+   https://egwxtvroruvjwhpizbeg.supabase.co/auth/v1/callback
+   ```
+
+   Confirmar/copy-paste desde el dashboard si usa dominio personalizado. No se
+   consulto ni modifico el proyecto remoto. `scisonomics://auth/callback` NO es
+   el Authorized redirect URI de Google. Este flujo externo no usa Google One
+   Tap ni requiere una libreria Google dentro del WebView.
+3. En Supabase -> Authentication -> Providers -> Google habilitar Google y
+   pegar **Client ID** y **Client Secret** obtenidos arriba SOLO alli. No agregarlos
+   a NEXT_PUBLIC, Tauri, WinCred de la app ni al repo.
+4. En Authentication -> URL Configuration -> Redirect URLs permitir exactamente:
+
+   ```text
+   scisonomics://auth/callback
+   ```
+
+   No requiere cambiar Site URL del proyecto ni usar un wildcard. El callback
+   de Google hacia Supabase y el redirect de Supabase hacia Tauri son dos pasos
+   diferentes. CSP y el scope de opener incluyen solo el proyecto actual; si se
+   cambia `NEXT_PUBLIC_SUPABASE_URL`, actualizar ambos permisos al nuevo host.
+
+Referencias: [Supabase Google](https://supabase.com/docs/guides/auth/social-login/auth-google),
+[PKCE](https://supabase.com/docs/guides/auth/sessions/pkce-flow),
+[Tauri deep-link](https://v2.tauri.app/plugin/deep-linking/) y
+[single-instance](https://v2.tauri.app/plugin/single-instance/).
+
+### Prueba manual en Windows
+
+Para una prueba completa que ejecute bootstrap usar un entorno cloud/Supabase
+de staging; no usar Railway de produccion para estas validaciones. Configurar
+NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL, NEXT_PUBLIC_SUPABASE_URL y su publishable
+key para ese entorno antes de arrancar. Sin backend configurado Google no se habilita.
+
+1. Desde `modern_app/frontend`, con Rust 1.88 instalado:
+
+   ```powershell
+   $env:RUSTUP_TOOLCHAIN = "1.88.0"
+   npm run tauri:dev
+   ```
+
+   Debe haber una sola instancia; el sidecar inicia como antes. Si el registro
+   del scheme falla, revisar permisos de Windows. Dev asocia `scisonomics` al
+   ejecutable debug actual y puede reemplazar la asociacion de una instalacion.
+2. Cuenta -> Agregar con Supabase -> marcar/desmarcar Recordar -> Continuar con
+   Google. Verificar navegador externo, elegir cuenta y aceptar abrir ScisoNomics.
+   Debe activar la cuenta interna despues de bootstrap; no sincronizar finanzas
+   como parte de esta prueba. Cancelar debe dejar la cuenta anterior/local intacta.
+3. Para probar entrega/validacion local sin Google ni Railway, SIN intento
+   pendiente, desde otra PowerShell:
+
+   ```powershell
+   Start-Process 'scisonomics://auth/callback?code=local-parser-test'
+   Start-Process 'scisonomics://auth/callback?error=access_denied'
+   Start-Process 'scisonomics://auth/otra-ruta?code=local-parser-test'
+   ```
+
+   Debe mantenerse una instancia y no activar cuentas ni llamar al backend:
+   no hay verificador pendiente. El ultimo link se rechaza. No usar codigos
+   reales en consola, historial ni logs. Con otro intento pendiente, un codigo
+   dummy intentaria exchange contra Supabase: cancelar antes de estas pruebas.
+4. En staging, repetir el link ya consumido no debe volver a ejecutar exchange
+   ni bootstrap. Para probar arranque en frio, iniciar OAuth, cerrar la app
+   antes del retorno y completar el navegador dentro de cinco minutos. El
+   callback debe recuperar el verificador de WinCred; tras vencimiento pedir
+   login nuevamente. Con Recordar, cerrar/reabrir debe restaurar el refresh.
+5. Probar dos cuentas Google, cambiar entre ellas y Modo local, y repetir
+   password/OTP y Acceso anterior. Reinstalar el bundle de produccion al terminar
+   las pruebas dev para restaurar la asociacion al ejecutable instalado.
+
+Riesgos pendientes: otras aplicaciones pueden registrar el mismo custom scheme;
+PKCE impide canjear el codigo sin verificador, pero no impide interceptar/bloquear
+el retorno. Un fallo entre consumir el estado PKCE y guardar el refresh requiere
+re-login. El instalador y el consentimiento Google real requieren prueba manual;
+los tests automatizados no sustituyen esa prueba.
 No se capturan tokens desde URLs ni se habilita deteccion automatica de sesion.
 
 ## Validacion local
@@ -213,6 +342,14 @@ Supabase ni Railway reales ni cambio plantillas del proyecto. La entrega real
 del codigo por correo queda pendiente de la configuracion manual anterior.
 No usan datos reales ni Railway. No sustituyen una prueba nativa empaquetada
 de Tauri ni un rollout contra un proyecto Supabase de staging.
+
+La fase Google paso 58 tests frontend con SDK real/APIs simuladas, build,
+cargo +1.88.0 check/test --locked para Windows y 7 tests Rust (WinCred real con
+credenciales dummy y cleanup). La UI de Google/callback/bootstrap se verifico
+con puente Tauri y APIs simulados. No se ejecuto Google real ni tauri:dev en
+el perfil real del usuario, para evitar restaurar sesiones y contactar Railway.
+La instalacion, registro de scheme y consentimiento real quedan para la prueba
+manual en staging descrita arriba.
 
 ## Siguiente fase
 

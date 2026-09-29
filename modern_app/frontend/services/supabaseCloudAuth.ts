@@ -123,6 +123,19 @@ export async function signInWithPassword(email: string, password: string, option
   });
 }
 
+export async function completeGoogleSupabaseSignIn(client: SupabaseIdentityClient, code: string, remember: boolean) {
+  const { data, error } = await client.auth.exchangeCodeForSession(code);
+  if (error) throw providerError(error);
+  if (!data.session?.user.email || !data.session.user.email_confirmed_at) {
+    throw new CloudAuthRequestError("Google no devolvió un email confirmado. Volvé a iniciar sesión.", { code: "supabase_email_unconfirmed", kind: "auth" });
+  }
+  return acceptSession(client, data.session, remember);
+}
+
+export async function disposeUnusedSupabaseClient(client: SupabaseIdentityClient) {
+  if (![...sessions.values()].some((entry) => entry.client === client)) await client.auth.dispose();
+}
+
 export async function signUpWithPassword(email: string, password: string, displayName?: string, options: { remember?: boolean } = {}): Promise<SupabaseSignUpResult> {
   return withClient(async (client): Promise<SupabaseSignUpResult> => {
     const normalizedEmail = email.trim();

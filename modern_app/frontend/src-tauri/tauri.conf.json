@@ -3,6 +3,11 @@
   "productName": "ScisoNomics",
   "version": "3.2.0",
   "identifier": "com.scisonomics.desktop",
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["scisonomics"] }
+    }
+  },
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://127.0.0.1:3000",
@@ -22,8 +27,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8000 https://scisonomics-production-d8a3.up.railway.app; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
-      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://scisonomics-production-d8a3.up.railway.app; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8000 https://scisonomics-production-d8a3.up.railway.app https://egwxtvroruvjwhpizbeg.supabase.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
+      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://scisonomics-production-d8a3.up.railway.app https://egwxtvroruvjwhpizbeg.supabase.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
     }
   },
   "bundle": {

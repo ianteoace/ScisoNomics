@@ -1,4 +1,4 @@
-import { AuthClient } from "@supabase/supabase-js";
+import { AuthClient, type SupportedStorage } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabasePublishableKey =
@@ -24,7 +24,7 @@ export function getSupabaseProjectUrl() {
 
 // Each account/attempt gets an isolated in-memory SDK session. Creating the
 // client lazily keeps local mode and static builds working without auth.
-export function createSupabaseAuthClient() {
+export function createSupabaseAuthClient(oauthStorage?: SupportedStorage, oauthStorageKey?: string) {
   if (!isSupabaseAuthConfigured()) {
     throw new Error("Falta configurar Supabase con una URL y publishable key válidas.");
   }
@@ -33,10 +33,14 @@ export function createSupabaseAuthClient() {
   return { auth: new AuthClient({
     url: `${supabaseUrl!.replace(/\/$/, "")}/auth/v1`,
     headers: { apikey: supabasePublishableKey! },
-    persistSession: false,
+    // The OAuth adapter is memory-only. The SDK needs persistSession=true to
+    // honor a custom adapter; only its pending PKCE snapshot goes to WinCred.
+    persistSession: Boolean(oauthStorage),
+    storage: oauthStorage,
+    flowType: "pkce",
     autoRefreshToken: false,
     detectSessionInUrl: false,
-    storageKey: `scisonomics-supabase-memory-${++clientNumber}`,
+    storageKey: oauthStorage ? oauthStorageKey ?? `scisonomics-supabase-google-pkce-${crypto.randomUUID()}` : `scisonomics-supabase-memory-${++clientNumber}`,
     fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) }),
   }) };
 }
