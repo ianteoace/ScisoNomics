@@ -2,11 +2,16 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ScisoNomics",
   "mainBinaryName": "ScisoNomics",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "identifier": "com.scisonomics.desktop",
   "plugins": {
     "deep-link": {
       "desktop": { "schemes": ["scisonomics"] }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZEQURDNjE3QkUwQkE1RDIKUldUU3BRdStGOGF0YlpndTk1aW1zN25jajNxL1JVb0hraVJSWnZtL3o3Zm1CME5xQkhtNlZGTEwK",
+      "endpoints": ["https://github.com/ianteoace/scisonomics/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
     }
   },
   "build": {
@@ -34,6 +39,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "homepage": "https://github.com/ianteoace/scisonomics/releases",
     "licenseFile": "LICENSE.txt",

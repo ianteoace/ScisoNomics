@@ -12,6 +12,10 @@ const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY?.trim();
 const expectedCloudUrl = "https://scisonomics-production-d8a3.up.railway.app";
 const errors = [];
 
+if (!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim() || !process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+  errors.push("Falta la clave privada o su contraseña de firma Tauri en el entorno del build.");
+}
+
 if (cloudUrl !== expectedCloudUrl) errors.push("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL debe apuntar a Railway de producción.");
 if (!publishableKey?.startsWith("sb_publishable_")) errors.push("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY debe ser una publishable key.");
 
@@ -26,6 +30,14 @@ try {
 
 if (config.bundle?.active !== true || !config.bundle?.externalBin?.includes("binaries/scisonomics-backend")) {
   errors.push("Tauri debe empaquetar el sidecar.");
+}
+if (config.bundle?.createUpdaterArtifacts !== true
+  || !config.plugins?.updater?.pubkey
+  || !config.plugins?.updater?.endpoints?.includes("https://github.com/ianteoace/scisonomics/releases/latest/download/latest.json")) {
+  errors.push("Falta la configuracion de updater firmado para GitHub Releases.");
+}
+for (const permission of ["updater:allow-check", "updater:allow-download", "updater:allow-install"]) {
+  if (!capability.permissions.includes(permission)) errors.push(`Falta el permiso ${permission}.`);
 }
 if (config.mainBinaryName !== "ScisoNomics") {
   errors.push("El ejecutable principal debe llamarse ScisoNomics.exe para que el instalador detecte procesos abiertos.");

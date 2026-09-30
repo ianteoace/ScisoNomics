@@ -1,6 +1,17 @@
 !macro SCISO_REQUIRE_STOPPED processName
-  nsis_tauri_utils::FindProcessCurrentUser "${processName}"
-  Pop $0
+  StrCpy $1 0
+  ${Do}
+    nsis_tauri_utils::FindProcessCurrentUser "${processName}"
+    Pop $0
+    ${If} $0 != 0
+      ${Break}
+    ${EndIf}
+    ${If} $1 >= 20
+      ${Break}
+    ${EndIf}
+    Sleep 250
+    IntOp $1 $1 + 1
+  ${Loop}
   ${If} $0 = 0
     MessageBox MB_ICONEXCLAMATION|MB_OK "Cerrá ${processName} antes de continuar. Volvé a ejecutar el instalador cuando termine de cerrarse."
     Abort "ScisoNomics sigue en ejecución."

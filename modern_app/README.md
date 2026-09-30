@@ -91,12 +91,12 @@ $env:NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL="http://127.0.0.1:9000"
 
 Tauri inicia automaticamente el sidecar `scisonomics-backend`, espera respuesta de `/health`, y al cerrar la app termina el proceso backend.
 
-El instalador NSIS 3.2.1 bloquea la instalación si siguen abiertos estos procesos de ScisoNomics:
+El instalador NSIS bloquea la instalación si siguen abiertos estos procesos de ScisoNomics:
 - `ScisoNomics.exe`
 - `scisonomics-backend.exe`
 - `scisonomics-backend-x86_64-pc-windows-msvc.exe`
 
-No fuerza su cierre porque podría interrumpir escrituras o el cierre seguro. Si Windows avisa que un archivo está en uso, cancelar, cerrar esos procesos y volver a instalar; no usar "Omitir". La actualización no borra la DB local, backups ni logs. El instalador esperado es `ScisoNomics_3.2.1_x64-setup.exe`.
+No fuerza su cierre porque podría interrumpir escrituras o el cierre seguro. Si Windows avisa que un archivo está en uso, cancelar, cerrar esos procesos y volver a instalar; no usar "Omitir". La actualización no borra la DB local, backups ni logs. Desde 3.2.2, la app también puede descargar e instalar actualizaciones firmadas; la primera instalación de 3.2.2 desde 3.2.1 es manual. Ver [guía de release del updater](frontend/UPDATER_RELEASE.md).
 
 ### Desarrollo
 
@@ -115,7 +115,7 @@ cd modern_app/frontend
 npm run tauri:build
 ```
 
-`tauri:build` ejecuta automaticamente `prepare:sidecar` antes del bundle para evitar publicar frontend nuevo con backend viejo.
+`tauri:build` ejecuta automaticamente `prepare:sidecar` antes del bundle para evitar publicar frontend nuevo con backend viejo. Para una release firmada con `latest.json`, usar `npm run release:windows` siguiendo la guía enlazada arriba.
 
 Salida esperada (Windows):
 - `modern_app/frontend/src-tauri/target/release/bundle/`

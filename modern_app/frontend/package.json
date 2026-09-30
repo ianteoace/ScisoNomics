@@ -1,15 +1,18 @@
 {
   "name": "registro-finanzas-web",
   "private": true,
-  "version": "3.2.1",
+  "version": "3.2.2",
   "scripts": {
     "dev": "next dev --webpack -p 3000",
     "build": "next build",
     "test:auth": "node --test tests/supabaseCloudAuth.test.cjs",
+    "test:updater": "node --test tests/appUpdater.test.cjs",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
     "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",
-    "tauri:build": "node ../scripts/check-installer-env.cjs && npm run prepare:sidecar && tauri build --target x86_64-pc-windows-msvc -- --locked"
+    "tauri:build": "node ../scripts/check-installer-env.cjs && npm run prepare:sidecar && tauri build --target x86_64-pc-windows-msvc -- --locked",
+    "updater:manifest": "node ../scripts/create-updater-manifest.cjs",
+    "release:windows": "npm run tauri:build && npm run updater:manifest"
   },
   "scisonomicsDependencyNotes": {
     "nextBundledPostcss": "next@16.2.6 empaqueta postcss@8.4.31 con una vulnerabilidad moderada conocida. npm no ofrece un override efectivo; actualizar cuando Next publique el fix upstream."
@@ -20,6 +23,7 @@
     "@tauri-apps/plugin-deep-link": "~2.4.0",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-opener": "^2.4.1",
+    "@tauri-apps/plugin-updater": "2.10.1",
     "framer-motion": "^11.3.19",
     "lucide-react": "^0.511.0",
     "next": "16.2.6",

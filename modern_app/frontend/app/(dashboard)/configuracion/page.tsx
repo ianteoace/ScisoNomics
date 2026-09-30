@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
+import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
@@ -53,7 +54,7 @@ const SETTINGS_SECTIONS = [
   { id: "sync", label: "Sincronización", hint: "Manual y automática" },
   { id: "datos", label: "Datos y backups", hint: "Datos locales y copias" },
   { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
-  { id: "actualizaciones", label: "Actualizaciones", hint: "Releases manuales" },
+  { id: "actualizaciones", label: "Actualizaciones", hint: "Buscar e instalar" },
   { id: "acerca", label: "Acerca de", hint: "Versión y novedades" },
 ] as const;
 
@@ -797,15 +798,16 @@ export default function ConfiguracionPage() {
       <div className="space-y-5">
         <div>
           <h3 className="text-2xl font-black">Actualizaciones</h3>
-          <p className="mt-1 text-sm text-slate-400">Las actualizaciones se descargan manualmente desde GitHub Releases.</p>
+          <p className="mt-1 text-sm text-slate-400">ScisoNomics comprueba actualizaciones firmadas en segundo plano.</p>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Versión instalada</p>
           <p className="mt-2 text-3xl font-black text-cyan-100">{APP_VERSION}</p>
-          <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta versión. ScisoNomics no descarga ni reemplaza ejecutables automáticamente.</p>
+          <p className="mt-2 text-sm text-slate-400">Tus datos locales y credenciales permanecen en su ubicación habitual al actualizar.</p>
         </div>
+        <AppUpdateSettings />
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <button className="btn" type="button" onClick={handleOpenReleases}>Buscar actualizaciones</button>
+          <button className="btn-secondary" type="button" onClick={handleOpenReleases}>Ver instaladores en GitHub</button>
           <button className="btn-secondary" type="button" onClick={() => copyText(RELEASES_URL, "Link de Releases copiado.")}>Copiar link de Releases</button>
         </div>
       </div>
