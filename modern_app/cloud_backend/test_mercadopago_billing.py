@@ -28,9 +28,10 @@ class MercadoPagoBillingTests(unittest.TestCase):
     def auth(self):
         return {"Authorization": f"Bearer {create_access_token(INTERNAL_ID)}"}
 
-    def configured(self):
+    def configured(self, *, token="secret-test-token", test_payer=""):
         env = patch.dict(os.environ, {
-            "SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": "secret-test-token",
+            "SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": token,
+            "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": test_payer,
             "SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS": "4500.00",
             "SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET": "webhook-test-secret",
             "SCISONOMICS_PUBLIC_API_URL": "https://cloud.example.test",
@@ -38,13 +39,13 @@ class MercadoPagoBillingTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def start(self):
+    def start(self, *, expected_payer="legacy@example.com"):
         def create(method, path, **kwargs):
             self.assertEqual((method, path), ("POST", "/preapproval"))
             payload = kwargs["payload"]
-            self.assertEqual(payload["payer_email"], "legacy@example.com")
+            self.assertEqual(payload["payer_email"], expected_payer)
             self.assertEqual(payload["status"], "pending")
-            self.assertIn(INTERNAL_ID, payload["external_reference"])
+            self.assertTrue(payload["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
             return {"id": PROVIDER_ID, "external_reference": payload["external_reference"],
                     "init_point": f"https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id={PROVIDER_ID}"}
         with patch.object(mp, "request", side_effect=create) as mocked:
@@ -83,6 +84,62 @@ class MercadoPagoBillingTests(unittest.TestCase):
         self.assertEqual(second.json(), first)
         with db.connect() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_subscriptions").fetchone()["n"], 1)
+
+    def test_test_token_uses_test_payer_and_internal_owner_reference(self):
+        self.insert_user()
+        self.configured(token="TEST-seller-token", test_payer="buyer@test.example")
+        self.start(expected_payer="buyer@test.example")
+        with db.connect() as conn:
+            row = conn.execute("SELECT user_id,external_reference FROM billing_subscriptions").fetchone()
+        self.assertEqual(row["user_id"], INTERNAL_ID)
+        self.assertTrue(row["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
+        self.assertNotIn("buyer@test.example", row["external_reference"])
+
+    def test_test_token_requires_valid_test_payer_before_creating_intent(self):
+        self.insert_user()
+        self.configured(token="TEST-seller-token")
+        for email in ("", "not-an-email", "bad..dots@example.com", "buyer@example.com\nBearer TEST-secret"):
+            with self.subTest(email=email), patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": email}), patch.object(mp, "request") as create:
+                response = self.client.post("/billing/subscription", headers=self.auth())
+                self.assertEqual(response.status_code, 503, response.text)
+                self.assertEqual(response.json()["detail"]["code"], "mercadopago_test_payer_not_configured")
+                create.assert_not_called()
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_subscriptions").fetchone()["n"], 0)
+
+    def test_non_test_token_uses_real_email_even_if_test_payer_is_set(self):
+        self.insert_user()
+        self.configured(token="APP_USR-seller-token", test_payer="buyer@test.example")
+        self.start(expected_payer="legacy@example.com")
+
+    def test_provider_error_logs_only_sanitized_diagnostic(self):
+        self.insert_user()
+        self.configured(token="TEST-seller-token", test_payer="buyer@test.example")
+        provider_error = httpx.Response(400, json={
+            "error": "invalid_payer_email",
+            "message": "Payer buyer@test.example rejected for TEST-seller-token",
+            "details": {"password": "sensitive-value"},
+        })
+        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 502, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "mercadopago_request_failed")
+        self.assertIn("status_code=400", captured.output[0])
+        self.assertIn("code=invalid_payer_email", captured.output[0])
+        self.assertIn("message=unavailable", captured.output[0])
+        for secret in ("TEST-seller-token", "buyer@test.example", "sensitive-value"):
+            self.assertNotIn(secret, " ".join(captured.output) + response.text)
+
+    def test_provider_error_logs_safe_message_without_response_body(self):
+        self.configured()
+        provider_error = httpx.Response(422, json={"error": "invalid_payer_email", "message": "Invalid payer email", "details": {"token": "secret-test-token"}})
+        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
+            with self.assertRaises(mp.MercadoPagoError) as error:
+                mp.request("POST", "/preapproval", payload={})
+        self.assertEqual(error.exception.code, "mercadopago_request_failed")
+        self.assertIn("status_code=422", captured.output[0])
+        self.assertIn("message=Invalid payer email", captured.output[0])
+        self.assertNotIn("secret-test-token", " ".join(captured.output))
 
     def test_provider_client_timeout_and_bad_response_hide_secret(self):
         self.configured()

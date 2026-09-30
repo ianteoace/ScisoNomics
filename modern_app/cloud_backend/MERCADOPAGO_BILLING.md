@@ -9,6 +9,7 @@ El cliente desktop queda versionado como `3.3.0` por la nueva capacidad Premium.
 Variables nuevas del backend cloud:
 
 - `SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN`: credencial privada de la aplicación vendedora. Nunca en frontend/Tauri.
+- `SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL`: email de un comprador de prueba de Mercado Pago. Es opcional para producción, pero obligatorio y válido cuando el Access Token empieza con `TEST-`; en ese caso se usa solo como `payer_email` de `/preapproval`. Si falta o es inválido, el backend responde `503 mercadopago_test_payer_not_configured` antes de crear el intento. Con tokens no `TEST-` se usa el email real de la cuenta. No cambia `external_reference` ni `users.id`.
 - `SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS`: importe mensual fijo en ARS, por ejemplo `4500.00`. Configurarlo deliberadamente antes de habilitar el CTA.
 - `SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET`: clave secreta de Webhooks de la misma aplicación de Mercado Pago.
 - `SCISONOMICS_PUBLIC_API_URL`: origen HTTPS público del backend, por ejemplo `https://scisonomics-production-d8a3.up.railway.app`.

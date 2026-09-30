@@ -1926,6 +1926,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
     try:
         base_url = mp_billing.public_api_url()
         mp_billing.webhook_secret()
+        payer_email = mp_billing.payer_email_for(user.email)
     except mp_billing.MercadoPagoError as exc:
         raise _billing_error(exc) from exc
     with connect() as conn:
@@ -1958,7 +1959,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
     payload = {
         "reason": "ScisoNomics Premium mensual",
         "external_reference": reference,
-        "payer_email": user.email,
+        "payer_email": payer_email,
         "auto_recurring": {"frequency": 1, "frequency_type": "months", "transaction_amount": float(amount), "currency_id": "ARS"},
         "back_url": f"{base_url}/billing/return",
         "status": "pending",

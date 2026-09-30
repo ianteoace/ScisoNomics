@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 from urllib.parse import urlparse
@@ -17,6 +18,10 @@ import httpx
 
 API_URL = "https://api.mercadopago.com"
 RESOURCE_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+TEST_PAYER_EMAIL = re.compile(r"^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$")
+PROVIDER_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+PROVIDER_MESSAGE = re.compile(r"^[A-Za-z .,;:()/_-]{1,160}$")
+_logger = logging.getLogger(__name__)
 
 
 class MercadoPagoError(Exception):
@@ -28,6 +33,32 @@ class MercadoPagoError(Exception):
 
 def configured() -> bool:
     return bool(os.getenv("SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN", "").strip())
+
+
+def payer_email_for(real_email: str) -> str:
+    """Use a test buyer only with TEST credentials; keep the internal owner unchanged."""
+    token = os.getenv("SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN", "").strip()
+    if not token.startswith("TEST-"):
+        return real_email
+    email = os.getenv("SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL", "").strip()
+    if not TEST_PAYER_EMAIL.fullmatch(email) or len(email) > 254:
+        raise MercadoPagoError("mercadopago_test_payer_not_configured", 503)
+    return email
+
+
+def _provider_diagnostic(response: httpx.Response, token: str) -> tuple[str, str]:
+    """Extract only short, strictly allowlisted fields from an error response."""
+    try:
+        body = response.json() if len(response.content) <= 4096 else None
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return "unavailable", "unavailable"
+    code = body.get("error") or body.get("code")
+    message = body.get("message")
+    safe_code = code if isinstance(code, str) and PROVIDER_CODE.fullmatch(code) and token not in code and not code.startswith(("TEST-", "APP_USR-")) else "unavailable"
+    safe_message = message if isinstance(message, str) and PROVIDER_MESSAGE.fullmatch(message) and token not in message and not message.startswith(("TEST-", "APP_USR-")) else "unavailable"
+    return safe_code, safe_message
 
 
 def public_api_url() -> str:
@@ -84,6 +115,8 @@ def request(method: str, path: str, *, payload: dict | None = None, params: dict
     except httpx.RequestError:
         raise MercadoPagoError("mercadopago_unavailable", 503) from None
     if not response.is_success:
+        code, message = _provider_diagnostic(response, token)
+        _logger.warning("Mercado Pago request failed: status_code=%s code=%s message=%s", response.status_code, code, message)
         raise MercadoPagoError("mercadopago_request_failed", 503 if response.status_code >= 500 else 502)
     try:
         result = response.json()
