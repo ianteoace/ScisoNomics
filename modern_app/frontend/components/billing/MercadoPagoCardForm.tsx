@@ -4,6 +4,14 @@ import { useEffect, useRef, useState } from "react";
 
 const PUBLIC_KEY = process.env.NEXT_PUBLIC_MERCADOPAGO_PUBLIC_KEY || "";
 const SDK_URL = "https://sdk.mercadopago.com/js/v2";
+const secureFieldStyle = {
+  height: "48px",
+  padding: "0 12px",
+  color: "#e5e9f2",
+  placeholderColor: "#94a3b8",
+  fontSize: "14px",
+  fontFamily: "Arial, sans-serif",
+};
 
 type CardForm = {
   getCardFormData: () => { token?: string };
@@ -57,9 +65,9 @@ export function MercadoPagoCardForm({ amount, onToken, onError }: {
         iframe: true,
         form: {
           id: "mp-card-form",
-          cardNumber: { id: "mp-card-number", placeholder: "Número de tarjeta" },
-          expirationDate: { id: "mp-card-expiration", placeholder: "MM/AA" },
-          securityCode: { id: "mp-card-security", placeholder: "Código de seguridad" },
+          cardNumber: { id: "mp-card-number", placeholder: "Número de tarjeta", style: secureFieldStyle },
+          expirationDate: { id: "mp-card-expiration", placeholder: "MM/AA", style: secureFieldStyle },
+          securityCode: { id: "mp-card-security", placeholder: "Código de seguridad", style: secureFieldStyle },
           cardholderName: { id: "mp-cardholder-name", placeholder: "Titular" },
           issuer: { id: "mp-card-issuer", placeholder: "Banco emisor" },
           installments: { id: "mp-card-installments", placeholder: "Cuotas" },
@@ -99,18 +107,46 @@ export function MercadoPagoCardForm({ amount, onToken, onError }: {
   }, [amount]);
 
   return (
-    <form id="mp-card-form" className="mt-4 space-y-3" autoComplete="off">
+    <form id="mp-card-form" className="mt-4 max-w-xl space-y-4" autoComplete="off">
       <p className="text-sm text-slate-300">Ingresá la tarjeta en los campos seguros de Mercado Pago. ScisoNomics no guarda sus datos.</p>
-      <div id="mp-card-number" className="min-h-10 rounded-lg bg-white p-2" aria-label="Número de tarjeta" />
-      <div className="grid grid-cols-2 gap-3">
-        <div id="mp-card-expiration" className="min-h-10 rounded-lg bg-white p-2" aria-label="Vencimiento" />
-        <div id="mp-card-security" className="min-h-10 rounded-lg bg-white p-2" aria-label="Código de seguridad" />
+      <div className="space-y-1.5">
+        <span className="text-xs font-semibold text-slate-300">Número de tarjeta</span>
+        <div id="mp-card-number" className="mp-secure-field" aria-label="Número de tarjeta" />
       </div>
-      <input id="mp-cardholder-name" className="input w-full" placeholder="Titular de la tarjeta" aria-label="Titular de la tarjeta" />
-      <select id="mp-card-issuer" className="input w-full" aria-label="Banco emisor" />
-      <select id="mp-card-installments" className="input w-full" aria-label="Cuotas" />
-      <select id="mp-card-id-type" className="input w-full" aria-label="Tipo de documento" />
-      <input id="mp-card-id-number" className="input w-full" placeholder="Documento" aria-label="Documento" />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <span className="text-xs font-semibold text-slate-300">Vencimiento</span>
+          <div id="mp-card-expiration" className="mp-secure-field" aria-label="Vencimiento" />
+        </div>
+        <div className="space-y-1.5">
+          <span className="text-xs font-semibold text-slate-300">Código de seguridad</span>
+          <div id="mp-card-security" className="mp-secure-field" aria-label="Código de seguridad" />
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <label htmlFor="mp-cardholder-name" className="text-xs font-semibold text-slate-300">Titular de la tarjeta</label>
+        <input id="mp-cardholder-name" className="input h-[52px]" placeholder="Nombre como figura en la tarjeta" />
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <label htmlFor="mp-card-issuer" className="text-xs font-semibold text-slate-300">Banco emisor</label>
+          <select id="mp-card-issuer" className="input h-[52px]" />
+        </div>
+        <div className="space-y-1.5">
+          <label htmlFor="mp-card-installments" className="text-xs font-semibold text-slate-300">Cuotas</label>
+          <select id="mp-card-installments" className="input h-[52px]" />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <label htmlFor="mp-card-id-type" className="text-xs font-semibold text-slate-300">Tipo de documento</label>
+          <select id="mp-card-id-type" className="input h-[52px]" />
+        </div>
+        <div className="space-y-1.5">
+          <label htmlFor="mp-card-id-number" className="text-xs font-semibold text-slate-300">Documento</label>
+          <input id="mp-card-id-number" className="input h-[52px]" placeholder="Número de documento" />
+        </div>
+      </div>
       <button className="btn" type="submit" disabled={!ready || submittingRef.current}>Confirmar tarjeta</button>
     </form>
   );

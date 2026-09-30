@@ -38,6 +38,9 @@ body {
 .panel { @apply rounded-2xl border; border-color: rgb(var(--line)); background: rgb(var(--panel)); }
 .input { @apply w-full rounded-xl border px-3 py-2 text-sm outline-none transition; border-color: rgb(var(--line)); background: rgb(var(--card)); }
 .input:focus { box-shadow: 0 0 0 2px rgba(56,189,248,.18); border-color: rgb(var(--aqua)); }
+.mp-secure-field { height: 52px; overflow: hidden; border: 1px solid rgb(var(--line)); border-radius: .75rem; background: rgb(var(--card)); transition: border-color .15s, box-shadow .15s; }
+.mp-secure-field:focus-within { box-shadow: 0 0 0 2px rgba(56,189,248,.18); border-color: rgb(var(--aqua)); }
+.mp-secure-field iframe { display: block; max-height: 100%; }
 .btn { @apply rounded-xl px-4 py-2 text-sm font-semibold transition; background: #f59e0b; color: #1f1307; }
 .btn:hover { filter: brightness(1.05); }
 .btn:focus-visible, .btn-secondary:focus-visible, .input:focus-visible { outline: 2px solid rgba(56,189,248,.35); outline-offset: 1px; }
