@@ -38,6 +38,7 @@ const REQUIRED_CLOUD_CAPABILITIES = [
 ] as const;
 export const DATA_CHANGED_EVENT = "scisonomics:data-changed";
 export const SYNC_STATE_CHANGED_EVENT = "scisonomics:sync-state-changed";
+export type SyncCompletedEventDetail = { status: "success"; ownerId: string };
 const SYNC_TABLES = ["categorias", "tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos", "movimientos", "movimiento_tags"] as const;
 type SyncTable = (typeof SYNC_TABLES)[number];
 type SyncPayload = { ok: boolean } & Record<SyncTable, unknown[]>;
@@ -570,6 +571,17 @@ function emitSyncStateChanged() {
     window.dispatchEvent(new Event(SYNC_STATE_CHANGED_EVENT));
   } catch {
     // El estado de sincronización no debe bloquear la app.
+  }
+}
+
+function emitSyncCompleted(ownerId: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent<SyncCompletedEventDetail>(SYNC_STATE_CHANGED_EVENT, {
+      detail: { status: "success", ownerId },
+    }));
+  } catch {
+    // Una notificación de UI no debe convertir un sync exitoso en error.
   }
 }
 
@@ -2123,6 +2135,7 @@ async function runSyncWithReason(userEmail: string | undefined, mode: SyncMode, 
     await setLocalCloudContractState(snapshot.ownerId, { cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null, sync_contract_version: typeof health.sync_contract_version === "string" && health.sync_contract_version.trim().length > 0 ? health.sync_contract_version : null });
     await recordSyncHistory({ sync_id: historySyncId, device_id: deviceInfo.device_id, mode, status: "success", started_at: startedAt.toISOString(), finished_at: syncedAt, duration_ms: Date.now() - startedAt.getTime(), pending_total: totalCount(pendingCounts), pushed_total: totalCount(acceptedCounts), pulled_total: totalCount(pulledCounts), deleted_total: totalCount(deletedCounts), conflicts_total: conflictsTotal, remote_changes_total: remoteChangesTotal, applied_remote_total: appliedRemoteTotal, kept_local_total: keptLocalTotal, error_message: rejected.length > 0 ? "Algunos datos no pudieron sincronizarse y necesitan revisión." : null, details: { pending: pendingCounts, pushed: acceptedCounts, rejected: rejectedCounts, pulled: pulledCounts, deleted: deletedCounts, applied: applyResult.result, conflicts: applyResult.conflicts, kept_local: applyResult.kept_local, reason, pull_mode: forceFullPullOnce ? "full_once" : "incremental", cloud_schema_change_reason: forceFullPullOnce ? "cloud_schema_changed" : null, old_cloud_schema_revision: localCloudContractState.cloud_schema_revision, new_cloud_schema_revision: typeof health.cloud_schema_revision === "number" ? health.cloud_schema_revision : null, old_sync_contract_version: localCloudContractState.sync_contract_version || null, new_sync_contract_version: typeof health.sync_contract_version === "string" ? health.sync_contract_version : null, owner_id: snapshot.ownerId, owner_changed_during_sync: !ownerStillActive, rejected_total: rejected.length } }, snapshot.ownerId);
 
+    emitSyncCompleted(snapshot.ownerId);
     return { syncedAt, uploaded: acceptedCounts, ignored: pushResult.ignored, rejected, rejectedTotal: rejected.length, applied: applyResult.result, pulled: pulledCounts, conflictsTotal, remoteChangesTotal, appliedRemoteTotal, keptLocalTotal, reason, ownerChangedDuringSync: !ownerStillActive };
   } catch (error) {
     const classified = classifySyncFailure(error, { localReady, integrity, rejectedTotal: finalRejectedTotal, cloudHealthStatus });
