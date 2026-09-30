@@ -163,7 +163,7 @@ export default function PresupuestosPage() {
 
       <PremiumGate
         enabled={premiumEnabled}
-        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+        onUpgrade={() => router.push("/configuracion?section=general")}
       >
       <section className="card p-5">
       <div className="mb-3 flex items-center justify-between">

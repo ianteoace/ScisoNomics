@@ -482,6 +482,43 @@ def _ensure_billing_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "users", "subscription_expires_at", "TEXT")
     conn.execute("UPDATE users SET plan = COALESCE(NULLIF(plan, ''), 'free')")
     conn.execute("UPDATE users SET subscription_status = COALESCE(NULLIF(subscription_status, ''), 'active')")
+    # Existing rows (including manually granted Premium) remain manual.
+    _ensure_column(conn, "users", "billing_source", "TEXT")
+
+
+def _ensure_billing_subscription_schema(conn: CloudConnection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_subscriptions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            provider TEXT NOT NULL,
+            provider_subscription_id TEXT,
+            provider_plan_id TEXT,
+            status TEXT NOT NULL,
+            currency TEXT,
+            amount TEXT,
+            external_reference TEXT NOT NULL UNIQUE,
+            checkout_url TEXT,
+            paid_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_provider_sync_at TEXT,
+            canceled_at TEXT
+        )
+        """
+    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_provider_subscription ON billing_subscriptions(provider, provider_subscription_id) WHERE provider_subscription_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_user ON billing_subscriptions(user_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_one_open_per_user ON billing_subscriptions(user_id, provider) WHERE status IN ('creating', 'uncertain', 'pending', 'authorized', 'paused')")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_webhook_events (
+            event_key TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _ensure_email_verification_schema(conn: CloudConnection) -> None:
@@ -1012,6 +1049,7 @@ def _init_sqlite() -> None:
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
+        _ensure_billing_subscription_schema(conn)
         _ensure_email_verification_schema(conn)
         _ensure_device_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)
@@ -1279,6 +1317,7 @@ def _init_postgres() -> None:
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
+        _ensure_billing_subscription_schema(conn)
         _ensure_email_verification_schema(conn)
         _ensure_device_verification_schema(conn)
         # Historical sync timestamp updates can touch many rows. Keep their

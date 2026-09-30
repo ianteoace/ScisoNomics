@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
 import { ErrorState } from "../../../components/ui/ErrorState";
@@ -14,6 +15,7 @@ import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../..
 import type { Categoria, GastoFijo } from "../../../types/domain";
 
 export default function GastosFijosPage() {
+  const router = useRouter();
   const { showError, showSuccess } = useToast();
   const { setSaldoActual } = useDashboardUi();
   const [rows, setRows] = useState<GastoFijo[]>([]);
@@ -64,7 +66,7 @@ export default function GastosFijosPage() {
       {!loading && loadError ? null : (
       <PremiumGate
         enabled={premiumEnabled}
-        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+        onUpgrade={() => router.push("/configuracion?section=general")}
       >
         <GastosFijosView
           rows={rows}

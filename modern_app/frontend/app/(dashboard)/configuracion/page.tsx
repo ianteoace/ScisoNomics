@@ -14,6 +14,7 @@ import { api } from "../../../services/api";
 import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
+import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -111,6 +112,9 @@ export default function ConfiguracionPage() {
   const [localIntegrity, setLocalIntegrity] = useState<LocalDbIntegrityResult | null>(null);
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  const [premiumSubscription, setPremiumSubscription] = useState<PremiumSubscription | null>(null);
+  const [premiumAction, setPremiumAction] = useState<"start" | "refresh" | "cancel" | null>(null);
+  const [premiumMessage, setPremiumMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [restoring, setRestoring] = useState(false);
@@ -142,6 +146,7 @@ export default function ConfiguracionPage() {
   }
 
   async function load() {
+    const requestedOwnerId = getActiveOwnerId();
     setLoading(true);
     try {
       const settings = await api.settingsInfo();
@@ -156,12 +161,12 @@ export default function ConfiguracionPage() {
         getLocalDbIntegrity().catch(() => null),
         api.backups().catch(() => null),
       ]);
-      const entitlementsResult = await loadEntitlements({ force: true }).catch(() => null);
+      const entitlementsResult = await loadEntitlements({ force: true, ownerId: requestedOwnerId }).catch(() => null);
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
       setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
       setBackupState(backupsResult);
-      setEntitlements(entitlementsResult);
+      if (getActiveOwnerId() === requestedOwnerId) setEntitlements(entitlementsResult);
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setAutoSyncIntervalMsState(getAutoSyncIntervalMs());
       setLoadError("");
@@ -205,6 +210,55 @@ export default function ConfiguracionPage() {
       window.removeEventListener("scisonomics:open-account-panel", openAccountSection);
     };
   }, []);
+
+  const billingOwnerId = getActiveOwnerId();
+  useEffect(() => {
+    let cancelled = false;
+    setPremiumSubscription(null);
+    setPremiumMessage("");
+    if (billingOwnerId === "local") return;
+    void getPremiumSubscription(billingOwnerId).then((result) => {
+      if (!cancelled) setPremiumSubscription(result);
+    }).catch(() => {
+      if (!cancelled) setPremiumMessage("No se pudo consultar el estado de la suscripción.");
+    });
+    return () => { cancelled = true; };
+  }, [billingOwnerId]);
+
+  async function handlePremiumAction(action: "start" | "refresh" | "cancel") {
+    const ownerId = getActiveOwnerId();
+    if (ownerId === "local" || premiumAction) return;
+    if (action === "cancel" && !window.confirm("¿Querés cancelar la renovación de Premium en Mercado Pago?")) return;
+    setPremiumAction(action);
+    setPremiumMessage("");
+    try {
+      if (action === "start") {
+        const checkoutUrl = await startPremiumSubscription(ownerId);
+        await openPremiumCheckout(checkoutUrl);
+        if (getActiveOwnerId() === ownerId) {
+          setPremiumSubscription(await getPremiumSubscription(ownerId));
+          setPremiumMessage("Completá la suscripción en Mercado Pago. Después, verificá el estado acá.");
+        }
+      } else {
+        const result = action === "cancel"
+          ? await cancelPremiumSubscription(ownerId)
+          : await refreshPremiumSubscription(ownerId);
+        if (getActiveOwnerId() === ownerId) {
+          const latestEntitlements = await loadEntitlements({ force: true, ownerId });
+          if (getActiveOwnerId() === ownerId) {
+            setPremiumSubscription(result);
+            setEntitlements(latestEntitlements);
+            window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
+            setPremiumMessage(action === "cancel" ? "La cancelación se verificó con Mercado Pago." : "Estado verificado con Mercado Pago.");
+          }
+        }
+      }
+    } catch (error) {
+      if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo completar la operación.");
+    } finally {
+      setPremiumAction(null);
+    }
+  }
 
   async function handleCreateSecurityCopy() {
     try {
@@ -548,12 +602,23 @@ export default function ConfiguracionPage() {
                 </p>
               ) : null}
             </div>
-            {!premiumActive ? (
-              <button className="btn" type="button" onClick={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}>
-                Actualizar a Premium
-              </button>
-            ) : null}
+            <div className="flex flex-wrap gap-2">
+              {!premiumActive && activeOwner !== "local" && !["authorized", "paused", "uncertain", "creating"].includes(premiumSubscription?.status || "") ? (
+                <button className="btn" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("start")}>Pasar a Premium</button>
+              ) : null}
+              {activeOwner !== "local" && premiumSubscription && premiumSubscription.status !== "none" ? (
+                <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("refresh")}>Ya pagué / Verificar estado</button>
+              ) : null}
+              {activeOwner !== "local" && premiumSubscription?.can_cancel ? (
+                <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("cancel")}>Cancelar suscripción</button>
+              ) : null}
+            </div>
           </div>
+          {activeOwner === "local" ? <p className="mt-3 text-sm text-slate-400">Iniciá sesión en una cuenta cloud para contratar Premium.</p> : null}
+          {premiumSubscription?.status === "pending" ? <p className="mt-3 text-sm text-amber-200">Esperando autorización o acreditación del pago.</p> : null}
+          {premiumSubscription?.status === "authorized" && !premiumActive ? <p className="mt-3 text-sm text-amber-200">Suscripción autorizada. Esperando la primera cuota aprobada.</p> : null}
+          {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
+          {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
           <p className="font-semibold">Accesos rápidos</p>

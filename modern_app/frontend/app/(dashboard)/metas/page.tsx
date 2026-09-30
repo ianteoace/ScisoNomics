@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
 import { EmptyState } from "../../../components/ui/EmptyState";
@@ -33,6 +34,7 @@ const EMPTY_FORM: MetaForm = {
 };
 
 export default function MetasPage() {
+  const router = useRouter();
   const { showError, showSuccess } = useToast();
   const [rows, setRows] = useState<MetaAhorro[]>([]);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
@@ -233,7 +235,7 @@ export default function MetasPage() {
 
       <PremiumGate
         enabled={premiumEnabled}
-        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+        onUpgrade={() => router.push("/configuracion?section=general")}
       >
       <section className="card p-5 space-y-4">
       <div className="flex items-center justify-between gap-2">
