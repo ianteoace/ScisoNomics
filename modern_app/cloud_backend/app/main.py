@@ -1941,7 +1941,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
         current = conn.execute("SELECT * FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' AND status IN ('creating','uncertain','pending','authorized','paused') LIMIT 1", (user.id,)).fetchone()
         if current:
             if current["status"] == "pending" and current["checkout_url"]:
-                return {"checkout_url": current["checkout_url"], "status": "pending"}
+                return subscriptions.public_status(conn, user.id)
             raise HTTPException(status_code=409, detail={"code": "subscription_already_exists", "status": current["status"]})
         intent_id = str(uuid4())
         reference = f"scisonomics:{user.id}:{intent_id}"
@@ -1985,7 +1985,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
             (provider_id, checkout_url, now_iso(), intent_id, provider_id),
         )
         _security_audit(conn, "subscription.created", outcome="success", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
-    return {"checkout_url": checkout_url, "status": "pending"}
+        return subscriptions.public_status(conn, user.id)
 
 
 @app.get("/billing/return", response_class=HTMLResponse)
@@ -2036,6 +2036,41 @@ def cancel_billing_subscription(request: Request, user: UserOut = Depends(get_cu
     with connect() as conn:
         _security_audit(conn, "subscription.canceled", outcome="success", actor_id=user.id, source_ip=client_ip(request))
     return result
+
+
+@app.post("/billing/subscription/{local_subscription_id}/authorize")
+async def authorize_billing_subscription(local_subscription_id: str, request: Request, user: UserOut = Depends(get_current_user)):
+    enforce_rate_limit(request, "billing-subscription-authorize", identity=user.id, limit=8, window_seconds=3600)
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", local_subscription_id):
+        raise HTTPException(status_code=404, detail={"code": "subscription_not_found"})
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT provider_subscription_id,status FROM billing_subscriptions WHERE id = ? AND user_id = ? AND provider = 'mercadopago'",
+            (local_subscription_id, user.id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "subscription_not_found"})
+    if row["status"] != "pending" or not row["provider_subscription_id"]:
+        raise HTTPException(status_code=409, detail={"code": "subscription_not_pending"})
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    card_token_id = body.get("card_token_id") if isinstance(body, dict) and set(body) == {"card_token_id"} else None
+    if not isinstance(card_token_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", card_token_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_card_token"})
+    provider_id = row["provider_subscription_id"]
+    try:
+        mp_billing.request("PUT", f"/preapproval/{mp_billing._resource_id(provider_id)}", payload={"card_token_id": card_token_id})
+        # GET verifies the provider reference and amount; no invoice means no Premium grant.
+        with connect() as conn:
+            result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), expected_subscription_id=local_subscription_id)
+            _security_audit(conn, "subscription.authorized", outcome="provider_checked", actor_id=user.id, target_id=local_subscription_id, source_ip=client_ip(request), details={"status": result["status"]})
+        return result
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
 
 @app.post("/billing/webhooks/mercadopago")

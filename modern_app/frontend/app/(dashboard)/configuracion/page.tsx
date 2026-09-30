@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
+import { MercadoPagoCardForm } from "../../../components/billing/MercadoPagoCardForm";
 import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
@@ -14,7 +15,7 @@ import { api } from "../../../services/api";
 import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
-import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
+import { authorizePremiumSubscription, cancelPremiumSubscription, getPremiumSubscription, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -113,7 +114,8 @@ export default function ConfiguracionPage() {
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [premiumSubscription, setPremiumSubscription] = useState<PremiumSubscription | null>(null);
-  const [premiumAction, setPremiumAction] = useState<"start" | "refresh" | "cancel" | null>(null);
+  const [premiumAction, setPremiumAction] = useState<"start" | "authorize" | "refresh" | "cancel" | null>(null);
+  const [showCardForm, setShowCardForm] = useState(false);
   const [premiumMessage, setPremiumMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -216,6 +218,7 @@ export default function ConfiguracionPage() {
     let cancelled = false;
     setPremiumSubscription(null);
     setPremiumMessage("");
+    setShowCardForm(false);
     if (billingOwnerId === "local") return;
     void getPremiumSubscription(billingOwnerId).then((result) => {
       if (!cancelled) setPremiumSubscription(result);
@@ -233,11 +236,11 @@ export default function ConfiguracionPage() {
     setPremiumMessage("");
     try {
       if (action === "start") {
-        const checkoutUrl = await startPremiumSubscription(ownerId);
-        await openPremiumCheckout(checkoutUrl);
+        const result = premiumSubscription?.status === "pending" ? premiumSubscription : await startPremiumSubscription(ownerId);
         if (getActiveOwnerId() === ownerId) {
-          setPremiumSubscription(await getPremiumSubscription(ownerId));
-          setPremiumMessage("Completá la suscripción en Mercado Pago. Después, verificá el estado acá.");
+          setPremiumSubscription(result);
+          setShowCardForm(result.status === "pending");
+          setPremiumMessage(result.status === "pending" ? "Ingresá la tarjeta para autorizar la suscripción." : "Verificá el estado de la suscripción.");
         }
       } else {
         const result = action === "cancel"
@@ -255,6 +258,26 @@ export default function ConfiguracionPage() {
       }
     } catch (error) {
       if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo completar la operación.");
+    } finally {
+      setPremiumAction(null);
+    }
+  }
+
+  async function handleCardToken(cardTokenId: string) {
+    const ownerId = getActiveOwnerId();
+    const subscriptionId = premiumSubscription?.subscription_id;
+    if (ownerId === "local" || !subscriptionId || premiumAction) return;
+    setPremiumAction("authorize");
+    setPremiumMessage("");
+    try {
+      const result = await authorizePremiumSubscription(ownerId, subscriptionId, cardTokenId);
+      if (getActiveOwnerId() === ownerId) {
+        setPremiumSubscription(result);
+        setShowCardForm(false);
+        setPremiumMessage("Tarjeta enviada. Estamos esperando la confirmación del pago; verificá el estado en unos minutos.");
+      }
+    } catch (error) {
+      if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo asociar la tarjeta.");
     } finally {
       setPremiumAction(null);
     }
@@ -604,7 +627,7 @@ export default function ConfiguracionPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               {!premiumActive && activeOwner !== "local" && !["authorized", "paused", "uncertain", "creating"].includes(premiumSubscription?.status || "") ? (
-                <button className="btn" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("start")}>Pasar a Premium</button>
+                <button className="btn" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("start")}>{premiumSubscription?.status === "pending" ? "Ingresar tarjeta" : "Pasar a Premium"}</button>
               ) : null}
               {activeOwner !== "local" && premiumSubscription && premiumSubscription.status !== "none" ? (
                 <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("refresh")}>Ya pagué / Verificar estado</button>
@@ -616,6 +639,12 @@ export default function ConfiguracionPage() {
           </div>
           {activeOwner === "local" ? <p className="mt-3 text-sm text-slate-400">Iniciá sesión en una cuenta cloud para contratar Premium.</p> : null}
           {premiumSubscription?.status === "pending" ? <p className="mt-3 text-sm text-amber-200">Esperando autorización o acreditación del pago.</p> : null}
+          {showCardForm && premiumSubscription?.status === "pending" && premiumSubscription.subscription_id && premiumSubscription.amount ? (
+            <div>
+              <MercadoPagoCardForm key={`${activeOwner}:${premiumSubscription.subscription_id}`} amount={premiumSubscription.amount} onToken={handleCardToken} onError={setPremiumMessage} />
+              <button className="btn-secondary mt-3" type="button" disabled={premiumAction !== null} onClick={() => setShowCardForm(false)}>Cerrar formulario</button>
+            </div>
+          ) : null}
           {premiumSubscription?.status === "authorized" && !premiumActive ? <p className="mt-3 text-sm text-amber-200">Suscripción autorizada. Esperando la primera cuota aprobada.</p> : null}
           {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
           {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}

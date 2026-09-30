@@ -112,6 +112,64 @@ class MercadoPagoBillingTests(unittest.TestCase):
         self.configured(token="APP_USR-seller-token", test_payer="buyer@test.example")
         self.start(expected_payer="legacy@example.com")
 
+    def test_card_token_authorizes_pending_subscription_without_granting_premium(self):
+        self.insert_user()
+        self.configured()
+        started = self.start()
+        subscription_id = started["subscription_id"]
+        self.assertEqual(started["amount"], "4500.00")
+        provider = self.provider(status="authorized")
+        with patch.object(mp, "request", return_value={"id": PROVIDER_ID}) as update, patch.object(mp, "get_subscription", return_value=provider):
+            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "authorized")
+        update.assert_called_once_with("PUT", f"/preapproval/{PROVIDER_ID}", payload={"card_token_id": "cardtoken12345678"})
+        with db.connect() as conn:
+            user = conn.execute("SELECT id,plan,subscription_status,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
+            row = conn.execute("SELECT user_id,status,paid_until,external_reference FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
+        self.assertEqual(tuple(user), (INTERNAL_ID, "free", "active", None))
+        self.assertEqual((row["user_id"], row["status"], row["paid_until"]), (INTERNAL_ID, "authorized", None))
+        self.assertTrue(row["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
+
+    def test_card_authorization_rejects_missing_token_and_other_owner(self):
+        self.insert_user()
+        self.insert_user("other-owner", "other@example.com")
+        self.configured()
+        subscription_id = self.start()["subscription_id"]
+        with patch.object(mp, "request") as update:
+            missing = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={})
+            other = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers={"Authorization": f"Bearer {create_access_token('other-owner')}"}, json={"card_token_id": "cardtoken12345678"})
+        self.assertEqual(missing.status_code, 422)
+        self.assertEqual(missing.json()["detail"]["code"], "invalid_card_token")
+        self.assertEqual(other.status_code, 404)
+        self.assertEqual(other.json()["detail"]["code"], "subscription_not_found")
+        update.assert_not_called()
+
+    def test_card_authorization_provider_error_hides_card_token(self):
+        self.insert_user()
+        self.configured()
+        subscription_id = self.start()["subscription_id"]
+        token = "cardtokenabcdef"
+        provider_error = httpx.Response(400, json={"error": "invalid_card_token", "message": f"Card token {token} rejected"})
+        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
+            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": token})
+        self.assertEqual(response.status_code, 502)
+        self.assertNotIn(token, response.text + " ".join(captured.output))
+        self.assertIn("status_code=400", captured.output[0])
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()["status"], "pending")
+
+    def test_card_authorization_rejects_mismatched_provider_reference(self):
+        self.insert_user()
+        self.configured()
+        subscription_id = self.start()["subscription_id"]
+        wrong = self.provider(status="authorized", reference="scisonomics:other-owner:other-intent")
+        with patch.object(mp, "request", return_value={"id": PROVIDER_ID}), patch.object(mp, "get_subscription", return_value=wrong):
+            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
+        self.assertEqual(response.status_code, 409)
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()["status"], "pending")
+
     def test_provider_error_logs_only_sanitized_diagnostic(self):
         self.insert_user()
         self.configured(token="TEST-seller-token", test_payer="buyer@test.example")

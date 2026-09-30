@@ -46,7 +46,7 @@ def payer_email_for(real_email: str) -> str:
     return email
 
 
-def _provider_diagnostic(response: httpx.Response, token: str) -> tuple[str, str]:
+def _provider_diagnostic(response: httpx.Response, sensitive_values: tuple[str, ...]) -> tuple[str, str]:
     """Extract only short, strictly allowlisted fields from an error response."""
     try:
         body = response.json() if len(response.content) <= 4096 else None
@@ -56,8 +56,8 @@ def _provider_diagnostic(response: httpx.Response, token: str) -> tuple[str, str
         return "unavailable", "unavailable"
     code = body.get("error") or body.get("code")
     message = body.get("message")
-    safe_code = code if isinstance(code, str) and PROVIDER_CODE.fullmatch(code) and token not in code and not code.startswith(("TEST-", "APP_USR-")) else "unavailable"
-    safe_message = message if isinstance(message, str) and PROVIDER_MESSAGE.fullmatch(message) and token not in message and not message.startswith(("TEST-", "APP_USR-")) else "unavailable"
+    safe_code = code if isinstance(code, str) and PROVIDER_CODE.fullmatch(code) and not any(value in code for value in sensitive_values) and not code.startswith(("TEST-", "APP_USR-")) else "unavailable"
+    safe_message = message if isinstance(message, str) and PROVIDER_MESSAGE.fullmatch(message) and not any(value in message for value in sensitive_values) and not message.startswith(("TEST-", "APP_USR-")) else "unavailable"
     return safe_code, safe_message
 
 
@@ -115,7 +115,9 @@ def request(method: str, path: str, *, payload: dict | None = None, params: dict
     except httpx.RequestError:
         raise MercadoPagoError("mercadopago_unavailable", 503) from None
     if not response.is_success:
-        code, message = _provider_diagnostic(response, token)
+        card_token = payload.get("card_token_id") if isinstance(payload, dict) else None
+        sensitive_values = (token, card_token) if isinstance(card_token, str) and card_token else (token,)
+        code, message = _provider_diagnostic(response, sensitive_values)
         _logger.warning("Mercado Pago request failed: status_code=%s code=%s message=%s", response.status_code, code, message)
         raise MercadoPagoError("mercadopago_request_failed", 503 if response.status_code >= 500 else 502)
     try:

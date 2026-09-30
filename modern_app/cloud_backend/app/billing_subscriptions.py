@@ -47,9 +47,11 @@ def _row(conn, user_id: str):
 def public_status(conn, user_id: str) -> dict:
     row = _row(conn, user_id)
     if row is None:
-        return {"status": "none", "next_payment_date": None, "paid_until": None, "checkout_url": None, "can_cancel": False}
+        return {"status": "none", "subscription_id": None, "amount": None, "next_payment_date": None, "paid_until": None, "checkout_url": None, "can_cancel": False}
     return {
         "status": row["status"],
+        "subscription_id": row["id"],
+        "amount": row["amount"],
         "next_payment_date": row["paid_until"] if row["status"] == "authorized" else None,
         "paid_until": row["paid_until"],
         "checkout_url": row["checkout_url"] if row["status"] == "pending" else None,
@@ -104,7 +106,7 @@ def _set_effective_entitlement(conn, row, *, now: str) -> None:
         )
 
 
-def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None) -> dict:
+def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None, expected_subscription_id: str | None = None) -> dict:
     """GET the authoritative preapproval; never derive a user from webhook input."""
     provider = mp.get_subscription(provider_id)
     if str(provider.get("id") or "") != provider_id:
@@ -114,7 +116,7 @@ def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice
         "SELECT * FROM billing_subscriptions WHERE external_reference = ? AND provider = 'mercadopago'",
         (reference,),
     ).fetchone()
-    if row is None or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
+    if row is None or (expected_subscription_id is not None and row["id"] != expected_subscription_id) or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
         raise BillingConflict("subscription_not_owned")
     if row["provider_plan_id"] and str(provider.get("preapproval_plan_id") or "") != row["provider_plan_id"]:
         raise BillingConflict("plan_mismatch")

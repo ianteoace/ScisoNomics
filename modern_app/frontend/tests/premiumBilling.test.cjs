@@ -11,6 +11,13 @@ require.extensions[".ts"] = (module, filename) => {
   });
   module._compile(outputText, filename);
 };
+require.extensions[".tsx"] = (module, filename) => {
+  const { outputText } = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
+    fileName: filename,
+  });
+  module._compile(outputText, filename);
+};
 
 const root = path.resolve(__dirname, "..");
 const owner = "internal-sciso-owner";
@@ -29,27 +36,50 @@ require.cache[cloudAuthPath] = {
 };
 process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL = "https://cloud.test";
 const billing = require("../services/premiumBilling.ts");
-const checkout = "https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id=123";
+const { MercadoPagoCardForm } = require("../components/billing/MercadoPagoCardForm.tsx");
+const React = require("react");
+const { renderToStaticMarkup } = require("react-dom/server");
+const subscriptionId = "11111111-2222-4333-8444-555555555555";
 
-test("start uses the active internal owner token and opens only the provider URL", async (t) => {
+test("start returns pending subscription for active internal owner", async (t) => {
   activeOwner = owner;
   token = "access-test-only";
   const calls = [];
   global.fetch = t.mock.fn(async (url, options) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ checkout_url: checkout }) };
+    return { ok: true, json: async () => ({ status: "pending", subscription_id: subscriptionId, amount: "4500.00" }) };
   });
-  assert.equal(await billing.startPremiumSubscription(owner), checkout);
+  assert.equal((await billing.startPremiumSubscription(owner)).subscription_id, subscriptionId);
   assert.equal(calls[0].url, "https://cloud.test/billing/subscription");
   assert.equal(calls[0].options.headers.Authorization, "Bearer access-test-only");
   assert.equal(calls[0].options.body, undefined);
-  const opened = [];
-  global.window = { open: (...args) => opened.push(args) };
-  await billing.openPremiumCheckout(checkout);
-  assert.equal(opened[0][0], checkout);
-  assert.equal(opened[0][2], "noopener,noreferrer");
-  await assert.rejects(billing.openPremiumCheckout("https://evil.test/checkout"));
-  global.window = undefined;
+});
+
+test("card token is sent only to the owned subscription endpoint", async (t) => {
+  activeOwner = owner;
+  token = "access-test-only";
+  const calls = [];
+  global.fetch = t.mock.fn(async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, json: async () => ({ status: "authorized", paid_until: null }) };
+  });
+  const result = await billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678");
+  assert.equal(result.status, "authorized");
+  assert.equal(result.paid_until, null);
+  assert.equal(calls[0].url, `https://cloud.test/billing/subscription/${subscriptionId}/authorize`);
+  assert.equal(calls[0].options.body, JSON.stringify({ card_token_id: "cardtoken12345678" }));
+  assert.equal(calls[0].options.headers.Authorization, "Bearer access-test-only");
+  activeOwner = "other-internal-owner";
+  await assert.rejects(billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678"), /cuenta cloud activa/);
+  assert.equal(calls.length, 1);
+});
+
+test("tokenization form renders provider-owned card fields", () => {
+  const html = renderToStaticMarkup(React.createElement(MercadoPagoCardForm, { amount: "4500.00", onToken: async () => {}, onError: () => {} }));
+  assert.match(html, /id="mp-card-number"/);
+  assert.match(html, /id="mp-card-security"/);
+  assert.doesNotMatch(html, /<input[^>]+(?:card-number|card-security)/);
+  assert.match(html, /Confirmar tarjeta/);
 });
 
 test("refresh and cancel remain scoped to active account", async (t) => {
@@ -70,7 +100,7 @@ test("refresh and cancel remain scoped to active account", async (t) => {
 test("pending subscription stays pending until the backend confirms payment", async (t) => {
   activeOwner = owner;
   token = "access-test-only";
-  global.fetch = t.mock.fn(async () => ({ ok: true, json: async () => ({ status: "pending", paid_until: null, checkout_url: checkout, can_cancel: true }) }));
+  global.fetch = t.mock.fn(async () => ({ ok: true, json: async () => ({ status: "pending", paid_until: null, subscription_id: subscriptionId, amount: "4500.00", can_cancel: true }) }));
   const status = await billing.getPremiumSubscription(owner);
   assert.equal(status.status, "pending");
   assert.equal(status.paid_until, null);
@@ -83,6 +113,8 @@ test("network and pending errors are clear without exposing tokens", async (t) =
   await assert.rejects(billing.refreshPremiumSubscription(owner), (error) => !error.message.includes(token));
   global.fetch = t.mock.fn(async () => ({ ok: false, json: async () => ({ detail: { code: "subscription_creation_unconfirmed" } }) }));
   await assert.rejects(billing.startPremiumSubscription(owner), /Contactá a soporte/);
+  global.fetch = t.mock.fn(async () => ({ ok: false, json: async () => ({ detail: { code: "invalid_card_token", provider_body: "secret-card-data" } }) }));
+  await assert.rejects(billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678"), (error) => !error.message.includes("secret-card-data") && /Volvé a ingresarla/.test(error.message));
   token = "";
   await assert.rejects(billing.getPremiumSubscription(owner), /sesión cloud/);
 });
