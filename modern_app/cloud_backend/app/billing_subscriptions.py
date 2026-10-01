@@ -11,7 +11,16 @@ from . import mercadopago_billing as mp
 
 OPEN_STATUSES = {"creating", "uncertain", "pending", "authorized", "paused"}
 PROVIDER_STATUSES = {"pending", "authorized", "paused", "canceled"}
+PROVIDER_STATUSES = {"pending", "authorized", "paused", "canceled"}
 
+
+def _normalize_provider_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+
+    if status == "cancelled":
+        return "canceled"
+
+    return status
 
 class BillingConflict(Exception):
     pass
@@ -146,7 +155,7 @@ def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice
     recurring = provider.get("auto_recurring") or {}
     if not isinstance(recurring, dict) or recurring.get("currency_id") != row["currency"] or _amount(recurring.get("transaction_amount")) != row["amount"]:
         raise BillingConflict("price_mismatch")
-    status = str(provider.get("status") or "").lower()
+    status = _normalize_provider_status(provider.get("status"))
     if status not in PROVIDER_STATUSES:
         raise mp.MercadoPagoError("mercadopago_unknown_status")
     paid_until = _parse_date(row["paid_until"])
