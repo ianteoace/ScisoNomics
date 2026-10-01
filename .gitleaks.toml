@@ -1,0 +1,58 @@
+title = "ScisoNomics secret scanning"
+
+[extend]
+useDefault = true
+
+# Keep upstream private-key, JWT and generic credential detectors enabled.
+# Additional rules cover provider formats and the application's named secrets.
+[[rules]]
+id = "mercadopago-access-token"
+description = "Mercado Pago access token"
+regex = '''\b(?:APP_USR|TEST)-[A-Za-z0-9_-]{20,}\b'''
+keywords = ["APP_USR-", "TEST-"]
+
+[[rules]]
+id = "supabase-secret-key"
+description = "Supabase private secret key (publishable keys are public)"
+regex = '''\bsb_secret_[A-Za-z0-9_-]{20,}\b'''
+keywords = ["sb_secret_"]
+
+[[rules]]
+id = "scisonomics-named-secret"
+description = "Literal JWT, SMTP, webhook, admin or Tauri signing secret"
+regex = '''(?i)(?:SCISONOMICS_(?:JWT_SECRET|SMTP_PASSWORD|MERCADOPAGO_WEBHOOK_SECRET|ADMIN_TOKENS_JSON|ADMIN_TOTP_SECRETS_JSON)|TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?)["']?\s*[:=]\s*["']([A-Za-z0-9_+=.!:/-]{20,})["']'''
+secretGroup = 1
+entropy = 3.5
+
+[[rules.allowlists]]
+description = "Exact synthetic JWT credential in the device regression fixture"
+condition = "AND"
+paths = ['''^modern_app/cloud_backend/test_device_verification_phase1\.py$''']
+regexTarget = "secret"
+regexes = ['''^device-off-regression-secret-at-least-32-characters$''']
+
+[[rules]]
+id = "scisonomics-admin-json-secret"
+description = "Literal credential inside admin token or TOTP JSON configuration"
+regex = '''(?i)SCISONOMICS_ADMIN_(?:TOKENS|TOTP_SECRETS)_JSON[^\r\n]{0,100}?["']\s*:\s*["']([A-Za-z0-9_+=.!:/-]{16,})'''
+secretGroup = 1
+entropy = 3.5
+
+[[rules]]
+id = "postgresql-url-password"
+description = "Password embedded in a PostgreSQL URL"
+regex = '''(?i)postgres(?:ql)?://[^\s:/@]+:([^\s@"']+)@'''
+secretGroup = 1
+keywords = ["postgres://", "postgresql://"]
+
+[[rules.allowlists]]
+description = "Exact disposable PostgreSQL credential used only in CI"
+regexTarget = "secret"
+regexes = ['''^postgres-test-only$''']
+
+[[rules.allowlists]]
+description = "Exact fake remote URL in the test that rejects remote PostgreSQL targets"
+condition = "AND"
+paths = ['''^modern_app/cloud_backend/test_device_verification_postgres\.py$''']
+regexTarget = "line"
+regexes = ['''^\s*"postgresql://user:secret@example\.railway\.app/scisonomics_device_verification_test"\s*$''']

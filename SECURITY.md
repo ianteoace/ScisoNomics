@@ -67,6 +67,45 @@ Otros reverse proxies requieren configuracion explicita mediante
 `SCISONOMICS_TRUSTED_PROXY_IPS` y deben controlar el primer valor de
 `X-Forwarded-For`; fuera de Railway en produccion, `X-Real-IP` se ignora.
 
+## Controles automaticos en GitHub Actions
+
+`Security checks` corre en pushes a `main` y `feature/**`, pull requests y el
+schedule semanal existente; no se activa por tags. Conserva solo
+`permissions: contents: read`.
+
+- `secret-scanning`: Gitleaks 8.30.1, binario oficial con SHA-256 fijado, analiza
+  archivos del working tree y todo el historial Git disponible (`fetch-depth: 0`,
+  `--log-opts="--all"`). Usa `--redact=100` y falla si encuentra secretos.
+  `.gitleaks.toml` extiende las reglas oficiales para claves privadas, JWT y
+  credenciales genericas con reglas de Mercado Pago, Supabase secret keys,
+  secretos configurados de ScisoNomics/Tauri, admin JSON y URLs PostgreSQL.
+  Las excepciones cubren solo fixtures ficticios concretos; no se excluyen
+  directorios de codigo, tests ni commits completos.
+- `application-security`: tests de seguridad Python, `pip-audit` para ambos
+  requirements, build frontend y `npm audit --omit=dev --audit-level=high`.
+  Vulnerabilidades Python o high/critical de produccion npm hacen fallar CI.
+- `rust-tauri`: instala `cargo-audit` 0.22.2 con `--locked` y audita
+  `modern_app/frontend/src-tauri/Cargo.lock` con `--deny warnings`, sin ignorar
+  advisories; conserva checks y tests de Tauri Windows con Rust 1.88.0.
+- `device-verification-postgres16`: tests de Device Verification con PostgreSQL 16.
+
+Checkout, setup-python y setup-node estan fijadas por SHA completo, con un
+comentario de la major original. Al actualizar herramientas, revisar sus
+versiones y verificar nuevamente hashes y compatibilidad.
+
+No subir secretos reales al repositorio ni confiar solo en CI para su rotacion.
+Si Gitleaks detecta un secreto real, rotarlo/revocarlo antes de simplemente
+borrarlo: eliminarlo del working tree no lo elimina del historial. Investigar
+su exposicion sin publicar el valor en logs, issues ni artefactos. No agregar
+excepciones para hacer pasar un secreto real.
+
+La proteccion de ramas no se configura con este YAML. En GitHub, para `main`,
+exigir PR, checks aprobados y branch actualizado antes de merge; bloquear force
+pushes y deletion. Requerir los checks estables `application-security`,
+`rust-tauri`, `device-verification-postgres16` y `secret-scanning`. Configurarlos
+manualmente despues de que hayan corrido; aplicar una politica equivalente a
+`feature/external-auth` si tambien se desea proteger esa rama.
+
 ## Respuesta a incidentes
 
 Si se sospecha el robo de un secreto o una sesion:
