@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from modern_app.cloud_backend import test_supabase_auth as fixtures
 from modern_app.cloud_backend.app import billing_subscriptions as subscriptions, db, mercadopago_billing as mp, security
@@ -27,6 +29,9 @@ class MercadoPagoBillingTests(unittest.TestCase):
             security._ATTEMPTS.clear()
         self.insert_user()
         env = patch.dict(os.environ, {
+            "SCISONOMICS_ENTITLEMENTS_PRIVATE_KEY": rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+            ).decode("ascii"),
             "SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": "APP_USR-test-only",
             "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": "",
             "SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS": "4500.00",
@@ -255,7 +260,10 @@ class MercadoPagoBillingTests(unittest.TestCase):
             user = conn.execute("SELECT plan,subscription_expires_at,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
             self.assertEqual(tuple(user), ("premium", "2030-01-01T00:00:00Z", None))
 
-    def test_cancellation_keeps_verified_paid_period(self):
+    def test_deprecated_client_cancellation_keeps_verified_paid_period(self):
+        route = next(route for route in self.main.app.routes if getattr(route, "path", None) == "/billing/subscription/cancel")
+        self.assertTrue(route.deprecated)
+        self.assertFalse(route.include_in_schema)
         self.start()
         with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": [self.invoice()]}):
             self.assertEqual(self.client.post("/billing/subscription/refresh", headers=self.auth()).status_code, 200)
@@ -265,6 +273,54 @@ class MercadoPagoBillingTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "canceled")
         with db.connect() as conn:
             self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "premium")
+
+    def test_provider_cancellation_webhook_keeps_paid_period_and_internal_owner(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": [self.invoice()]}):
+            paid = self.client.post("/billing/subscription/refresh", headers=self.auth()).json()["paid_until"]
+        for i, status in enumerate(["canceled", "cancelled"]):
+            with patch.object(mp, "get_subscription", return_value=self.provider(status)), patch.object(mp, "request", return_value={"results": []}), patch.object(mp, "cancel_subscription") as cancel:
+                response = self.webhook("subscription_preapproval", PROVIDER_ID, event_id=700+i)
+            self.assertEqual(response.status_code, 200, response.text)
+            cancel.assert_not_called()
+            state = self.client.get("/billing/subscription", headers=self.auth()).json()
+            self.assertEqual((state["status"], state["paid_until"], state["next_payment_date"]), ("canceled", paid, None))
+            entitlement = self.client.get("/billing/entitlements", headers=self.auth()).json()
+            self.assertEqual((entitlement["plan"], entitlement["status"]), ("premium", "active"))
+            self.assertTrue(all(entitlement["features"].values()))
+        with db.connect() as conn:
+            user = conn.execute("SELECT id,plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
+            self.assertEqual(tuple(user), (INTERNAL_ID, "premium", "active", paid, "mercadopago"))
+
+    def test_provider_cancellation_without_approved_payment_keeps_free(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider("cancelled")), patch.object(mp, "request", return_value={"results": []}):
+            response = self.webhook("subscription_preapproval", PROVIDER_ID, event_id=800)
+        self.assertEqual(response.status_code, 200)
+        state = self.client.get("/billing/subscription", headers=self.auth()).json()
+        self.assertEqual(state["status"], "canceled")
+        self.assertIsNone(state["paid_until"])
+        entitlement = self.client.get("/billing/entitlements", headers=self.auth()).json()
+        self.assertEqual(entitlement["plan"], "free")
+        self.assertFalse(any(entitlement["features"].values()))
+
+    def test_canceled_paid_period_expires_to_free_on_entitlements_read(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": [self.invoice()]}):
+            paid = self.client.post("/billing/subscription/refresh", headers=self.auth()).json()["paid_until"]
+        with patch.object(mp, "get_subscription", return_value=self.provider("canceled")), patch.object(mp, "request", return_value={"results": []}):
+            self.assertEqual(self.webhook("subscription_preapproval", PROVIDER_ID, event_id=900).status_code, 200)
+        after_expiry = datetime.fromisoformat(paid) + timedelta(seconds=1)
+        with patch.object(subscriptions, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = after_expiry
+            entitlement = self.client.get("/billing/entitlements", headers=self.auth()).json()
+        self.assertEqual((entitlement["plan"], entitlement["status"]), ("free", "canceled"))
+        self.assertIsNone(entitlement["expires_at"])
+        self.assertFalse(any(entitlement["features"].values()))
+        with db.connect() as conn:
+            user = conn.execute("SELECT plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
+            self.assertEqual(tuple(user), ("free", "canceled", None, "mercadopago"))
+            self.assertEqual(conn.execute("SELECT paid_until FROM billing_subscriptions").fetchone()["paid_until"], paid)
 
     def test_manual_premium_blocks_new_checkout(self):
         with db.connect() as conn:

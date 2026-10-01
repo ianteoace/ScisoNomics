@@ -38,7 +38,7 @@ require.cache[cloudAuthPath] = {
 };
 process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL = "https://cloud.test";
 const billing = require("../services/premiumBilling.ts");
-const { PremiumCheckout } = require("../components/billing/PremiumCheckout.tsx");
+const { PremiumCheckout, PremiumSubscriptionDetails } = require("../components/billing/PremiumCheckout.tsx");
 const { PremiumVerificationFallback } = require("../components/billing/PremiumCheckout.tsx");
 const { createPremiumAutoRefresh } = require("../services/premiumAutoRefresh.ts");
 const entitlementsService = require("../services/entitlements.ts");
@@ -362,7 +362,7 @@ test("status messages use the real entitlement and verified rejection detail", (
   assert.match(billing.premiumStatusMessage({ ...pending, status: "canceled" }, false), /cancelada/);
 });
 
-test("refresh and cancel are scoped to the active account", async (t) => {
+test("refresh remains scoped to the active account without a cancel API client", async (t) => {
   account();
   const paths = [];
   global.fetch = t.mock.fn(async (url) => {
@@ -370,11 +370,63 @@ test("refresh and cancel are scoped to the active account", async (t) => {
     return { ok: true, json: async () => ({ ...pending, status: "authorized", paid_until: "2026-11-01T00:00:00Z" }) };
   });
   assert.equal((await billing.refreshPremiumSubscription(owner)).status, "authorized");
-  await billing.cancelPremiumSubscription(owner);
-  assert.deepEqual(paths, ["https://cloud.test/billing/subscription/refresh", "https://cloud.test/billing/subscription/cancel"]);
+  assert.equal(billing.cancelPremiumSubscription, undefined);
+  assert.deepEqual(paths, ["https://cloud.test/billing/subscription/refresh"]);
   activeOwner = "other-owner";
   await assert.rejects(billing.refreshPremiumSubscription(owner));
-  assert.equal(paths.length, 2);
+  assert.equal(paths.length, 1);
+});
+
+test("the frontend has no direct cancellation entry or request", () => {
+  function inspect(directory) {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const filename = path.join(directory, entry.name);
+      if (entry.isDirectory()) inspect(filename);
+      else if (/\.tsx?$/.test(filename)) {
+        assert.doesNotMatch(fs.readFileSync(filename, "utf8"), /cancelPremiumSubscription|\/billing\/subscription\/cancel|Cancelar suscripción/, filename);
+      }
+    }
+  }
+  for (const directory of ["app", "components", "services"]) inspect(path.join(root, directory));
+});
+
+function details(subscription, premiumActive) {
+  return renderToStaticMarkup(React.createElement(PremiumSubscriptionDetails, { subscription, premiumActive }));
+}
+
+test("active subscriptions point to Mercado Pago management without constructing a URL", () => {
+  const renewal = new Date(Date.now() + 30 * 86400000).toISOString();
+  const html = details({ ...pending, status: "authorized", paid_until: renewal, next_payment_date: renewal }, true);
+  assert.match(html, /Estado: Activo/);
+  assert.match(html, /Premium activo\./);
+  assert.match(html, /Próxima renovación:/);
+  assert.match(html, /Para cancelar o administrar tu suscripción, hacelo desde tu cuenta de Mercado Pago\./);
+  assert.doesNotMatch(html, /href=|https?:|<button|<a\b|provider123|Cancelar suscripción/);
+});
+
+test("canceled with a valid paid period displays remaining Premium without renewal", () => {
+  const paidUntil = new Date(Date.now() + 30 * 86400000).toISOString();
+  const html = details({ ...pending, status: "canceled", paid_until: paidUntil, next_payment_date: paidUntil }, true);
+  assert.match(html, /Estado: Activo/);
+  assert.match(html, /Tu suscripción está cancelada\. Tenés Premium hasta/);
+  assert.ok(html.includes(new Date(paidUntil).toLocaleDateString("es-AR")));
+  assert.doesNotMatch(html, /Próxima renovación|href=|<button/);
+});
+
+test("canceled with an expired period displays Free and cancellation", () => {
+  const expired = new Date(Date.now() - 86400000).toISOString();
+  const html = details({ ...pending, status: "canceled", paid_until: expired }, false);
+  assert.match(html, /Estado: Free/);
+  assert.match(html, /Suscripción cancelada\./);
+  assert.doesNotMatch(html, /Tenés Premium hasta|Próxima renovación|Premium activo/);
+});
+
+test("paid_until alone never grants Premium and missing or invalid dates do not fabricate a period", () => {
+  for (const paidUntil of [null, "invalid-date", new Date(Date.now() + 86400000).toISOString()]) {
+    const html = details({ ...pending, status: "canceled", paid_until: paidUntil }, false);
+    assert.match(html, /Estado: Free/);
+    assert.doesNotMatch(html, /Tenés Premium hasta|Invalid Date/);
+  }
 });
 
 test("network and uncertainty errors never expose provider bodies or access tokens", async (t) => {

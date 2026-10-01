@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
-import { PremiumCheckout, PremiumVerificationFallback } from "../../../components/billing/PremiumCheckout";
+import { PremiumCheckout, PremiumSubscriptionDetails, PremiumVerificationFallback } from "../../../components/billing/PremiumCheckout";
 import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
@@ -17,7 +17,7 @@ import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, g
 import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
 import { premiumAutoRefresh, PREMIUM_REFRESH_CHANGED_EVENT, type PremiumRefreshState } from "../../../services/premiumAutoRefresh";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
-import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
+import { getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -116,7 +116,7 @@ export default function ConfiguracionPage() {
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [premiumSubscription, setPremiumSubscription] = useState<PremiumSubscription | null>(null);
-  const [premiumAction, setPremiumAction] = useState<"start" | "refresh" | "cancel" | null>(null);
+  const [premiumAction, setPremiumAction] = useState<"start" | null>(null);
   const [premiumMessage, setPremiumMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -165,6 +165,11 @@ export default function ConfiguracionPage() {
         api.backups().catch(() => null),
       ]);
       const entitlementsResult = await loadEntitlements({ force: true, ownerId: requestedOwnerId }).catch(() => null);
+      if (getActiveOwnerId() === requestedOwnerId && entitlementsResult?.plan === "premium") {
+        // Read webhook-confirmed cancellations even while automatic payment checks are idle.
+        const subscription = await getPremiumSubscription(requestedOwnerId).catch(() => null);
+        if (subscription && getActiveOwnerId() === requestedOwnerId) premiumAutoRefresh.update(subscription);
+      }
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
       setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
@@ -236,10 +241,9 @@ export default function ConfiguracionPage() {
     return () => window.removeEventListener(PREMIUM_REFRESH_CHANGED_EVENT, update);
   }, [billingOwnerId]);
 
-  async function handlePremiumAction(action: "start" | "refresh" | "cancel") {
+  async function handlePremiumAction(action: "start" | "refresh") {
     const ownerId = getActiveOwnerId();
     if (ownerId === "local" || premiumAction || premiumVerifying) return;
-    if (action === "cancel" && !window.confirm("¿Querés cancelar la renovación de Premium en Mercado Pago?")) return;
     const checkoutTab = action === "start" ? preparePremiumCheckoutWindow() : null;
     let checkoutOpened = false;
     if (action === "refresh") { await premiumAutoRefresh.verify(true); return; }
@@ -256,18 +260,6 @@ export default function ConfiguracionPage() {
           await openPremiumCheckout(ownerId, result, checkoutTab);
           checkoutOpened = true;
           if (getActiveOwnerId() === ownerId) setPremiumMessage(premiumStatusMessage(result, false));
-        }
-      } else {
-        const result = await cancelPremiumSubscription(ownerId);
-        if (getActiveOwnerId() === ownerId) {
-          const latestEntitlements = await loadEntitlements({ force: true, ownerId });
-          if (getActiveOwnerId() === ownerId) {
-            setPremiumSubscription(result);
-            premiumAutoRefresh.update(result);
-            setEntitlements(latestEntitlements);
-            window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
-            setPremiumMessage(premiumStatusMessage(result, latestEntitlements.plan === "premium" && ["active", "trialing"].includes(latestEntitlements.status)));
-          }
         }
       }
     } catch (error) {
@@ -618,7 +610,7 @@ export default function ConfiguracionPage() {
               <p className="font-semibold">ScisoNomics Premium</p>
               <p className="mt-1 text-sm text-slate-400">
                 {premiumActive
-                  ? "Tu plan Premium está activo."
+                  ? "Premium activo."
                   : "Premium desbloquea Presupuestos, Metas de ahorro, Gastos fijos y Planificación."}
               </p>
               <p className="mt-2 text-sm text-slate-300">
@@ -633,13 +625,10 @@ export default function ConfiguracionPage() {
             <div className="flex flex-wrap gap-2">
               <PremiumCheckout subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onContinue={() => void handlePremiumAction("start")} />
               <PremiumVerificationFallback subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onVerify={() => void handlePremiumAction("refresh")} />
-              {activeOwner !== "local" && premiumSubscription?.can_cancel ? (
-                <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("cancel")}>Cancelar suscripción</button>
-              ) : null}
             </div>
           </div>
           {activeOwner === "local" ? <p className="mt-3 text-sm text-slate-400">Iniciá sesión en una cuenta cloud para contratar Premium.</p> : null}
-          {premiumSubscription && premiumSubscription.status !== "none" ? <p className="mt-3 text-sm text-amber-200">{premiumStatusMessage(premiumSubscription, premiumActive)}</p> : null}
+          {activeOwner !== "local" ? <PremiumSubscriptionDetails subscription={premiumSubscription} premiumActive={premiumActive} /> : null}
           {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
           {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}
         </div>

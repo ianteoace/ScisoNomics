@@ -19,8 +19,14 @@ export function canContinuePremium(subscription: PremiumSubscription | null, pre
 }
 
 export function premiumStatusMessage(subscription: PremiumSubscription, premiumActive: boolean): string {
+  if (subscription.status === "canceled") {
+    const paidUntil = subscription.paid_until ? Date.parse(subscription.paid_until) : NaN;
+    if (premiumActive && Number.isFinite(paidUntil) && paidUntil > Date.now()) {
+      return `Tu suscripción está cancelada. Tenés Premium hasta ${new Date(paidUntil).toLocaleDateString("es-AR")}.`;
+    }
+    return "Suscripción cancelada.";
+  }
   if (premiumActive) return "Premium activado.";
-  if (subscription.status === "canceled") return "La suscripción fue cancelada.";
   if (subscription.payment_status === "rejected") {
     return subscription.payment_status_detail === "cc_rejected_high_risk"
       ? "El pago fue rechazado por una validación de seguridad de Mercado Pago. Probá más tarde o con otro medio de pago."
@@ -121,8 +127,4 @@ export async function openPremiumCheckout(ownerId: string, subscription: Premium
 
 export async function refreshPremiumSubscription(ownerId: string): Promise<PremiumSubscription> {
   return billingRequest("/billing/subscription/refresh", "POST", ownerId);
-}
-
-export async function cancelPremiumSubscription(ownerId: string): Promise<PremiumSubscription> {
-  return billingRequest("/billing/subscription/cancel", "POST", ownerId);
 }

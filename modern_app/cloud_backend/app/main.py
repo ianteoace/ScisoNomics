@@ -2014,8 +2014,9 @@ def refresh_billing_subscription(request: Request, user: UserOut = Depends(get_c
         raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
 
-@app.post("/billing/subscription/cancel")
+@app.post("/billing/subscription/cancel", deprecated=True, include_in_schema=False)
 def cancel_billing_subscription(request: Request, user: UserOut = Depends(get_current_user)):
+    """Temporary compatibility for older desktop clients; current UI uses Mercado Pago."""
     enforce_rate_limit(request, "billing-subscription-cancel", identity=user.id, limit=5, window_seconds=3600)
     with connect() as conn:
         row = conn.execute("SELECT provider_subscription_id,status FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' ORDER BY created_at DESC LIMIT 1", (user.id,)).fetchone()

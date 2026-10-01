@@ -47,11 +47,21 @@ La búsqueda `/authorized_payments/search` distingue la última cuota de la últ
 
 Premium manual vigente bloquea alta para evitar cobros redundantes y tiene prioridad sobre reconciliaciones. El esquema agrega idempotentemente `payment_status`, `payment_status_detail` y `last_payment_at` a `billing_subscriptions`, tanto en SQLite como PostgreSQL. Son columnas nullable de resultado del cobro, sin datos de tarjeta. No modifica IDs, claves financieras o datos históricos.
 
+## Administración y cancelación
+
+En la UI actual la suscripción se administra exclusivamente desde la cuenta de Mercado Pago. Se eliminó **Cancelar suscripción**, su confirmación y la función frontend `cancelPremiumSubscription`. La app muestra: **Para cancelar o administrar tu suscripción, hacelo desde tu cuenta de Mercado Pago.** No se agregó un enlace de administración: no se utiliza el `init_point` de compra para administrar ni se construye una URL a partir del ID remoto.
+
+Una suscripción autorizada con Premium vigente muestra **Premium activo.** y la próxima renovación informada por el backend, si tiene una fecha válida futura. Al cargar Configuración con Premium se lee también el estado guardado por el backend, para reflejar cancelaciones confirmadas por webhook aunque las verificaciones automáticas de pago ya estén inactivas. Una cancelación informada por webhook o reconciliación se normaliza de `cancelled` a `canceled`. Con un período pagado vigente muestra **Tu suscripción está cancelada. Tenés Premium hasta <fecha>.**, sin próxima renovación. Sin período vigente muestra **Suscripción cancelada.** y el plan Free según entitlements. La UI nunca concede Premium solo a partir de `paid_until`.
+
+La lógica de vigencia no cambió: el webhook conserva el período aprobado y `users.plan=premium`, `subscription_status=active`, `subscription_expires_at=paid_until`, `billing_source=mercadopago` hasta su vencimiento. La lectura existente de entitlements aplica el vencimiento y bloquea las funciones Premium. Cancelar sin pago aprobado no otorga Premium. **Verificar nuevamente** mantiene su función de reconciliación para estados pendientes de resolución.
+
+`POST /billing/subscription/cancel` permanece temporalmente por compatibilidad con instaladores anteriores que incluían el botón. Está marcado `deprecated=True`, excluido de OpenAPI y sin consumidores en el frontend actual; conserva autenticación, ownership y límites existentes. El helper privado de cancelación y sus pruebas siguen presentes para esos clientes. Esto no deshabilita llamadas desde una versión antigua: actualizar los instaladores y retirar el endpoint en una fase posterior, una vez que termine esa compatibilidad. No se modificaron webhook, reconciliación, precio, credenciales o creación de preapproval.
+
 ## Histórico y recuperación
 
 Se eliminó CardForm, sus estilos, la carga del SDK, sus permisos CSP y el endpoint de autorización por token. No había otros consumidores en el repo. Los instaladores antiguos que usen ese endpoint deben actualizarse; no se mantiene ese flujo de alta.
 
-Se mantienen lectura, refresh, cancelación y reconciliación de suscripciones remotas anteriores (`pending`, `authorized`, `uncertain`, `canceled` y filas con plan histórico). Un intento CardForm `creating` sin ID remoto y sin plan puede completar el alta externa reutilizando su ID, precio y referencia originales. No se borran filas históricas.
+Se mantienen lectura, refresh y reconciliación de suscripciones remotas anteriores (`pending`, `authorized`, `uncertain`, `canceled` y filas con plan histórico). La cancelación desde el backend queda solo como compatibilidad deprecated para clientes antiguos; no se ofrece en la UI nueva. Un intento CardForm `creating` sin ID remoto y sin plan puede completar el alta externa reutilizando su ID, precio y referencia originales. No se borran filas históricas.
 
 Un timeout o respuesta inválida después del POST deja `uncertain`: el proveedor pudo haber creado una suscripción. El webhook puede recuperar la fila por referencia aun si no se guardó su ID remoto. Si el webhook falta, verificar la suscripción en Mercado Pago por referencia y realizar una reconciliación administrativa controlada; no resetear a `creating` ni repetir el POST antes de descartar un recurso remoto. No existe recuperación automática por email.
 
@@ -60,6 +70,6 @@ Un timeout o respuesta inválida después del POST deja `uncertain`: el proveedo
 1. Configurar credenciales, precio, comprador TEST y los dos tópicos de Webhooks en el entorno de prueba; no se hizo durante esta tarea.
 2. Desplegar backend compatible y actualizar el instalador. Verificar health/ready y las columnas aditivas.
 3. Probar con una cuenta Free separada: abrir checkout desde Windows y navegador, completar el pago y comprobar referencia individual, ID interno, cuota aprobada, `paid_until` y Premium.
-4. Verificar que volver al checkout sin pagar mantiene Free; probar rechazos y high risk, refresh, regreso a la app, cambio de cuenta y cancelación.
+4. Verificar que volver al checkout sin pagar mantiene Free; probar rechazos y high risk, refresh, regreso a la app y cambio de cuenta. Cancelar desde la cuenta de Mercado Pago y comprobar webhook, mensaje sin próxima renovación, Premium hasta `paid_until` y Free al vencer; verificar también cancelación sin cuota aprobada.
 5. Probar dos cuentas con intentos simultáneos y un timeout: no debe existir un segundo POST para el mismo intento, ni mezcla de owners. Confirmar recuperación por webhook.
 6. No publicar un release hasta comprobar el checkout real en el entorno del proveedor. Las pruebas automatizadas usan SQLite temporal y respuestas simuladas; no ejercen medios de pago reales ni Railway.

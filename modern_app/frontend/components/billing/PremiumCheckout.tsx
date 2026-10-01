@@ -1,7 +1,23 @@
 "use client";
 
-import { canContinuePremium, type PremiumSubscription } from "../../services/premiumBilling";
+import { canContinuePremium, premiumStatusMessage, type PremiumSubscription } from "../../services/premiumBilling";
 import { canAutoRefreshPremium } from "../../services/premiumAutoRefresh";
+
+export function PremiumSubscriptionDetails({ subscription, premiumActive }: {
+  subscription: PremiumSubscription | null; premiumActive: boolean;
+}) {
+  if (!subscription || subscription.status === "none") return null;
+  const renewal = subscription.next_payment_date ? new Date(subscription.next_payment_date) : null;
+  const showRenewal = premiumActive && subscription.status === "authorized" && renewal && Number.isFinite(renewal.getTime()) && renewal.getTime() > Date.now();
+  return (
+    <div className="mt-3 space-y-2 text-sm text-slate-300">
+      <p>Estado: {premiumActive ? "Activo" : "Free"}</p>
+      <p>{premiumActive && subscription.status !== "canceled" ? "Premium activo." : premiumStatusMessage(subscription, premiumActive)}</p>
+      {showRenewal ? <p>Próxima renovación: {renewal.toLocaleDateString("es-AR")}</p> : null}
+      <p className="text-slate-400">Para cancelar o administrar tu suscripción, hacelo desde tu cuenta de Mercado Pago.</p>
+    </div>
+  );
+}
 
 export function PremiumVerificationFallback({ subscription, premiumActive, local, busy, onVerify }: {
   subscription: PremiumSubscription | null; premiumActive: boolean; local: boolean; busy: boolean; onVerify: () => void;
