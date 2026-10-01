@@ -5,6 +5,28 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hashBytes = $sha256.ComputeHash($stream)
+            return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "")
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 if ($Help) {
     Write-Host "Uso: powershell -File modern_app/scripts/prepare-sidecar.ps1 [-Copy]"
     Write-Host "Valida version, frescura y hash del sidecar. -Copy actualiza el binario consumido por Tauri."
@@ -63,8 +85,8 @@ if (-not (Test-Path -LiteralPath $targetExe -PathType Leaf)) {
     throw "Falta $targetExe. Ejecuta este script con -Copy."
 }
 
-$sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceExe).Hash
-$targetHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetExe).Hash
+$sourceHash = Get-Sha256Hex -Path $sourceExe
+$targetHash = Get-Sha256Hex -Path $targetExe
 if ($sourceHash -ne $targetHash) {
     throw "El sidecar consumido por Tauri no coincide con el EXE generado. Ejecuta este script con -Copy."
 }
