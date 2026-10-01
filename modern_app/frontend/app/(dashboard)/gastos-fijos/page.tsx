@@ -11,6 +11,8 @@ import { GastosFijosView } from "../../../components/views/GastosFijosView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
+import { getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
 import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { Categoria, GastoFijo } from "../../../types/domain";
 
@@ -21,18 +23,20 @@ export default function GastosFijosPage() {
   const [rows, setRows] = useState<GastoFijo[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  useEntitlementsUpdates(setEntitlements);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [confirmState, setConfirmState] = useState<{ open: boolean; action: (() => Promise<void>) | null }>({ open: false, action: null });
 
   async function load() {
+    const entitlementsOwnerId = getActiveOwnerId();
     setLoading(true);
     try {
       const [gf, c] = await Promise.all([api.gastosFijos(), api.categorias("todos")]);
-      const loadedEntitlements = await loadEntitlements({ force: true });
+      const loadedEntitlements = await loadEntitlements({ force: true, ownerId: entitlementsOwnerId });
       setRows(Array.isArray(gf) ? gf : []);
       setCategories(Array.isArray(c) ? c : []);
-      setEntitlements(loadedEntitlements);
+      if (getActiveOwnerId() === entitlementsOwnerId) setEntitlements(loadedEntitlements);
       setSaldoActual(0);
       setLoadError("");
     } catch (e: any) {

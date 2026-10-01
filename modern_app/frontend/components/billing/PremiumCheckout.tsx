@@ -1,6 +1,14 @@
 "use client";
 
 import { canContinuePremium, type PremiumSubscription } from "../../services/premiumBilling";
+import { canAutoRefreshPremium } from "../../services/premiumAutoRefresh";
+
+export function PremiumVerificationFallback({ subscription, premiumActive, local, busy, onVerify }: {
+  subscription: PremiumSubscription | null; premiumActive: boolean; local: boolean; busy: boolean; onVerify: () => void;
+}) {
+  if (local || premiumActive || !canAutoRefreshPremium(subscription)) return null;
+  return <button className="text-xs text-slate-400 underline underline-offset-4 hover:text-slate-200 disabled:opacity-50" type="button" disabled={busy} onClick={onVerify}>Verificar nuevamente</button>;
+}
 
 export function PremiumCheckout({ subscription, premiumActive, local, busy, onContinue }: {
   subscription: PremiumSubscription | null;

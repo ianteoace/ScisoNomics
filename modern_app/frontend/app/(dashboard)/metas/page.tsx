@@ -12,6 +12,8 @@ import { PremiumGate } from "../../../components/ui/PremiumGate";
 import { useToast } from "../../../hooks/useToast";
 import { money, parseCurrencyInput } from "../../../lib/format";
 import { api } from "../../../services/api";
+import { getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
 import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { MetaAhorro } from "../../../types/domain";
 
@@ -38,6 +40,7 @@ export default function MetasPage() {
   const { showError, showSuccess } = useToast();
   const [rows, setRows] = useState<MetaAhorro[]>([]);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  useEntitlementsUpdates(setEntitlements);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [openForm, setOpenForm] = useState(false);
@@ -48,12 +51,13 @@ export default function MetasPage() {
   const title = editing ? "Editar meta" : "Crear meta";
 
   async function load() {
+    const entitlementsOwnerId = getActiveOwnerId();
     setLoading(true);
     try {
       const data = await api.metas();
-      const loadedEntitlements = await loadEntitlements({ force: true });
+      const loadedEntitlements = await loadEntitlements({ force: true, ownerId: entitlementsOwnerId });
       setRows(Array.isArray(data) ? data : []);
-      setEntitlements(loadedEntitlements);
+      if (getActiveOwnerId() === entitlementsOwnerId) setEntitlements(loadedEntitlements);
       setLoadError("");
     } catch (e: any) {
       setLoadError(e.message || "No se pudieron cargar las metas.");

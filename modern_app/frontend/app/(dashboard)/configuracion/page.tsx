@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
-import { PremiumCheckout } from "../../../components/billing/PremiumCheckout";
+import { PremiumCheckout, PremiumVerificationFallback } from "../../../components/billing/PremiumCheckout";
 import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
@@ -14,8 +14,10 @@ import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
+import { premiumAutoRefresh, PREMIUM_REFRESH_CHANGED_EVENT, type PremiumRefreshState } from "../../../services/premiumAutoRefresh";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
-import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
+import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -214,58 +216,34 @@ export default function ConfiguracionPage() {
 
   const billingOwnerId = getActiveOwnerId();
   useEffect(() => {
-    let cancelled = false;
     setPremiumSubscription(null);
     setPremiumMessage("");
-    if (billingOwnerId === "local") return;
-    void getPremiumSubscription(billingOwnerId).then((result) => {
-      if (!cancelled) setPremiumSubscription(result);
-    }).catch(() => {
-      if (!cancelled) setPremiumMessage("No se pudo consultar el estado de la suscripción.");
-    });
-    return () => { cancelled = true; };
   }, [billingOwnerId]);
 
-  const billingStatus = premiumSubscription?.status;
+  useEntitlementsUpdates(setEntitlements);
+  const [premiumVerifying, setPremiumVerifying] = useState(false);
   useEffect(() => {
-    if (billingOwnerId === "local" || premiumAction || !["pending", "authorized", "uncertain"].includes(billingStatus || "")) return;
-    let cancelled = false;
-    let refreshing = false;
-    let lastRefresh = 0;
-    const refreshAfterCheckout = async () => {
-      if (document.visibilityState === "hidden" || refreshing || Date.now() - lastRefresh < 30000) return;
-      refreshing = true;
-      lastRefresh = Date.now();
-      try {
-        const result = await refreshPremiumSubscription(billingOwnerId);
-        if (cancelled || getActiveOwnerId() !== billingOwnerId) return;
-        const latest = await loadEntitlements({ force: true, ownerId: billingOwnerId });
-        if (cancelled || getActiveOwnerId() !== billingOwnerId) return;
-        setPremiumSubscription(result);
-        setEntitlements(latest);
-        setPremiumMessage(premiumStatusMessage(result, latest.plan === "premium" && ["active", "trialing"].includes(latest.status)));
-        window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
-      } catch {
-        if (!cancelled && getActiveOwnerId() === billingOwnerId) setPremiumMessage("No se pudo confirmar el pago. Usá Verificar estado más tarde.");
-      } finally {
-        refreshing = false;
-      }
+    const update = () => {
+      const state: PremiumRefreshState = premiumAutoRefresh.state();
+      if (state.ownerId !== getActiveOwnerId()) return;
+      setPremiumSubscription(state.subscription);
+      setPremiumVerifying(state.verifying);
+      setPremiumMessage(state.message);
     };
-    window.addEventListener("focus", refreshAfterCheckout);
-    document.addEventListener("visibilitychange", refreshAfterCheckout);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", refreshAfterCheckout);
-      document.removeEventListener("visibilitychange", refreshAfterCheckout);
-    };
-  }, [billingOwnerId, billingStatus, premiumAction]);
+    update();
+    window.addEventListener(PREMIUM_REFRESH_CHANGED_EVENT, update);
+    void premiumAutoRefresh.activate().then(() => premiumAutoRefresh.verify());
+    return () => window.removeEventListener(PREMIUM_REFRESH_CHANGED_EVENT, update);
+  }, [billingOwnerId]);
 
   async function handlePremiumAction(action: "start" | "refresh" | "cancel") {
     const ownerId = getActiveOwnerId();
-    if (ownerId === "local" || premiumAction) return;
+    if (ownerId === "local" || premiumAction || premiumVerifying) return;
     if (action === "cancel" && !window.confirm("¿Querés cancelar la renovación de Premium en Mercado Pago?")) return;
     const checkoutTab = action === "start" ? preparePremiumCheckoutWindow() : null;
     let checkoutOpened = false;
+    if (action === "refresh") { await premiumAutoRefresh.verify(true); return; }
+    premiumAutoRefresh.setBusy(true);
     setPremiumAction(action);
     setPremiumMessage("");
     try {
@@ -273,18 +251,19 @@ export default function ConfiguracionPage() {
         const result = await startPremiumSubscription(ownerId);
         if (getActiveOwnerId() === ownerId) {
           setPremiumSubscription(result);
+          premiumAutoRefresh.update(result);
+          premiumAutoRefresh.checkout(true);
           await openPremiumCheckout(ownerId, result, checkoutTab);
           checkoutOpened = true;
           if (getActiveOwnerId() === ownerId) setPremiumMessage(premiumStatusMessage(result, false));
         }
       } else {
-        const result = action === "cancel"
-          ? await cancelPremiumSubscription(ownerId)
-          : await refreshPremiumSubscription(ownerId);
+        const result = await cancelPremiumSubscription(ownerId);
         if (getActiveOwnerId() === ownerId) {
           const latestEntitlements = await loadEntitlements({ force: true, ownerId });
           if (getActiveOwnerId() === ownerId) {
             setPremiumSubscription(result);
+            premiumAutoRefresh.update(result);
             setEntitlements(latestEntitlements);
             window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
             setPremiumMessage(premiumStatusMessage(result, latestEntitlements.plan === "premium" && ["active", "trialing"].includes(latestEntitlements.status)));
@@ -292,10 +271,11 @@ export default function ConfiguracionPage() {
         }
       }
     } catch (error) {
+      premiumAutoRefresh.checkout(false);
       if (action === "start" && getActiveOwnerId() === ownerId) {
         try {
           const latest = await getPremiumSubscription(ownerId);
-          if (getActiveOwnerId() === ownerId) setPremiumSubscription(latest);
+          if (getActiveOwnerId() === ownerId) { setPremiumSubscription(latest); premiumAutoRefresh.update(latest); }
         } catch {
           // Preserve the original error if the status lookup also fails.
         }
@@ -304,6 +284,7 @@ export default function ConfiguracionPage() {
     } finally {
       if (!checkoutOpened) checkoutTab?.close();
       setPremiumAction(null);
+      premiumAutoRefresh.setBusy(false);
     }
   }
 
@@ -650,10 +631,8 @@ export default function ConfiguracionPage() {
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
-              <PremiumCheckout subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null} onContinue={() => void handlePremiumAction("start")} />
-              {activeOwner !== "local" && premiumSubscription && !["none", "creating"].includes(premiumSubscription.status) ? (
-                <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("refresh")}>Ya pagué / Verificar estado</button>
-              ) : null}
+              <PremiumCheckout subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onContinue={() => void handlePremiumAction("start")} />
+              <PremiumVerificationFallback subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onVerify={() => void handlePremiumAction("refresh")} />
               {activeOwner !== "local" && premiumSubscription?.can_cancel ? (
                 <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("cancel")}>Cancelar suscripción</button>
               ) : null}

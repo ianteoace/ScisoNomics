@@ -28,7 +28,7 @@ export function premiumStatusMessage(subscription: PremiumSubscription, premiumA
   }
   switch (subscription.status) {
     case "creating": return "Continuá con Mercado Pago para completar el alta.";
-    case "uncertain": return "Estamos verificando el alta. No intentes crear otra suscripción; contactá a soporte si persiste.";
+    case "uncertain": return "Estamos verificando el estado con Mercado Pago.";
     case "pending": return "Completá el pago en Mercado Pago.";
     case "authorized": return "Suscripción autorizada. Esperando confirmación del cobro.";
     case "paused": return "La suscripción está pausada en Mercado Pago.";
