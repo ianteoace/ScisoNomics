@@ -1,6 +1,8 @@
 """Read-only diagnostic for the historical ScisoNomics cloud owner.
 
 Run manually with SCISONOMICS_CLOUD_DATABASE_URL set to a PostgreSQL URL.
+Set HISTORICAL_USER_ID to the verified UUID only in a private local copy;
+the published value is a fictitious placeholder. Never commit real user IDs.
 No application imports: starting the backend could initialize/migrate its DB.
 Stdout contains only the nine allowed users fields, as JSON. Errors are generic
 and never include the connection URL, database exception text or credentials.
@@ -14,7 +16,7 @@ import os
 import sys
 
 
-HISTORICAL_USER_ID = "fbfca732-c4d1-47be-95e5-75aa3142726f"
+HISTORICAL_USER_ID = "00000000-0000-0000-0000-000000000000"
 SELECT_USER = """
 SELECT id, email, display_name, auth_provider, auth_provider_id,
        email_verified, plan, subscription_status, subscription_expires_at

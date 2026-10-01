@@ -19,6 +19,14 @@ SCISONOMICS_ADMIN_TOTP_SECRETS_JSON={"billing-admin":"SECRETOBASE32"}
 
 Los secretos no deben guardarse en Git, logs, capturas ni artefactos de build.
 
+## Datos de usuarios en documentacion y ejemplos
+
+No documentar emails reales ni valores reales de `users.id` en el repositorio
+publico, incluidos scripts de diagnostico y fixtures de pruebas. Usar
+placeholders inequívocamente ficticios, como `historical-user@example.com` y
+`00000000-0000-0000-0000-000000000000`. Verificar las referencias reales de
+produccion fuera de Git; no copiarlas a ejemplos, issues ni resultados publicados.
+
 ## Controles incorporados
 
 - Passwords nuevas derivadas con scrypt; hashes PBKDF2 anteriores se migran al iniciar sesion.

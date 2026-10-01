@@ -1,8 +1,11 @@
 # Preparación del despliegue de Supabase Auth en Railway
 
 Este documento prepara el despliegue. No autoriza ni ejecuta cambios en Railway.
-El owner histórico es `fbfca732-c4d1-47be-95e5-75aa3142726f`, con email
-`sciso123@gmail.com`. Su `users.id` permanece como referencia de sync y Premium.
+El owner histórico de referencia debe identificarse explícitamente antes del
+rollout, usando un UUID y email reales verificados en producción y registrados
+fuera del repositorio público. Los ejemplos y fixtures usan únicamente
+`00000000-0000-0000-0000-000000000000` y `historical-user@example.com`.
+El `users.id` real permanece como referencia de sync y Premium.
 
 ## Esquema e inicialización
 
@@ -43,7 +46,8 @@ bloquear el startup, aunque las dos columnas nuevas sean correctas.
 
 `POST /auth/supabase/bootstrap` valida el token en Supabase con la publishable
 key y exige `email_confirmed_at`. Busca primero por `auth_provider_id = sub`.
-Si no existe vínculo, busca `LOWER(TRIM(email)) = 'sciso123@gmail.com'`.
+Si no existe vínculo, busca por el email verificado del token normalizado:
+`LOWER(TRIM(email)) = 'historical-user@example.com'` es solo un ejemplo ficticio.
 Si hay exactamente una fila histórica y su ID externo es `NULL`/vacío,
 actualiza solo `auth_provider_id` y `updated_at` de esa fila y escribe un
 registro de auditoría. Devuelve el `users.id` histórico. No modifica plan,
@@ -59,13 +63,15 @@ de sync. El `sub` de Supabase nunca se usa como `users.id`.
 | Sub ya enlazado al owner de prueba | Devuelve ese owner antes de buscar por email; **no** lo mueve al histórico ni devuelve 409. Requiere resolución manual antes del login histórico. |
 | `auth_provider='google'` y `google_sub` legacy | Permanecen intactos; la nueva columna almacena además el sub de Supabase. El Google legacy sigue usando `google_sub`. |
 
-El `users.id` histórico y su email están confirmados por el operador, pero
-esta auditoría no examinó Railway. Antes de activar el login real, confirmar
-en la base que el email normalizado coincide **en una sola fila** y que el sub
+El operador debe confirmar el `users.id` histórico y su email fuera de esta
+documentación pública; esta auditoría no examinó Railway. Antes de activar el
+login real, confirmar en la base que el email normalizado coincide **en una sola fila** y que el sub
 real no tiene vínculo con el owner vacío de prueba. El diagnóstico previo
 `diagnose_cloud_user.py` requiere la columna nueva, por lo que solo puede
-ejecutarse después de que el backend aplique el esquema. Resolver cualquier
-conflicto de manera explícita y auditada; no copiar ni fusionar datos entre
+ejecutarse después de que el backend aplique el esquema. Su constante
+`HISTORICAL_USER_ID` contiene un placeholder: indicar el UUID verificado solo
+en una copia local privada para la consulta, sin incorporarlo a Git.
+Resolver cualquier conflicto de manera explícita y auditada; no copiar ni fusionar datos entre
 owners para sortearlo.
 
 ## Variables y configuración
@@ -120,7 +126,8 @@ configurables pero no requieren variables nuevas.
 5. Publicar el frontend/instalador configurado para ese backend y proyecto
    Supabase. Probar email+OTP y Google+PKCE+deep link antes de la cuenta
    histórica. Luego probar el primer login histórico y confirmar que bootstrap
-   responde exactamente `fbfca732-c4d1-47be-95e5-75aa3142726f`.
+   responde exactamente el `users.id` histórico verificado antes del rollout,
+   nunca el UUID ficticio de los ejemplos.
 6. Verificar Premium, los movimientos históricos y sync con ese owner antes
    de ampliar el uso de Supabase. Si aparece un owner de prueba vacío, pausar
    el flujo y resolver el vínculo manualmente; no copiar datos.
@@ -169,8 +176,8 @@ nombre `scisonomics_auth_migration_test*` y la tabla marcadora local
 remotas, parámetros de conexión y bases sin marcador antes de crear schemas.
 Cada test utiliza un schema temporal propio, deja intacta cualquier base
 externa y borra únicamente su schema después de la prueba. La prueba carga
-un usuario sintético con el ID, email, plan y vencimiento históricos y ocho
-filas financieras sintéticas referenciadas; no usa datos reales.
+un usuario sintético con UUID y email ficticios, plan y vencimiento de prueba
+y ocho filas financieras sintéticas referenciadas; no usa datos reales.
 
 El ensayo comprueba migración dos veces, transacciones fallidas, bootstrap,
 entitlements, login/refresh y Google legacy, conflictos, carreras, PK/FK y

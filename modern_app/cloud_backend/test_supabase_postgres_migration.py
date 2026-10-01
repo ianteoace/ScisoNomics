@@ -30,8 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = "9b0743a"
 URL_ENV = "SCISONOMICS_AUTH_TEST_POSTGRES_URL"
 MARKER_ENV = "SCISONOMICS_AUTH_TEST_MARKER"
-HISTORICAL_ID = "fbfca732-c4d1-47be-95e5-75aa3142726f"
-EMAIL = "sciso123@gmail.com"
+HISTORICAL_ID = "00000000-0000-0000-0000-000000000000"
+EMAIL = "historical-user@example.com"
 SUB = "11111111-1111-4111-8111-111111111111"
 OTHER_SUB = "22222222-2222-4222-8222-222222222222"
 STAMP = "2026-01-01T00:00:00Z"
@@ -248,7 +248,7 @@ class PostgreSQLSupabaseMigrationTests(unittest.TestCase):
         db.init_db()
         with db.connect() as conn:
             conn.execute("INSERT INTO users (id, email, password_hash, created_at, updated_at) "
-                         "VALUES ('duplicate', ' SCISO123@GMAIL.COM ', '', ?, ?)", (STAMP, STAMP))
+                         "VALUES ('duplicate', ' HISTORICAL-USER@EXAMPLE.COM ', '', ?, ?)", (STAMP, STAMP))
         response = self.bootstrap()
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"]["code"], "auth_email_ambiguous")
