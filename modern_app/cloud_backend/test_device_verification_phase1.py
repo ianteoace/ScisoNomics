@@ -763,7 +763,7 @@ class OffModeRegressionTests(unittest.TestCase):
                     params={"code": "test-code", "state": login_request_id},
                 )
             self.assertEqual(callback.status_code, 200, callback.text)
-            google_status = client.get(f"/auth/google/status/{login_request_id}")
+            google_status = client.post("/auth/google/status", json={"login_request_id": login_request_id})
             self.assertEqual(google_status.status_code, 200, google_status.text)
             self.assertEqual(google_status.json()["status"], "completed")
             self.assertIn("access_token", google_status.json())

@@ -24,7 +24,10 @@ from typing import Any, Callable
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import ValidationError
 
 from .auth import (
     create_entitlement_token,
@@ -50,6 +53,7 @@ from .schemas import (
     BillingFeaturesOut,
     AuthResponse,
     EmailVerificationRequiredOut,
+    GoogleLoginStatusRequest,
     LoginRequest,
     LogoutRequest,
     RefreshRequest,
@@ -125,6 +129,33 @@ async def security_limits_middleware(request: Request, call_next):
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Content-Length invalido."})
     return await call_next(request)
+
+
+AUTH_NO_STORE_PATHS = {
+    "/auth/register", "/auth/login", "/auth/verify-email",
+    "/auth/resend-email-verification", "/auth/refresh",
+    "/auth/google/start", "/auth/google/status", "/auth/google/callback",
+}
+
+
+@app.middleware("http")
+async def auth_no_store_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith("/auth/google/status/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_auth_validation_error(request: Request, exc: RequestValidationError):
+    # Pydantic's default error includes the rejected input; never echo a login ID.
+    if request.url.path == "/auth/google/status":
+        return JSONResponse(status_code=422, content={"detail": "Solicitud de Google invalida."})
+    if request.url.path in AUTH_NO_STORE_PATHS:
+        errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
+    return await request_validation_exception_handler(request, exc)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -2318,8 +2349,21 @@ def google_start(request: Request):
     }
 
 
-@app.get("/auth/google/status/{login_request_id}")
-def google_status(login_request_id: str, request: Request):
+@app.post("/auth/google/status")
+def google_status(payload: GoogleLoginStatusRequest, request: Request):
+    return _google_status(payload.login_request_id, request)
+
+
+@app.get("/auth/google/status/{login_request_id}", deprecated=True, include_in_schema=False)
+def google_status_legacy(login_request_id: str, request: Request):
+    try:
+        payload = GoogleLoginStatusRequest(login_request_id=login_request_id)
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="Solicitud de Google invalida.") from None
+    return _google_status(payload.login_request_id, request)
+
+
+def _google_status(login_request_id: str, request: Request):
     init_db()
     now = now_iso()
     device_id, device_name = _extract_device_context(request)
@@ -2348,15 +2392,17 @@ def google_status(login_request_id: str, request: Request):
         if not user_row:
             return {"status": "error", "message": "No se pudo recuperar la sesion de Google."}
         user = row_to_user(user_row)
-        response = _issue_auth_response(conn, user, now=now, device_id=device_id, device_name=device_name)
-        conn.execute(
+        consumed = conn.execute(
             """
             UPDATE google_login_requests
             SET status = 'consumed', updated_at = ?
-            WHERE login_request_id = ?
+            WHERE login_request_id = ? AND status = 'completed' AND expires_at >= ?
             """,
-            (now, login_request_id),
+            (now, login_request_id, now),
         )
+        if consumed.rowcount != 1:
+            return {"status": "consumed", "message": "Esta solicitud de Google Login ya fue utilizada. Intenta nuevamente."}
+        response = _issue_auth_response(conn, user, now=now, device_id=device_id, device_name=device_name)
         return {"status": "completed", **response.model_dump()}
 
 

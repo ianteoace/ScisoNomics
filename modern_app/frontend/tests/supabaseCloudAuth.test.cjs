@@ -919,6 +919,24 @@ test("temporary Supabase login in Tauri stores no refresh credential", async (t)
   assert.equal(ctx.cloud.getStoredAccounts()[0].storage, "session");
 });
 
+test("legacy Google status sends its request ID only in the POST body", async (t) => {
+  setup(t);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input, init) => {
+    calls.push({ url: new URL(String(input)), init });
+    return new Response(JSON.stringify({ status: "pending" }), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  const { cloudAuth } = require("../services/cloudAuth.ts");
+  const requestId = "A".repeat(43);
+  assert.deepEqual(await cloudAuth.googleStatus(requestId), { status: "pending" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, "/auth/google/status");
+  assert.equal(calls[0].url.search, "");
+  assert.ok(!calls[0].url.href.includes(requestId));
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { login_request_id: requestId });
+});
+
 test("a native delete waits for an in-flight rotation and cannot leave a resurrected credential", async (t) => {
   const ctx = setup(t, { tauri: true });
   await ctx.external.signInWithPassword("alice@example.com", "correct");

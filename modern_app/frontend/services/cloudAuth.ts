@@ -2050,7 +2050,7 @@ export const cloudAuth = {
       | { status: "pending" }
       | { status: "expired" | "error" | "consumed"; message?: string }
       | ({ status: "completed" } & CloudAuthResponse)
-    >(`/auth/google/status/${encodeURIComponent(loginRequestId)}`, { method: "GET" });
+    >("/auth/google/status", { method: "POST", body: JSON.stringify({ login_request_id: loginRequestId }) });
     if (response.status === "completed") {
       logAuthLifecycle("google status response", {
         accountId: shortAccountId(response.user.id),

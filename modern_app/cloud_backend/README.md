@@ -52,7 +52,7 @@ La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso cen
 - `POST /auth/logout`
 - `POST /auth/google/start`
 - `GET /auth/google/callback`
-- `GET /auth/google/status/{login_request_id}`
+- `POST /auth/google/status` con JSON `{"login_request_id":"<id-del-start>"}`
 - `GET /health`
 - `GET /sync/health`
 - `POST /sync/push`
@@ -60,6 +60,23 @@ La expiracion JWT por defecto es de 240 minutos. El frontend mantiene acceso cen
 - `GET /sync/devices`
 
 `GET /sync/debug-counts` queda deshabilitado por defecto. Para habilitarlo temporalmente en un entorno controlado, definir `SCISONOMICS_ENABLE_DEBUG_ENDPOINTS=true`.
+
+El login visible de Google usa Supabase + PKCE. El flujo Google OAuth legacy
+permanece por compatibilidad: el cliente actual consulta el status mediante POST,
+sin incluir el identificador en el path ni en el query string. El ID conserva su
+generación criptográfica, TTL de 10 minutos, validación de state y consumo único
+mediante actualización condicional atómica antes de emitir la sesión.
+`GET /auth/google/status/{login_request_id}` sigue temporalmente disponible para
+instaladores anteriores, marcado deprecated y oculto de OpenAPI; debe eliminarse
+cuando esos clientes hayan migrado a POST. El intercambio OAuth conserva `state`
+en la URL del proveedor/callback, según el protocolo; este cambio elimina el ID
+de la URL de consulta del status.
+
+Las respuestas de login, registro, verificación/reenvío de email, refresh y
+Google legacy (start, callback y ambos status), incluidos errores, llevan
+`Cache-Control: no-store` y `Pragma: no-cache`. Esto cubre tanto sesiones como
+`verification_token` en respuestas `verification_required` o errores de envío.
+Las respuestas públicas normales conservan sus headers.
 
 ## Variables
 

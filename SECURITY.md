@@ -32,6 +32,7 @@ produccion fuera de Git; no copiarlas a ejemplos, issues ni resultados publicado
 - Passwords nuevas derivadas con scrypt; hashes PBKDF2 anteriores se migran al iniciar sesion.
 - Access tokens de corta duracion con emisor, audiencia, tipo y `jti` validados.
 - Refresh tokens rotativos con deteccion de reutilizacion y revocacion de toda la familia.
+- Respuestas de autenticacion legacy con `Cache-Control: no-store` y `Pragma: no-cache`, incluidos tokens de verificacion en errores. Google legacy consulta status mediante POST con el ID en el body y consume cada resultado atomicamente una sola vez; el GET anterior queda deprecated y oculto solo por compatibilidad con instaladores antiguos, pendiente de eliminacion.
 - Rate limiting por IP e identidad para autenticacion, administracion y sincronizacion.
 - Segundo factor TOTP obligatorio para administradores en produccion.
 - Registro de eventos sensibles en `security_audit_log` sin tokens ni datos financieros.

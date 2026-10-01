@@ -21,6 +21,10 @@ class LoginRequest(StrictModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class GoogleLoginStatusRequest(StrictModel):
+    login_request_id: str = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
+
+
 class SupabaseBootstrapRequest(StrictModel):
     # All identity/display fields come from verified Supabase, never the body.
     pass
