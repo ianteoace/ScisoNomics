@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
-import { MercadoPagoCardForm } from "../../../components/billing/MercadoPagoCardForm";
+import { PremiumCheckout } from "../../../components/billing/PremiumCheckout";
 import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
@@ -15,7 +15,7 @@ import { api } from "../../../services/api";
 import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
-import { authorizePremiumSubscription, canEnterCard, cancelPremiumSubscription, getPremiumSubscription, premiumStatusMessage, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
+import { cancelPremiumSubscription, getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, refreshPremiumSubscription, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -114,8 +114,7 @@ export default function ConfiguracionPage() {
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
   const [premiumSubscription, setPremiumSubscription] = useState<PremiumSubscription | null>(null);
-  const [premiumAction, setPremiumAction] = useState<"start" | "authorize" | "refresh" | "cancel" | null>(null);
-  const [showCardForm, setShowCardForm] = useState(false);
+  const [premiumAction, setPremiumAction] = useState<"start" | "refresh" | "cancel" | null>(null);
   const [premiumMessage, setPremiumMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -218,7 +217,6 @@ export default function ConfiguracionPage() {
     let cancelled = false;
     setPremiumSubscription(null);
     setPremiumMessage("");
-    setShowCardForm(false);
     if (billingOwnerId === "local") return;
     void getPremiumSubscription(billingOwnerId).then((result) => {
       if (!cancelled) setPremiumSubscription(result);
@@ -228,19 +226,56 @@ export default function ConfiguracionPage() {
     return () => { cancelled = true; };
   }, [billingOwnerId]);
 
+  const billingStatus = premiumSubscription?.status;
+  useEffect(() => {
+    if (billingOwnerId === "local" || premiumAction || !["pending", "authorized", "uncertain"].includes(billingStatus || "")) return;
+    let cancelled = false;
+    let refreshing = false;
+    let lastRefresh = 0;
+    const refreshAfterCheckout = async () => {
+      if (document.visibilityState === "hidden" || refreshing || Date.now() - lastRefresh < 30000) return;
+      refreshing = true;
+      lastRefresh = Date.now();
+      try {
+        const result = await refreshPremiumSubscription(billingOwnerId);
+        if (cancelled || getActiveOwnerId() !== billingOwnerId) return;
+        const latest = await loadEntitlements({ force: true, ownerId: billingOwnerId });
+        if (cancelled || getActiveOwnerId() !== billingOwnerId) return;
+        setPremiumSubscription(result);
+        setEntitlements(latest);
+        setPremiumMessage(premiumStatusMessage(result, latest.plan === "premium" && ["active", "trialing"].includes(latest.status)));
+        window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
+      } catch {
+        if (!cancelled && getActiveOwnerId() === billingOwnerId) setPremiumMessage("No se pudo confirmar el pago. Usá Verificar estado más tarde.");
+      } finally {
+        refreshing = false;
+      }
+    };
+    window.addEventListener("focus", refreshAfterCheckout);
+    document.addEventListener("visibilitychange", refreshAfterCheckout);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshAfterCheckout);
+      document.removeEventListener("visibilitychange", refreshAfterCheckout);
+    };
+  }, [billingOwnerId, billingStatus, premiumAction]);
+
   async function handlePremiumAction(action: "start" | "refresh" | "cancel") {
     const ownerId = getActiveOwnerId();
     if (ownerId === "local" || premiumAction) return;
     if (action === "cancel" && !window.confirm("¿Querés cancelar la renovación de Premium en Mercado Pago?")) return;
+    const checkoutTab = action === "start" ? preparePremiumCheckoutWindow() : null;
+    let checkoutOpened = false;
     setPremiumAction(action);
     setPremiumMessage("");
     try {
       if (action === "start") {
-        const result = premiumSubscription?.status === "creating" ? premiumSubscription : await startPremiumSubscription(ownerId);
+        const result = await startPremiumSubscription(ownerId);
         if (getActiveOwnerId() === ownerId) {
           setPremiumSubscription(result);
-          setShowCardForm(canEnterCard(result));
-          setPremiumMessage(premiumStatusMessage(result, false));
+          await openPremiumCheckout(ownerId, result, checkoutTab);
+          checkoutOpened = true;
+          if (getActiveOwnerId() === ownerId) setPremiumMessage(premiumStatusMessage(result, false));
         }
       } else {
         const result = action === "cancel"
@@ -257,48 +292,17 @@ export default function ConfiguracionPage() {
         }
       }
     } catch (error) {
-      if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo completar la operación.");
-    } finally {
-      setPremiumAction(null);
-    }
-  }
-
-  async function handleCardToken(cardTokenId: string) {
-    const ownerId = getActiveOwnerId();
-    const subscriptionId = premiumSubscription?.subscription_id;
-    if (ownerId === "local" || !subscriptionId || premiumAction) return;
-    setPremiumAction("authorize");
-    setPremiumMessage("");
-    try {
-      const result = await authorizePremiumSubscription(ownerId, subscriptionId, cardTokenId);
-      if (getActiveOwnerId() === ownerId) {
-        setPremiumSubscription(result);
-        setShowCardForm(false);
-        setPremiumMessage(premiumStatusMessage(result, false));
-        try {
-          const latestEntitlements = await loadEntitlements({ force: true, ownerId });
-          if (getActiveOwnerId() === ownerId) {
-            setEntitlements(latestEntitlements);
-            window.dispatchEvent(new Event("scisonomics:premium-entitlements-changed"));
-            setPremiumMessage(premiumStatusMessage(result, latestEntitlements.plan === "premium" && ["active", "trialing"].includes(latestEntitlements.status)));
-          }
-        } catch {
-          if (getActiveOwnerId() === ownerId) setPremiumMessage(`${premiumStatusMessage(result, false)} No se pudo actualizar Premium; verificá el estado más tarde.`);
-        }
-      }
-    } catch (error) {
-      if (getActiveOwnerId() === ownerId) {
+      if (action === "start" && getActiveOwnerId() === ownerId) {
         try {
           const latest = await getPremiumSubscription(ownerId);
-          if (getActiveOwnerId() !== ownerId) return;
-          setPremiumSubscription(latest);
-          if (latest.status !== "creating") setShowCardForm(false);
-          setPremiumMessage(latest.status === "creating" ? (error instanceof Error ? error.message : "No se pudo asociar la tarjeta.") : premiumStatusMessage(latest, false));
+          if (getActiveOwnerId() === ownerId) setPremiumSubscription(latest);
         } catch {
-          if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo asociar la tarjeta.");
+          // Preserve the original error if the status lookup also fails.
         }
       }
+      if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo completar la operación.");
     } finally {
+      if (!checkoutOpened) checkoutTab?.close();
       setPremiumAction(null);
     }
   }
@@ -646,9 +650,7 @@ export default function ConfiguracionPage() {
               ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
-              {!premiumActive && activeOwner !== "local" && !["authorized", "paused", "uncertain", "pending"].includes(premiumSubscription?.status || "") ? (
-                <button className="btn" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("start")}>{premiumSubscription?.status === "creating" ? "Ingresar tarjeta" : "Pasar a Premium"}</button>
-              ) : null}
+              <PremiumCheckout subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null} onContinue={() => void handlePremiumAction("start")} />
               {activeOwner !== "local" && premiumSubscription && !["none", "creating"].includes(premiumSubscription.status) ? (
                 <button className="btn-secondary" type="button" disabled={premiumAction !== null} onClick={() => void handlePremiumAction("refresh")}>Ya pagué / Verificar estado</button>
               ) : null}
@@ -659,12 +661,6 @@ export default function ConfiguracionPage() {
           </div>
           {activeOwner === "local" ? <p className="mt-3 text-sm text-slate-400">Iniciá sesión en una cuenta cloud para contratar Premium.</p> : null}
           {premiumSubscription && premiumSubscription.status !== "none" ? <p className="mt-3 text-sm text-amber-200">{premiumStatusMessage(premiumSubscription, premiumActive)}</p> : null}
-          {showCardForm && canEnterCard(premiumSubscription) ? (
-            <div>
-              <MercadoPagoCardForm key={`${activeOwner}:${premiumSubscription.subscription_id}`} amount={premiumSubscription.amount} onToken={handleCardToken} onError={setPremiumMessage} />
-              <button className="btn-secondary mt-3" type="button" disabled={premiumAction !== null} onClick={() => setShowCardForm(false)}>Cerrar formulario</button>
-            </div>
-          ) : null}
           {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
           {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}
         </div>

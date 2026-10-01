@@ -11,7 +11,6 @@ from . import mercadopago_billing as mp
 
 OPEN_STATUSES = {"creating", "uncertain", "pending", "authorized", "paused"}
 PROVIDER_STATUSES = {"pending", "authorized", "paused", "canceled"}
-PROVIDER_STATUSES = {"pending", "authorized", "paused", "canceled"}
 
 
 def _normalize_provider_status(value: Any) -> str:
@@ -46,27 +45,21 @@ def _amount(value: Any) -> str:
     return str(amount.quantize(Decimal("0.01")))
 
 
-def validate_created_preapproval(provider: dict, intent, payer_email: str) -> str:
-    """Accept only an authorized subscription for this exact local intent."""
+def validate_pending_preapproval(provider: dict, reference: str, amount: str, payer_email: str) -> tuple[str, str]:
+    """Validate the individual no-plan checkout before exposing its URL."""
     provider_id = str(provider.get("id") or "")
     recurring = provider.get("auto_recurring")
-    provider_payer_email = str(provider.get("payer_email") or "").strip()
-
-    if (
-        not mp.RESOURCE_ID.fullmatch(provider_id)
-        or provider.get("external_reference") != intent["external_reference"]
-        or (
-            provider_payer_email
-            and provider_payer_email.casefold() != payer_email.casefold()
-        )
-        or provider.get("status") != "authorized"
-        or not isinstance(recurring, dict)
-        or recurring.get("currency_id") != intent["currency"]
-        or _amount(recurring.get("transaction_amount")) != intent["amount"]
-    ):
+    returned_email = str(provider.get("payer_email") or "").strip()
+    if (not mp.RESOURCE_ID.fullmatch(provider_id)
+            or provider.get("external_reference") != reference
+            or provider.get("preapproval_plan_id")
+            or (returned_email and returned_email.casefold() != payer_email.casefold())
+            or provider.get("status") != "pending"
+            or not isinstance(recurring, dict)
+            or recurring.get("currency_id") != "ARS"
+            or _amount(recurring.get("transaction_amount")) != amount):
         raise mp.MercadoPagoError("mercadopago_invalid_response")
-
-    return provider_id
+    return provider_id, mp.validate_checkout_url(provider.get("init_point"), provider_id)
 
 
 def _row(conn, user_id: str):
@@ -79,7 +72,11 @@ def _row(conn, user_id: str):
 def public_status(conn, user_id: str) -> dict:
     row = _row(conn, user_id)
     if row is None:
-        return {"status": "none", "subscription_id": None, "amount": None, "next_payment_date": None, "paid_until": None, "checkout_url": None, "can_cancel": False}
+        try:
+            amount = mp.monthly_amount()
+        except mp.MercadoPagoError:
+            amount = None
+        return {"status": "none", "subscription_id": None, "amount": amount, "next_payment_date": None, "paid_until": None, "checkout_url": None, "can_cancel": False, "payment_status": None, "payment_status_detail": None}
     return {
         "status": row["status"],
         "subscription_id": row["id"],
@@ -87,7 +84,9 @@ def public_status(conn, user_id: str) -> dict:
         "next_payment_date": row["paid_until"] if row["status"] == "authorized" else None,
         "paid_until": row["paid_until"],
         "checkout_url": row["checkout_url"] if row["status"] == "pending" else None,
-        "can_cancel": row["status"] in {"pending", "authorized", "paused"},
+        "can_cancel": bool(row["provider_subscription_id"]) and row["status"] in {"pending", "authorized", "paused"},
+        "payment_status": row["payment_status"],
+        "payment_status_detail": row["payment_status_detail"],
     }
 
 
@@ -138,17 +137,16 @@ def _set_effective_entitlement(conn, row, *, now: str) -> None:
         )
 
 
-def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None, expected_subscription_id: str | None = None) -> dict:
+def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None, payment_invoice: dict | None = None, expected_subscription_id: str | None = None) -> dict:
     """GET the authoritative preapproval; never derive a user from webhook input."""
     provider = mp.get_subscription(provider_id)
     if str(provider.get("id") or "") != provider_id:
         raise mp.MercadoPagoError("mercadopago_id_mismatch")
     reference = str(provider.get("external_reference") or "")
-    row = conn.execute(
-        "SELECT * FROM billing_subscriptions WHERE external_reference = ? AND provider = 'mercadopago'",
-        (reference,),
-    ).fetchone()
-    if row is None or (expected_subscription_id is not None and row["id"] != expected_subscription_id) or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
+    row = conn.execute("SELECT * FROM billing_subscriptions WHERE provider_subscription_id = ? AND provider = 'mercadopago'", (provider_id,)).fetchone()
+    if row is None:
+        row = conn.execute("SELECT * FROM billing_subscriptions WHERE external_reference = ? AND provider = 'mercadopago'", (reference,)).fetchone()
+    if row is None or (reference and reference != row["external_reference"]) or (expected_subscription_id is not None and row["id"] != expected_subscription_id) or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
         raise BillingConflict("subscription_not_owned")
     if row["provider_plan_id"] and str(provider.get("preapproval_plan_id") or "") != row["provider_plan_id"]:
         raise BillingConflict("plan_mismatch")
@@ -169,8 +167,23 @@ def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice
             raise BillingConflict("invoice_not_approved_for_subscription")
         next_date = _parse_date(provider.get("next_payment_date"))
         debit_date = _parse_date(approved_invoice.get("debit_date"))
-        if next_date and debit_date and debit_date <= next_date <= debit_date + timedelta(days=35) and (paid_until is None or next_date > paid_until):
+        if status == "authorized" and next_date and debit_date and debit_date <= next_date <= debit_date + timedelta(days=35) and (paid_until is None or next_date > paid_until):
             paid_until = next_date
+    if payment_invoice is not None:
+        payment = payment_invoice.get("payment")
+        if (str(payment_invoice.get("preapproval_id") or "") != provider_id
+                or not isinstance(payment, dict)
+                or payment_invoice.get("currency_id") != row["currency"]
+                or _amount(payment_invoice.get("transaction_amount")) != row["amount"]):
+            raise BillingConflict("payment_not_for_subscription")
+        payment_status = _normalize_provider_status(payment.get("status"))
+        if payment_status not in {"approved", "rejected", "pending", "in_process", "canceled"}:
+            payment_status = None
+        detail = "cc_rejected_high_risk" if payment_status == "rejected" and payment.get("status_detail") == "cc_rejected_high_risk" else None
+        payment_at = _parse_date(payment_invoice.get("debit_date"))
+        last_payment_at = _parse_date(row["last_payment_at"])
+        if payment_status and (last_payment_at is None or (payment_at and payment_at >= last_payment_at)):
+            conn.execute("UPDATE billing_subscriptions SET payment_status = ?, payment_status_detail = ?, last_payment_at = ? WHERE id = ?", (payment_status, detail, payment_at.isoformat() if payment_at else None, row["id"]))
     conn.execute(
         """
         UPDATE billing_subscriptions
@@ -189,30 +202,15 @@ def record_approved_invoice(conn, provider_id: str, invoice: dict, *, now: str) 
     return reconcile_subscription(conn, provider_id=provider_id, now=now, approved_invoice=invoice)
 
 
-def newest_approved_invoice(provider_id: str) -> dict | None:
-    result = mp.request(
-        "GET",
-        "/authorized_payments/search",
-        params={"preapproval_id": provider_id},
-    )
-
+def payment_evidence(provider_id: str) -> tuple[dict | None, dict | None]:
+    result = mp.request("GET", "/authorized_payments/search", params={"preapproval_id": provider_id})
     invoices = result.get("results")
-
     if not isinstance(invoices, list):
         raise mp.MercadoPagoError("mercadopago_invalid_response")
-
-    approved = [
-        item
-        for item in invoices
-        if isinstance(item, dict)
-        and isinstance(item.get("payment"), dict)
-        and item["payment"].get("status") == "approved"
-        and str(item.get("preapproval_id")) == provider_id
-    ]
-
-    return max(
-        approved,
-        key=lambda item: _parse_date(item.get("debit_date"))
-        or datetime.min.replace(tzinfo=timezone.utc),
-        default=None,
-    )
+    relevant = [item for item in invoices if isinstance(item, dict)
+                and isinstance(item.get("payment"), dict)
+                and str(item.get("preapproval_id")) == provider_id]
+    def date_key(item):
+        return _parse_date(item.get("debit_date")) or datetime.min.replace(tzinfo=timezone.utc)
+    approved = [item for item in relevant if item["payment"].get("status") == "approved"]
+    return max(approved, key=date_key, default=None), max(relevant, key=date_key, default=None)

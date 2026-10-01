@@ -508,6 +508,9 @@ def _ensure_billing_subscription_schema(conn: CloudConnection) -> None:
         )
         """
     )
+    _ensure_column(conn, "billing_subscriptions", "payment_status", "TEXT")
+    _ensure_column(conn, "billing_subscriptions", "payment_status_detail", "TEXT")
+    _ensure_column(conn, "billing_subscriptions", "last_payment_at", "TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_provider_subscription ON billing_subscriptions(provider, provider_subscription_id) WHERE provider_subscription_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_user ON billing_subscriptions(user_id)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_one_open_per_user ON billing_subscriptions(user_id, provider) WHERE status IN ('creating', 'uncertain', 'pending', 'authorized', 'paused')")

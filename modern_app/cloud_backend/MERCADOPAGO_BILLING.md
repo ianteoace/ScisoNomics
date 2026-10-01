@@ -1,51 +1,64 @@
-# Premium con Mercado Pago Suscripciones
+# Premium con checkout externo de Mercado Pago
 
-El backend crea primero un intento **local** `creating`, sin llamar a Mercado Pago, y conserva un `external_reference` único basado en `users.id` interno. La app usa [MercadoPago.js CardForm](https://www.mercadopago.com.ar/developers/es/docs/checkout-api-payments/integration-configuration/card/integration-via-cardform) con campos de tarjeta en iframes del proveedor para obtener un `card_token_id`; luego envía solo ese token a `POST /billing/subscription/{local_subscription_id}/authorize`. El backend hace un único `POST /preapproval` con `card_token_id` y `status=authorized`, conforme al [flujo oficial de pagos autorizados](https://www.mercadopago.com.ar/developers/es/docs/subscriptions/integration-configuration/subscription-no-associated-plan/authorized-payments), y consulta el recurso para confirmar referencia, precio y estado. El flujo anterior de preapproval remoto `pending` seguido de `PUT` deja de usarse para altas nuevas; las suscripciones `pending` existentes aún pueden consultarse, reconciliarse y cancelarse. No configurar `SCISONOMICS_MERCADOPAGO_PREAPPROVAL_PLAN_ID`: no se usa.
+## Arquitectura implementada
 
-El cliente desktop queda versionado como `3.3.0` por la nueva capacidad Premium. No publicar el release ni habilitar pagos reales antes de la validación en el entorno de prueba del proveedor.
+El alta utiliza **suscripciones sin plan asociado con pago pendiente**. La [guía oficial de pago pendiente](https://www.mercadopago.com.ar/developers/es/docs/subscriptions/integration-configuration/subscription-no-associated-plan/pending-payments) documenta `POST /preapproval` con `status=pending` y la posibilidad de compartir el enlace para completar el medio de pago en Mercado Pago. La [referencia de creación](https://www.mercadopago.com.ar/developers/es/reference/online-payments/subscriptions/create-preapproval/post) describe `external_reference` e `init_point`.
 
-## Configuración de producción
+Este flujo preserva atribución individual: antes de contactar al proveedor se guarda un intento local con UUID y `external_reference=scisonomics:{users.id}:{local_subscription_id}`. La referencia se envía al crear el recurso remoto y su respuesta debe coincidir exactamente. El checkout usa `preapproval_id` individual. No depende de una referencia compartida de plan, del email devuelto, ni del retorno para resolver ownership.
 
-Variables nuevas del backend cloud:
+1. El usuario toca **Continuar con Mercado Pago**.
+2. `POST /billing/subscription` autentica, comprueba Premium manual y evita intentos abiertos duplicados. Guarda primero el intento local `creating` y confirma atómicamente su paso a `uncertain` antes del POST remoto.
+3. El backend envía `POST /preapproval` con `reason`, referencia individual, `payer_email`, recurrencia mensual (`frequency=1`, `frequency_type=months`, monto configurado, ARS), `back_url` y `status=pending`. No envía token de tarjeta ni ID de plan.
+4. Verifica ID, referencia, estado `pending`, monto/moneda, ausencia de plan y pagador si el proveedor devuelve un email no vacío. Valida el `init_point` HTTPS, dominio exacto permitido, ruta `/subscriptions/checkout` y `preapproval_id` coincidente. Guarda ID remoto, URL, estado y fecha de sincronización.
+5. Tauri abre el navegador mediante `plugin-opener`. En web se reserva una pestaña desde el click, se elimina `opener` y luego se navega al enlace validado; si el navegador bloquea la pestaña, se navega en la pestaña actual. ScisoNomics no carga formularios ni SDK de tarjetas.
+6. El usuario elige entre los medios disponibles en el checkout de Mercado Pago. La app no agrega restricciones a marcas de tarjetas.
+7. Webhook firmado o **Verificar estado** consulta los recursos reales. Al volver a enfocar la app se verifica el estado y luego los entitlements, sin polling y con exclusión de solicitudes simultáneas y respuestas de otra cuenta.
+8. Premium se concede únicamente con cuota aprobada verificada, importe/moneda correctos y vigencia válida. La autorización sola o volver del checkout no concede Premium.
 
-- `SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN`: credencial privada de la aplicación vendedora. Nunca en frontend/Tauri.
-- `SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL`: email de un comprador de prueba de Mercado Pago. Es opcional para producción, pero obligatorio y válido cuando el Access Token empieza con `TEST-`; en ese caso se usa solo como `payer_email` de `/preapproval`. Si falta o es inválido, el backend responde `503 mercadopago_test_payer_not_configured` antes de llamar a Mercado Pago. El intento local sigue disponible para completar tras corregir la configuración. Con tokens no `TEST-` se usa el email real de la cuenta. No cambia `external_reference` ni `users.id`.
-- `SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS`: importe mensual fijo en ARS, por ejemplo `4500.00`. Configurarlo deliberadamente antes de habilitar el CTA.
-- `SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET`: clave secreta de Webhooks de la misma aplicación de Mercado Pago.
-- `SCISONOMICS_PUBLIC_API_URL`: origen HTTPS público del backend, por ejemplo `https://scisonomics-production-d8a3.up.railway.app`.
+## Configuración
 
-Variable pública del frontend/Tauri: `NEXT_PUBLIC_MERCADOPAGO_PUBLIC_KEY`, la Public Key de la misma aplicación de Mercado Pago que el Access Token del backend. Es pública; nunca incluir el Access Token en el frontend. En TEST usar la Public Key TEST correspondiente y el comprador de prueba indicado por `SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL`.
+Backend cloud:
 
-La URL exacta del webhook para ese origen es:
+- `SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN`: credencial privada de la aplicación vendedora; nunca en frontend.
+- `SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS`: precio mensual fijo positivo, con hasta dos decimales. La UI recibe el precio del backend.
+- `SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET`: secreto de Webhooks de esa aplicación.
+- `SCISONOMICS_PUBLIC_API_URL`: origen HTTPS público del backend. El retorno es `<origen>/billing/return`.
+- `SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL`: comprador TEST obligatorio cuando el Access Token comienza con `TEST-`. El backend valida el formato antes de crear el intento. Con credenciales de producción utiliza el email real interno y no usa esta sustitución.
 
-`https://scisonomics-production-d8a3.up.railway.app/billing/webhooks/mercadopago`
+No se necesita Public Key en el frontend ni `SCISONOMICS_MERCADOPAGO_PREAPPROVAL_PLAN_ID`. No crear planes para este flujo. No se modificaron archivos privados de entorno ni variables de Railway durante la implementación.
 
-En **Tus integraciones → Webhooks**, registrar esa URL y seleccionar `subscription_preapproval` y `subscription_authorized_payment`. Copiar la clave secreta a la variable indicada. No usar IPN: no ofrece la misma firma. `back_url` apunta a `/billing/return`, pero el alta nueva con CardForm no depende de abrir un checkout web ni del retorno para verificar el pago.
+Registrar `<origen>/billing/webhooks/mercadopago` en **Tus integraciones → Webhooks**, con `subscription_preapproval` y `subscription_authorized_payment`. La [documentación de Webhooks](https://www.mercadopago.com.ar/developers/es/docs/your-integrations/notifications/webhooks) explica la firma. Mantener la clave de la misma aplicación que las credenciales.
 
-El endpoint de inicio no acepta precio, plan ni usuario enviados por el cliente. Toma el usuario autenticado, inserta un intento local único `creating` y devuelve su ID y el monto configurado para inicializar CardForm. No guarda el token de tarjeta. En `/authorize`, valida la propiedad del intento, la configuración y el pagador, cambia atómicamente `creating` a `uncertain` para impedir dos POST remotos simultáneos y llama a Mercado Pago con la tarjeta tokenizada. Solo después de una respuesta `authorized` coherente y un GET de confirmación se registra el ID del proveedor y el estado. Una respuesta dudosa, timeout o confirmación contradictoria conserva `uncertain`; el webhook puede reconciliarla por `external_reference`. No se vuelve a crear automáticamente otra suscripción hasta aclarar el intento con el proveedor. La API de `preapproval` no documenta `X-Idempotency-Key` como requisito, por lo que esta protección se aplica en la base propia sin asumir soporte no documentado.
+`/billing/return` solo indica: **Volvé a ScisoNomics. Estamos verificando tu pago.** No acepta identificadores o estados de query como evidencia de pago y no modifica entitlements. No se agregó un deep link de billing.
 
-`creating` significa que falta ingresar la tarjeta. `pending` queda reservado a suscripciones remotas históricas aún pendientes y no concede Premium. `authorized` confirma la autorización de la suscripción, pero tampoco concede Premium por sí sola: se requiere una cuota aprobada comprobada por webhook/reconciliación. El endpoint de autorización acepta exclusivamente `card_token_id` de un solo uso, comprueba usuario e ID local, y no guarda el token ni datos de tarjeta. La app no envía número, vencimiento ni código de seguridad al backend. El log de errores del proveedor incluye status HTTP y solo code/message filtrados; la respuesta pública es genérica. Los campos seguros del SDK y la CSP de Tauri deben validarse manualmente en el instalador Windows y en navegador antes de usar pagos reales.
+## Reconciliación, pagos y estados
 
-Una cuenta con Premium manual aún vigente recibe `409 already_premium` al intentar contratar, para evitar un cobro duplicado.
+El webhook valida HMAC de `x-signature`, ID de URL/body y consulta preapproval/factura. La fila se localiza por ID remoto verificado o referencia individual exacta; una referencia contradictoria se rechaza. Los eventos se deduplican y auditan. La notificación de preapproval también busca cuotas, para recuperar aprobaciones si no llegó su notificación específica.
 
-El webhook valida `x-signature` con HMAC-SHA256 del manifiesto oficial `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`, verifica que el ID del body coincida con el de la URL, consulta el recurso en Mercado Pago y busca el intento interno por `external_reference` exacto. Nunca interpreta un `user_id` del payload. Los eventos procesados se deduplican por ID/tópico. La [documentación oficial de Webhooks](https://www.mercadopago.com.ar/developers/es/docs/prestashop/additional-content/your-integrations/notifications/webhooks) explica la firma y los tópicos.
+La búsqueda `/authorized_payments/search` distingue la última cuota de la última cuota aprobada. Los datos públicos del cobro se limitan al estado conocido y `cc_rejected_high_risk` cuando corresponde; no se devuelven cuerpos del proveedor. La fecha del último cobro impide que un evento más antiguo reemplace su resultado visible.
 
-## Entitlement y cancelación
+- `pending`: **Completá el pago en Mercado Pago.** Se puede reabrir el checkout existente sin crear otro recurso.
+- `authorized` sin cuota aprobada: **Suscripción autorizada. Esperando confirmación del cobro.**
+- Cuota `approved` y entitlement vigente: **Premium activado.** Se conserva `users.id`, se establece `paid_until` desde `next_payment_date` coherente con `debit_date`, y se actualizan plan, vigencia y `billing_source=mercadopago`.
+- Cuota `rejected`: mensaje para probar otro medio. `cc_rejected_high_risk`: mensaje de validación de seguridad del proveedor. Ninguno concede Premium.
+- `paused` o `canceled`: no concede un nuevo período. `cancelled` se normaliza a `canceled`. Cancelar detiene la renovación y conserva un período ya pagado hasta su vencimiento.
+- `uncertain`: no permite otro intento automático. Ofrece verificar el estado; si el ID remoto todavía falta, requiere recuperación por webhook o revisión manual.
 
-- `creating`, `uncertain`, `pending`, `paused`, cuotas pendientes o rechazadas: no conceden Premium nuevo.
-- `authorized` por sí solo no concede Premium: la [primera cuota puede tardar alrededor de una hora](https://www.mercadopago.com.ar/developers/es/docs/subscriptions/integration-configuration/subscription-no-associated-plan/authorized-payments). Se exige una factura del proveedor con `payment.status=approved` y `next_payment_date` coherente para establecer `paid_until`.
-- Una cuota aprobada concede Premium al `users.id` interno hasta `paid_until`.
-- Una cancelación (`PUT /preapproval/{id}` con `status=canceled`) detiene la renovación. Si existe un período pagado verificado, se conserva Premium hasta esa fecha; si no, no se concede. El vencimiento se aplica al consultar entitlements o al reconciliar con el proveedor.
-- Premium manual histórico (`billing_source` nulo o `manual`) no se revoca por eventos de Mercado Pago. Una asignación administrativa posterior establece `billing_source=manual`.
+Premium manual vigente bloquea alta para evitar cobros redundantes y tiene prioridad sobre reconciliaciones. El esquema agrega idempotentemente `payment_status`, `payment_status_detail` y `last_payment_at` a `billing_subscriptions`, tanto en SQLite como PostgreSQL. Son columnas nullable de resultado del cobro, sin datos de tarjeta. No modifica IDs, claves financieras o datos históricos.
 
-El esquema es aditivo e idempotente en SQLite y PostgreSQL: `users.billing_source`, `billing_subscriptions` (FK a `users.id`, índice único del ID del proveedor e índice único parcial de intento abierto por usuario) y `billing_webhook_events`. No cambia `users.id`, el sync ni tablas financieras.
+## Histórico y recuperación
 
-## Preparación y validación manual
+Se eliminó CardForm, sus estilos, la carga del SDK, sus permisos CSP y el endpoint de autorización por token. No había otros consumidores en el repo. Los instaladores antiguos que usen ese endpoint deben actualizarse; no se mantiene ese flujo de alta.
 
-1. Crear una aplicación de Mercado Pago del vendedor y obtener Access Token y clave secreta de Webhooks. No introducir credenciales reales en pruebas locales ni en el frontend.
-2. Definir importe mensual y revisar impuestos, comisiones, moneda y política comercial antes de configurar la variable de producción.
-3. Configurar los dos tópicos de webhook y comprobar que la URL pública acepta POST firmado. Desplegar primero el backend y verificar `/health` y `/ready`.
-4. Probar con una cuenta separada en el entorno de prueba oficial: crear el intento local `creating`, abrir CardForm en Tauri y navegador, tokenizar una tarjeta de prueba, crear el preapproval `authorized` con el endpoint de autorización, recibir ambos eventos y comprobar una cuota aprobada, `users.id`, Premium, refresh y cancelación. Confirmar que la Public Key TEST y el Access Token TEST pertenecen a la misma aplicación. Simular además un timeout de POST: el intento debe quedar `uncertain` y requerir conciliación manual o webhook, sin otro POST automático.
-5. Publicar el frontend/instalador solo después de la prueba de extremo a extremo. La UI nunca considera el retorno del navegador como pago aprobado.
+Se mantienen lectura, refresh, cancelación y reconciliación de suscripciones remotas anteriores (`pending`, `authorized`, `uncertain`, `canceled` y filas con plan histórico). Un intento CardForm `creating` sin ID remoto y sin plan puede completar el alta externa reutilizando su ID, precio y referencia originales. No se borran filas históricas.
 
-Si en otra fase se requiere **plan asociado**, habrá que confirmar con soporte oficial un flujo que preserve `external_reference` individual. Crear un plan manualmente en el panel o con `POST /preapproval_plan` no modifica el flujo implementado aquí. No se crea ningún plan automáticamente.
+Un timeout o respuesta inválida después del POST deja `uncertain`: el proveedor pudo haber creado una suscripción. El webhook puede recuperar la fila por referencia aun si no se guardó su ID remoto. Si el webhook falta, verificar la suscripción en Mercado Pago por referencia y realizar una reconciliación administrativa controlada; no resetear a `creating` ni repetir el POST antes de descartar un recurso remoto. No existe recuperación automática por email.
+
+## Validación manual pendiente
+
+1. Configurar credenciales, precio, comprador TEST y los dos tópicos de Webhooks en el entorno de prueba; no se hizo durante esta tarea.
+2. Desplegar backend compatible y actualizar el instalador. Verificar health/ready y las columnas aditivas.
+3. Probar con una cuenta Free separada: abrir checkout desde Windows y navegador, completar el pago y comprobar referencia individual, ID interno, cuota aprobada, `paid_until` y Premium.
+4. Verificar que volver al checkout sin pagar mantiene Free; probar rechazos y high risk, refresh, regreso a la app, cambio de cuenta y cancelación.
+5. Probar dos cuentas con intentos simultáneos y un timeout: no debe existir un segundo POST para el mismo intento, ni mezcla de owners. Confirmar recuperación por webhook.
+6. No publicar un release hasta comprobar el checkout real en el entorno del proveedor. Las pruebas automatizadas usan SQLite temporal y respuestas simuladas; no ejercen medios de pago reales ni Railway.

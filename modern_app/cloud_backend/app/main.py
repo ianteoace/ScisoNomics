@@ -1905,15 +1905,13 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
     enforce_rate_limit(request, "billing-subscription-create", identity=user.id, limit=5, window_seconds=3600)
     if not mp_billing.configured():
         raise _billing_error(mp_billing.MercadoPagoError("mercadopago_not_configured", 503))
-    # Create only a local intent. The card token is needed for the authorized POST.
-    from decimal import Decimal, InvalidOperation
     try:
-        amount = Decimal(os.getenv("SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS", "").strip())
-    except InvalidOperation:
-        raise HTTPException(status_code=503, detail={"code": "billing_price_not_configured"}) from None
-    if not amount.is_finite() or amount <= 0 or amount.as_tuple().exponent < -2:
-        raise HTTPException(status_code=503, detail={"code": "billing_price_not_configured"})
-    amount_text = str(amount.quantize(Decimal("0.01")))
+        amount_text = mp_billing.monthly_amount()
+        base_url = mp_billing.public_api_url()
+        mp_billing.webhook_secret()
+        payer_email = mp_billing.payer_email_for(user.email)
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
     with connect() as conn:
         billing_user = conn.execute("SELECT plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (user.id,)).fetchone()
         if billing_user is None:
@@ -1924,30 +1922,68 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
                 and (manual_expires is None or manual_expires > datetime.now(timezone.utc))):
             raise HTTPException(status_code=409, detail={"code": "already_premium"})
         current = conn.execute("SELECT * FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' AND status IN ('creating','uncertain','pending','authorized','paused') LIMIT 1", (user.id,)).fetchone()
-        if current:
-            if current["status"] == "creating" or (current["status"] == "pending" and current["checkout_url"]):
-                return subscriptions.public_status(conn, user.id)
+        if current and current["status"] == "pending" and current["checkout_url"]:
+            try:
+                mp_billing.validate_checkout_url(current["checkout_url"], current["provider_subscription_id"])
+            except mp_billing.MercadoPagoError as exc:
+                raise _billing_error(exc) from exc
+            return subscriptions.public_status(conn, user.id)
+        if current and (current["status"] != "creating" or current["provider_subscription_id"] or current["provider_plan_id"]):
             raise HTTPException(status_code=409, detail={"code": "subscription_already_exists", "status": current["status"]})
-        intent_id = str(uuid4())
-        reference = f"scisonomics:{user.id}:{intent_id}"
-        now = now_iso()
-        try:
-            conn.execute(
-                "INSERT INTO billing_subscriptions (id,user_id,provider,status,currency,amount,external_reference,created_at,updated_at) VALUES (?,?,'mercadopago','creating','ARS',?,?,?,?)",
-                (intent_id, user.id, amount_text, reference, now, now),
-            )
-        except Exception as exc:
-            if isinstance(exc, sqlite3.IntegrityError) or getattr(exc, "sqlstate", None) == "23505":
-                raise HTTPException(status_code=409, detail={"code": "subscription_already_exists"}) from None
-            raise
-        _security_audit(conn, "subscription.created", outcome="intent", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
+        if current:
+            if current["currency"] != "ARS":
+                raise HTTPException(status_code=409, detail={"code": "subscription_currency_mismatch"})
+            # Resume an old CardForm intent that has never contacted the provider.
+            intent_id, reference, amount_text = current["id"], current["external_reference"], current["amount"]
+        else:
+            intent_id = str(uuid4())
+            reference = f"scisonomics:{user.id}:{intent_id}"
+            now = now_iso()
+            try:
+                conn.execute(
+                    "INSERT INTO billing_subscriptions (id,user_id,provider,status,currency,amount,external_reference,created_at,updated_at) VALUES (?,?,'mercadopago','creating','ARS',?,?,?,?)",
+                    (intent_id, user.id, amount_text, reference, now, now),
+                )
+            except Exception as exc:
+                if isinstance(exc, sqlite3.IntegrityError) or getattr(exc, "sqlstate", None) == "23505":
+                    raise HTTPException(status_code=409, detail={"code": "subscription_already_exists"}) from None
+                raise
+            _security_audit(conn, "subscription.created", outcome="intent", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
+    # Commit a claim before the POST: even a timeout must never cause a second POST.
     with connect() as conn:
-        return subscriptions.public_status(conn, user.id)
+        claimed = conn.execute("UPDATE billing_subscriptions SET status = 'uncertain', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'creating' AND provider_subscription_id IS NULL", (now_iso(), intent_id, user.id))
+        if claimed.rowcount != 1:
+            raise HTTPException(status_code=409, detail={"code": "subscription_creation_unconfirmed"})
+    try:
+        provider = mp_billing.request("POST", "/preapproval", payload={
+            "reason": "ScisoNomics Premium mensual",
+            "external_reference": reference,
+            "payer_email": payer_email,
+            "auto_recurring": {"frequency": 1, "frequency_type": "months", "transaction_amount": float(amount_text), "currency_id": "ARS"},
+            "back_url": f"{base_url}/billing/return",
+            "status": "pending",
+        })
+        provider_id, checkout_url = subscriptions.validate_pending_preapproval(provider, reference, amount_text, payer_email)
+        with connect() as conn:
+            updated = conn.execute(
+                "UPDATE billing_subscriptions SET provider_subscription_id = ?, checkout_url = ?, status = CASE WHEN status IN ('creating','uncertain') THEN 'pending' ELSE status END, last_provider_sync_at = ?, updated_at = ? WHERE id = ? AND (provider_subscription_id IS NULL OR provider_subscription_id = ?)",
+                (provider_id, checkout_url, now_iso(), now_iso(), intent_id, provider_id),
+            )
+            if updated.rowcount != 1:
+                raise subscriptions.BillingConflict("subscription_not_owned")
+            _security_audit(conn, "subscription.created", outcome="success", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
+            return subscriptions.public_status(conn, user.id)
+    except mp_billing.MercadoPagoError as exc:
+        with connect() as conn:
+            _security_audit(conn, "subscription.created", outcome="uncertain", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request), details={"code": exc.code})
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
 
 @app.get("/billing/return", response_class=HTMLResponse)
 def billing_return():
-    return "<html><body><h1>Volve a ScisoNomics</h1><p>La suscripcion se verificara dentro de la app. Podes cerrar esta pagina.</p></body></html>"
+    return "<html><head><meta charset=\"utf-8\"></head><body><h1>Volvé a ScisoNomics.</h1><p>Estamos verificando tu pago.</p></body></html>"
 
 
 def _refresh_billing_for_user(user_id: str, *, source_ip: str | None = None):
@@ -1960,9 +1996,9 @@ def _refresh_billing_for_user(user_id: str, *, source_ip: str | None = None):
         provider_id = row["provider_subscription_id"]
     if not provider_id:
         raise HTTPException(status_code=409, detail={"code": "subscription_creation_unconfirmed"})
-    invoice = subscriptions.newest_approved_invoice(provider_id)
+    invoice, latest_invoice = subscriptions.payment_evidence(provider_id)
     with connect() as conn:
-        result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=invoice)
+        result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=invoice, payment_invoice=latest_invoice)
         _security_audit(conn, "subscription.updated", outcome="success", actor_id=user_id, source_ip=source_ip, details={"status": result["status"]})
         return result
 
@@ -1995,67 +2031,6 @@ def cancel_billing_subscription(request: Request, user: UserOut = Depends(get_cu
     with connect() as conn:
         _security_audit(conn, "subscription.canceled", outcome="success", actor_id=user.id, source_ip=client_ip(request))
     return result
-
-
-@app.post("/billing/subscription/{local_subscription_id}/authorize")
-async def authorize_billing_subscription(local_subscription_id: str, request: Request, user: UserOut = Depends(get_current_user)):
-    enforce_rate_limit(request, "billing-subscription-authorize", identity=user.id, limit=8, window_seconds=3600)
-    if not re.fullmatch(r"[0-9a-fA-F-]{36}", local_subscription_id):
-        raise HTTPException(status_code=404, detail={"code": "subscription_not_found"})
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT provider_subscription_id,status,external_reference,amount,currency FROM billing_subscriptions WHERE id = ? AND user_id = ? AND provider = 'mercadopago'",
-            (local_subscription_id, user.id),
-        ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail={"code": "subscription_not_found"})
-    if row["status"] != "creating" or row["provider_subscription_id"]:
-        raise HTTPException(status_code=409, detail={"code": "subscription_not_creating"})
-    try:
-        body = await request.json()
-    except ValueError:
-        body = None
-    card_token_id = body.get("card_token_id") if isinstance(body, dict) and set(body) == {"card_token_id"} else None
-    if not isinstance(card_token_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", card_token_id):
-        raise HTTPException(status_code=422, detail={"code": "invalid_card_token"})
-    try:
-        base_url = mp_billing.public_api_url()
-        mp_billing.webhook_secret()
-        payer_email = mp_billing.payer_email_for(user.email)
-    except mp_billing.MercadoPagoError as exc:
-        raise _billing_error(exc) from exc
-    # Claim the intent before the network call. A concurrent request cannot create
-    # a second remote subscription, even if the first request times out.
-    with connect() as conn:
-        claimed = conn.execute(
-            "UPDATE billing_subscriptions SET status = 'uncertain', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'creating' AND provider_subscription_id IS NULL",
-            (now_iso(), local_subscription_id, user.id),
-        )
-        if claimed.rowcount != 1:
-            raise HTTPException(status_code=409, detail={"code": "subscription_not_creating"})
-        _security_audit(conn, "subscription.authorized", outcome="requested", actor_id=user.id, target_id=local_subscription_id, source_ip=client_ip(request))
-    try:
-        provider = mp_billing.request("POST", "/preapproval", payload={
-            "reason": "ScisoNomics Premium mensual",
-            "external_reference": row["external_reference"],
-            "payer_email": payer_email,
-            "card_token_id": card_token_id,
-            "auto_recurring": {"frequency": 1, "frequency_type": "months", "transaction_amount": float(row["amount"]), "currency_id": row["currency"]},
-            "back_url": f"{base_url}/billing/return",
-            "status": "authorized",
-        })
-        provider_id = subscriptions.validate_created_preapproval(provider, row, payer_email)
-        # GET confirms reference/price; only an approved invoice grants Premium.
-        with connect() as conn:
-            result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), expected_subscription_id=local_subscription_id)
-            if result["status"] != "authorized":
-                raise mp_billing.MercadoPagoError("mercadopago_authorization_unconfirmed", 503)
-            _security_audit(conn, "subscription.authorized", outcome="provider_checked", actor_id=user.id, target_id=local_subscription_id, source_ip=client_ip(request), details={"status": result["status"]})
-        return result
-    except mp_billing.MercadoPagoError as exc:
-        raise _billing_error(exc) from exc
-    except subscriptions.BillingConflict as exc:
-        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
 
 
 @app.post("/billing/webhooks/mercadopago")
@@ -2093,8 +2068,9 @@ async def mercadopago_webhook(request: Request):
         provider_id = str(invoice.get("preapproval_id") or "") if invoice else data_id
         if not mp_billing.RESOURCE_ID.fullmatch(provider_id):
             raise mp_billing.MercadoPagoError("mercadopago_invalid_response")
+        approved_invoice, latest_invoice = (invoice if isinstance(invoice.get("payment"), dict) and invoice["payment"].get("status") == "approved" else None, invoice) if invoice else subscriptions.payment_evidence(provider_id)
         with connect() as conn:
-            result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=invoice if invoice and isinstance(invoice.get("payment"), dict) and invoice["payment"].get("status") == "approved" else None)
+            result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=approved_invoice, payment_invoice=latest_invoice)
             subscription_row = conn.execute("SELECT user_id,id FROM billing_subscriptions WHERE provider = 'mercadopago' AND provider_subscription_id = ?", (provider_id,)).fetchone()
             conn.execute("INSERT INTO billing_webhook_events (event_key,created_at) VALUES (?,?)", (event_key, now_iso()))
             _security_audit(conn, "subscription.updated", outcome="success", actor_id=subscription_row["user_id"] if subscription_row else None, target_id=subscription_row["id"] if subscription_row else None, details={"status": result["status"]}, source_ip=client_ip(request))

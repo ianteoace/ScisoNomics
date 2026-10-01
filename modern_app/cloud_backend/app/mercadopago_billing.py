@@ -11,7 +11,8 @@ import hmac
 import logging
 import os
 import re
-from urllib.parse import urlparse
+from decimal import Decimal, InvalidOperation
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -33,6 +34,16 @@ class MercadoPagoError(Exception):
 
 def configured() -> bool:
     return bool(os.getenv("SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN", "").strip())
+
+
+def monthly_amount() -> str:
+    try:
+        amount = Decimal(os.getenv("SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS", "").strip())
+        if not amount.is_finite() or amount <= 0 or amount.as_tuple().exponent < -2:
+            raise InvalidOperation
+        return str(amount.quantize(Decimal("0.01")))
+    except InvalidOperation:
+        raise MercadoPagoError("billing_price_not_configured", 503) from None
 
 
 def payer_email_for(real_email: str) -> str:
@@ -97,6 +108,22 @@ def _resource_id(value: str) -> str:
     return str(value)
 
 
+def validate_checkout_url(value: object, provider_id: str) -> str:
+    url = str(value or "")
+    try:
+        parsed = urlparse(url)
+        valid = (url == url.strip() and not any(ord(c) < 33 or c == "\\" for c in url)
+                 and parsed.scheme == "https" and parsed.netloc in {"www.mercadopago.com.ar", "www.mercadopago.com"}
+                 and parsed.path == "/subscriptions/checkout" and not parsed.fragment
+                 and parse_qs(parsed.query).get("preapproval_id") == [str(provider_id)]
+                 and "preapproval_plan_id" not in parse_qs(parsed.query))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise MercadoPagoError("mercadopago_invalid_checkout_url")
+    return url
+
+
 def request(method: str, path: str, *, payload: dict | None = None, params: dict | None = None) -> dict:
     token = os.getenv("SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN", "").strip()
     if not token:
@@ -115,9 +142,7 @@ def request(method: str, path: str, *, payload: dict | None = None, params: dict
     except httpx.RequestError:
         raise MercadoPagoError("mercadopago_unavailable", 503) from None
     if not response.is_success:
-        card_token = payload.get("card_token_id") if isinstance(payload, dict) else None
-        sensitive_values = (token, card_token) if isinstance(card_token, str) and card_token else (token,)
-        code, message = _provider_diagnostic(response, sensitive_values)
+        code, message = _provider_diagnostic(response, (token,))
         _logger.warning("Mercado Pago request failed: status_code=%s code=%s message=%s", response.status_code, code, message)
         raise MercadoPagoError("mercadopago_request_failed", 503 if response.status_code >= 500 else 502)
     try:

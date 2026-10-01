@@ -1,1060 +1,322 @@
 from __future__ import annotations
 
-
-
 import hashlib
-
 import hmac
-
 import os
-
 import unittest
-
 from datetime import datetime, timedelta, timezone
-
 from unittest.mock import patch
 
 import httpx
 
-
-
 from modern_app.cloud_backend import test_supabase_auth as fixtures
-
-from modern_app.cloud_backend.app import (
-    billing_subscriptions as subscriptions,
-    db,
-    mercadopago_billing as mp,
-    security,
-)
+from modern_app.cloud_backend.app import billing_subscriptions as subscriptions, db, mercadopago_billing as mp, security
 from modern_app.cloud_backend.app.auth import create_access_token
-
 from modern_app.cloud_backend.test_supabase_auth import INTERNAL_ID
 
-
-
-
-
 PROVIDER_ID = "provider-123"
-
-
-
+CHECKOUT = f"https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id={PROVIDER_ID}"
 
 
 class MercadoPagoBillingTests(unittest.TestCase):
-
     insert_user = fixtures.DualAuthTests.insert_user
 
-
-
     def setUp(self):
-
         fixtures.DualAuthTests.setUp(self)
-
         with security._LOCK:
-
             security._ATTEMPTS.clear()
-
-
-
-    def auth(self):
-
-        return {"Authorization": f"Bearer {create_access_token(INTERNAL_ID)}"}
-
-
-
-    def configured(self, *, token="secret-test-token", test_payer=""):
-
+        self.insert_user()
         env = patch.dict(os.environ, {
-
-            "SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": token,
-
-            "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": test_payer,
-
+            "SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": "APP_USR-test-only",
+            "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": "",
             "SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS": "4500.00",
-
             "SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET": "webhook-test-secret",
-
             "SCISONOMICS_PUBLIC_API_URL": "https://cloud.example.test",
-
         })
-
         env.start()
-
         self.addCleanup(env.stop)
 
+    def auth(self, owner=INTERNAL_ID):
+        return {"Authorization": f"Bearer {create_access_token(owner)}"}
 
-
-    def start(self):
-
-        with patch.object(mp, "request") as mocked:
-
-            response = self.client.post("/billing/subscription", headers=self.auth())
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-        self.assertEqual(response.json()["status"], "creating")
-
-        mocked.assert_not_called()
-
-        return response.json()
-
-
-
-    def authorize(self, subscription_id, *, expected_payer="legacy@example.com", provider=None):
-
-        remote = provider or self.provider()
-
-        def create(method, path, **kwargs):
-
-            self.assertEqual((method, path), ("POST", "/preapproval"))
-
-            payload = kwargs["payload"]
-
-            self.assertEqual(payload["payer_email"], expected_payer)
-
-            self.assertEqual(payload["status"], "authorized")
-
-            self.assertEqual(payload["card_token_id"], "cardtoken12345678")
-
-            self.assertEqual(payload["external_reference"], remote["external_reference"])
-
-            self.assertEqual(payload["auto_recurring"]["currency_id"], "ARS")
-
-            return {**remote, "payer_email": expected_payer}
-
-        with patch.object(mp, "request", side_effect=create) as mocked, patch.object(mp, "get_subscription", return_value=remote):
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-        mocked.assert_called_once()
-
-        return response
-
-
-
-    def provider(self, status="authorized", next_date=None, reference=None):
-
+    def provider(self, status="authorized", reference=None):
         with db.connect() as conn:
-
             row = conn.execute("SELECT external_reference FROM billing_subscriptions WHERE user_id = ?", (INTERNAL_ID,)).fetchone()
-
-        return {"id": PROVIDER_ID, "external_reference": reference if reference is not None else row["external_reference"],
-
-                "preapproval_plan_id": None, "status": status, "next_payment_date": next_date,
-
+        return {"id": PROVIDER_ID, "external_reference": reference or row["external_reference"],
+                "status": status, "init_point": CHECKOUT, "payer_email": "",
+                "next_payment_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
                 "auto_recurring": {"transaction_amount": "4500.00", "currency_id": "ARS"}}
 
+    def start(self, payer="legacy@example.com"):
+        def create(method, path, **kwargs):
+            self.assertEqual((method, path), ("POST", "/preapproval"))
+            payload = kwargs["payload"]
+            self.assertEqual(set(payload), {"reason", "external_reference", "payer_email", "auto_recurring", "back_url", "status"})
+            self.assertEqual(payload["status"], "pending")
+            self.assertEqual(payload["payer_email"], payer)
+            self.assertEqual(payload["auto_recurring"], {"frequency": 1, "frequency_type": "months", "transaction_amount": 4500.0, "currency_id": "ARS"})
+            self.assertEqual(payload["back_url"], "https://cloud.example.test/billing/return")
+            self.assertTrue(payload["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
+            with db.connect() as conn:
+                row = conn.execute("SELECT status FROM billing_subscriptions").fetchone()
+                self.assertEqual(row["status"], "uncertain")
+            return self.provider("pending")
+        with patch.object(mp, "request", side_effect=create) as mocked:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        mocked.assert_called_once()
+        return response.json()
 
-
-    def invoice(self, status="approved"):
-
+    def invoice(self, status="approved", detail=None):
         return {"id": 123, "preapproval_id": PROVIDER_ID, "currency_id": "ARS", "transaction_amount": "4500.00",
-
-                "debit_date": datetime.now(timezone.utc).isoformat(), "payment": {"status": status}}
-
-
+                "debit_date": datetime.now(timezone.utc).isoformat(), "payment": {"status": status, "status_detail": detail}}
 
     def webhook(self, topic, data_id, event_id=100):
-
-        ts = "1700000000"
-
-        request_id = "request-123"
-
-        message = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};".encode()
-
-        signature = hmac.new(b"webhook-test-secret", message, hashlib.sha256).hexdigest()
-
+        request_id, ts = "request-123", "1700000000"
+        manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};".encode()
+        signature = hmac.new(b"webhook-test-secret", manifest, hashlib.sha256).hexdigest()
         return self.client.post(f"/billing/webhooks/mercadopago?data.id={data_id}",
-
                                 headers={"x-request-id": request_id, "x-signature": f"ts={ts},v1={signature}"},
-
                                 json={"id": event_id, "type": topic, "data": {"id": data_id}})
 
-
-
-    def test_creation_is_authenticated_and_idempotent(self):
-
-        self.insert_user()
-
-        self.configured()
-
+    def test_start_creates_individual_no_plan_checkout_and_no_premium(self):
         self.assertEqual(self.client.post("/billing/subscription").status_code, 401)
-
-        first = self.start()
-
-        second = self.client.post("/billing/subscription", headers=self.auth())
-
-        self.assertEqual(second.status_code, 200)
-
-        self.assertEqual(second.json(), first)
-
-        with db.connect() as conn:
-
-            row = conn.execute("SELECT user_id,status,provider_subscription_id,checkout_url,external_reference FROM billing_subscriptions").fetchone()
-
-            self.assertEqual((row["user_id"], row["status"], row["provider_subscription_id"], row["checkout_url"]), (INTERNAL_ID, "creating", None, None))
-
-            self.assertTrue(row["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
-
-            self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_subscriptions").fetchone()["n"], 1)
-
-        with patch.object(mp, "get_subscription") as lookup:
-
-            refreshed = self.client.post("/billing/subscription/refresh", headers=self.auth())
-
-        self.assertEqual(refreshed.status_code, 200)
-
-        self.assertEqual(refreshed.json()["status"], "creating")
-
-        lookup.assert_not_called()
-
-
-
-    def test_test_token_uses_test_payer_and_internal_owner_reference(self):
-
-        self.insert_user()
-
-        self.configured(token="TEST-seller-token", test_payer="buyer@test.example")
-
-        subscription_id = self.start()["subscription_id"]
-
-        self.assertEqual(self.authorize(subscription_id, expected_payer="buyer@test.example").status_code, 200)
-
-        with db.connect() as conn:
-
-            row = conn.execute("SELECT user_id,external_reference FROM billing_subscriptions").fetchone()
-
-        self.assertEqual(row["user_id"], INTERNAL_ID)
-
-        self.assertTrue(row["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
-
-        self.assertNotIn("buyer@test.example", row["external_reference"])
-
-
-
-    def test_test_token_requires_valid_test_payer_before_remote_creation(self):
-
-        self.insert_user()
-
-        self.configured(token="TEST-seller-token")
-
-        subscription_id = self.start()["subscription_id"]
-
-        for email in ("", "not-an-email", "bad..dots@example.com", "buyer@example.com\nBearer TEST-secret"):
-
-            with self.subTest(email=email), patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": email}), patch.object(mp, "request") as create:
-
-                response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-                self.assertEqual(response.status_code, 503, response.text)
-
-                self.assertEqual(response.json()["detail"]["code"], "mercadopago_test_payer_not_configured")
-
-                create.assert_not_called()
-
-        with db.connect() as conn:
-
-            self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions").fetchone()["status"], "creating")
-
-
-
-    def test_non_test_token_uses_real_email_even_if_test_payer_is_set(self):
-
-        self.insert_user()
-
-        self.configured(token="APP_USR-seller-token", test_payer="buyer@test.example")
-
-        subscription_id = self.start()["subscription_id"]
-
-        self.assertEqual(self.authorize(subscription_id).status_code, 200)
-
-
-
-    def test_card_token_creates_authorized_subscription_without_granting_premium(self):
-
-        self.insert_user()
-
-        self.configured()
-
         started = self.start()
-
-        subscription_id = started["subscription_id"]
-
-        self.assertEqual(started["amount"], "4500.00")
-
-        response = self.authorize(subscription_id)
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-        self.assertEqual(response.json()["status"], "authorized")
-
+        self.assertEqual((started["status"], started["checkout_url"], started["amount"]), ("pending", CHECKOUT, "4500.00"))
         with db.connect() as conn:
-
-            user = conn.execute("SELECT id,plan,subscription_status,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
-
-            row = conn.execute("SELECT user_id,status,paid_until,external_reference,provider_subscription_id,last_provider_sync_at FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
-
-        self.assertEqual(tuple(user), (INTERNAL_ID, "free", "active", None))
-
-        self.assertEqual((row["user_id"], row["status"], row["paid_until"]), (INTERNAL_ID, "authorized", None))
-
-        self.assertEqual(row["provider_subscription_id"], PROVIDER_ID)
-
-        self.assertIsNotNone(row["last_provider_sync_at"])
-
-        self.assertTrue(row["external_reference"].startswith(f"scisonomics:{INTERNAL_ID}:"))
-
-
-
-    def test_card_authorization_rejects_missing_token_and_other_owner(self):
-
-        self.insert_user()
-
-        self.insert_user("other-owner", "other@example.com")
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        with patch.object(mp, "request") as update:
-
-            missing = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={})
-
-            other = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers={"Authorization": f"Bearer {create_access_token('other-owner')}"}, json={"card_token_id": "cardtoken12345678"})
-
-        self.assertEqual(missing.status_code, 422)
-
-        self.assertEqual(missing.json()["detail"]["code"], "invalid_card_token")
-
-        self.assertEqual(other.status_code, 404)
-
-        self.assertEqual(other.json()["detail"]["code"], "subscription_not_found")
-
-        update.assert_not_called()
-
-
-
-    def test_create_response_may_omit_payer_email_but_must_match_reference_and_amount(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        provider = self.provider()
-
-        with patch.object(mp, "request", return_value=provider), patch.object(mp, "get_subscription", return_value=provider):
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-
-
-    def test_create_response_accepts_empty_payer_email(self):
-
-        self.insert_user()
-
-        self.configured()
-
-
-
-        subscription_id = self.start()["subscription_id"]
-
-
-
-        provider = {
-
-            **self.provider(),
-
-            "payer_email": "",
-
-        }
-
-
-
-        with (
-
-            patch.object(mp, "request", return_value=provider),
-
-            patch.object(mp, "get_subscription", return_value=provider),
-
-        ):
-
-            response = self.client.post(
-
-                f"/billing/subscription/{subscription_id}/authorize",
-
-                headers=self.auth(),
-
-                json={"card_token_id": "cardtoken12345678"},
-
-            )
-
-
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-        self.assertEqual(response.json()["status"], "authorized")
-
-
-
+            row = conn.execute("SELECT * FROM billing_subscriptions").fetchone()
+            self.assertEqual(row["provider_subscription_id"], PROVIDER_ID)
+            self.assertIsNone(row["provider_plan_id"])
+            self.assertEqual(row["user_id"], INTERNAL_ID)
+            self.assertEqual(row["external_reference"], f"scisonomics:{INTERNAL_ID}:{row['id']}")
+            self.assertIsNotNone(row["last_provider_sync_at"])
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
+
+    def test_duplicate_start_reuses_checkout_without_another_post(self):
+        started = self.start()
+        with patch.object(mp, "request") as request:
+            again = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(again.json(), started)
+        request.assert_not_called()
+
+    def test_corrupt_stored_checkout_is_rejected_without_another_post(self):
+        self.start()
         with db.connect() as conn:
-
-            row = conn.execute(
-
-                """
-
-                SELECT status, provider_subscription_id
-
-                FROM billing_subscriptions
-
-                WHERE id = ?
-
-                """,
-
-                (subscription_id,),
-
-            ).fetchone()
-
-
-
-        self.assertEqual(row["status"], "authorized")
-
-        self.assertEqual(row["provider_subscription_id"], PROVIDER_ID)
-
-
-
-    def test_create_response_rejects_different_nonempty_payer_email(self):
-
-        self.insert_user()
-
-        self.configured()
-
-
-
-        subscription_id = self.start()["subscription_id"]
-
-
-
-        provider = {
-
-            **self.provider(),
-
-            "payer_email": "other-payer@example.com",
-
-        }
-
-
-
-        with (
-
-            patch.object(mp, "request", return_value=provider),
-
-            patch.object(mp, "get_subscription") as lookup,
-
-        ):
-
-            response = self.client.post(
-
-                f"/billing/subscription/{subscription_id}/authorize",
-
-                headers=self.auth(),
-
-                json={"card_token_id": "cardtoken12345678"},
-
-            )
-
-
-
-        self.assertEqual(response.status_code, 502, response.text)
-
-        self.assertEqual(
-
-            response.json()["detail"]["code"],
-
-            "mercadopago_invalid_response",
-
-        )
-
-
-
-        lookup.assert_not_called()
-
-
-
-        with db.connect() as conn:
-
-            row = conn.execute(
-
-                """
-
-                SELECT status, provider_subscription_id
-
-                FROM billing_subscriptions
-
-                WHERE id = ?
-
-                """,
-
-                (subscription_id,),
-
-            ).fetchone()
-
-
-
-        self.assertEqual(row["status"], "uncertain")
-
-        self.assertIsNone(row["provider_subscription_id"])
-
-
-
-    def test_duplicate_authorization_never_posts_again(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        self.assertEqual(self.authorize(subscription_id).status_code, 200)
-
-        with patch.object(mp, "request") as create:
-
-            again = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-        self.assertEqual(again.status_code, 409)
-
-        create.assert_not_called()
-
-
-
-    def test_unconfirmed_provider_status_stays_uncertain_without_premium(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        response_payload = {**self.provider(), "status": "pending"}
-
-        with patch.object(mp, "request", return_value=response_payload), patch.object(mp, "get_subscription") as lookup:
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
+            conn.execute("UPDATE billing_subscriptions SET checkout_url = 'https://evil.test/'")
+        with patch.object(mp, "request") as remote:
+            response = self.client.post("/billing/subscription", headers=self.auth())
         self.assertEqual(response.status_code, 502)
+        remote.assert_not_called()
 
-        lookup.assert_not_called()
+    def test_another_owner_cannot_read_refresh_or_cancel_this_subscription(self):
+        self.start()
+        other = "00000000-0000-4000-8000-000000000001"
+        self.insert_user(user_id=other, email="other@example.com")
+        with patch.object(mp, "request") as remote, patch.object(mp, "cancel_subscription") as cancel:
+            state = self.client.get("/billing/subscription", headers=self.auth(other)).json()
+            refresh = self.client.post("/billing/subscription/refresh", headers=self.auth(other))
+            canceled = self.client.post("/billing/subscription/cancel", headers=self.auth(other))
+        self.assertEqual(state["status"], "none")
+        self.assertEqual(refresh.json()["status"], "none")
+        self.assertEqual(canceled.status_code, 409)
+        remote.assert_not_called()
+        cancel.assert_not_called()
 
-        with db.connect() as conn:
+    def test_in_flight_creation_blocks_a_second_post(self):
+        def remote(*args, **kwargs):
+            again = self.client.post("/billing/subscription", headers=self.auth())
+            self.assertEqual(again.status_code, 409)
+            return self.provider("pending")
+        with patch.object(mp, "request", side_effect=remote) as request:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        request.assert_called_once()
 
-            row = conn.execute("SELECT status,provider_subscription_id FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
-
-            user = conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
-
-        self.assertEqual((row["status"], row["provider_subscription_id"], user["plan"]), ("uncertain", None, "free"))
-
-
-
-    def test_get_still_pending_after_authorized_post_stays_uncertain(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        authorized = self.provider()
-
-        with patch.object(mp, "request", return_value=authorized), patch.object(mp, "get_subscription", return_value=self.provider(status="pending")):
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
+    def test_test_credentials_require_configured_test_buyer(self):
+        with patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": "TEST-seller", "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": ""}), patch.object(mp, "request") as remote:
+            response = self.client.post("/billing/subscription", headers=self.auth())
         self.assertEqual(response.status_code, 503)
-
-        self.assertEqual(response.json()["detail"]["code"], "mercadopago_authorization_unconfirmed")
-
+        remote.assert_not_called()
         with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_subscriptions").fetchone()["n"], 0)
 
-            row = conn.execute("SELECT status,provider_subscription_id FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
+    def test_test_buyer_does_not_change_internal_reference(self):
+        with patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN": "TEST-seller", "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": "buyer@test.example"}):
+            self.start("buyer@test.example")
 
-        self.assertEqual((row["status"], row["provider_subscription_id"]), ("uncertain", None))
+    def test_production_ignores_test_buyer(self):
+        with patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": "buyer@test.example"}):
+            self.start()
 
-
-
-    def test_provider_price_mismatch_never_saves_subscription(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        remote = self.provider()
-
-        remote["auto_recurring"]["transaction_amount"] = "9999.00"
-
-        with patch.object(mp, "request", return_value=remote), patch.object(mp, "get_subscription") as lookup:
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
+    def test_invalid_response_stays_uncertain_and_exposes_no_secrets(self):
+        with patch.object(mp, "request", return_value={"id": PROVIDER_ID, "external_reference": "wrong", "status": "pending"}):
+            response = self.client.post("/billing/subscription", headers=self.auth())
         self.assertEqual(response.status_code, 502)
-
-        lookup.assert_not_called()
-
+        self.assertNotIn("APP_USR-test-only", response.text)
         with db.connect() as conn:
-
-            row = conn.execute("SELECT status,provider_subscription_id FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
-
-        self.assertEqual((row["status"], row["provider_subscription_id"]), ("uncertain", None))
-
-
-
-    def test_historical_pending_subscription_still_refreshes(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        with db.connect() as conn:
-
-            conn.execute("UPDATE billing_subscriptions SET status = 'pending', provider_subscription_id = ?, checkout_url = ? WHERE id = ?", (PROVIDER_ID, f"https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id={PROVIDER_ID}", subscription_id))
-
-        with patch.object(mp, "get_subscription", return_value=self.provider(status="pending")), patch.object(mp, "request", return_value={"results": []}):
-
-            response = self.client.post("/billing/subscription/refresh", headers=self.auth())
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-        self.assertEqual(response.json()["status"], "pending")
-
-        with patch.object(mp, "request") as create:
-
-            started = self.client.post("/billing/subscription", headers=self.auth())
-
-        self.assertEqual(started.status_code, 200)
-
-        self.assertEqual(started.json()["status"], "pending")
-
-        create.assert_not_called()
-
-
-
-    def test_card_authorization_provider_error_hides_card_token(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        token = "cardtokenabcdef"
-
-        provider_error = httpx.Response(400, json={"error": "invalid_card_token", "message": f"Card token {token} rejected"})
-
-        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": token})
-
-        self.assertEqual(response.status_code, 502)
-
-        self.assertNotIn(token, response.text + " ".join(captured.output))
-
-        self.assertIn("status_code=400", captured.output[0])
-
-        with db.connect() as conn:
-
-            self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()["status"], "uncertain")
-
-
-
-    def test_card_authorization_rejects_mismatched_provider_reference(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        wrong = self.provider(status="authorized", reference="scisonomics:other-owner:other-intent")
-
-        with patch.object(mp, "request", return_value={**self.provider(), "payer_email": "legacy@example.com"}), patch.object(mp, "get_subscription", return_value=wrong):
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-        self.assertEqual(response.status_code, 409)
-
-        with db.connect() as conn:
-
-            self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()["status"], "uncertain")
-
-
-
-    def test_provider_error_logs_only_sanitized_diagnostic(self):
-
-        self.insert_user()
-
-        self.configured(token="TEST-seller-token", test_payer="buyer@test.example")
-
-        subscription_id = self.start()["subscription_id"]
-
-        provider_error = httpx.Response(400, json={
-
-            "error": "invalid_payer_email",
-
-            "message": "Payer buyer@test.example rejected for TEST-seller-token",
-
-            "details": {"password": "sensitive-value"},
-
-        })
-
-        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
-        self.assertEqual(response.status_code, 502, response.text)
-
-        self.assertEqual(response.json()["detail"]["code"], "mercadopago_request_failed")
-
-        self.assertIn("status_code=400", captured.output[0])
-
-        self.assertIn("code=invalid_payer_email", captured.output[0])
-
-        self.assertIn("message=unavailable", captured.output[0])
-
-        for secret in ("TEST-seller-token", "buyer@test.example", "sensitive-value"):
-
-            self.assertNotIn(secret, " ".join(captured.output) + response.text)
-
-
-
-    def test_provider_error_logs_safe_message_without_response_body(self):
-
-        self.configured()
-
-        provider_error = httpx.Response(422, json={"error": "invalid_payer_email", "message": "Invalid payer email", "details": {"token": "secret-test-token"}})
-
-        with patch.object(mp.httpx, "request", return_value=provider_error), self.assertLogs(mp.__name__, level="WARNING") as captured:
-
-            with self.assertRaises(mp.MercadoPagoError) as error:
-
-                mp.request("POST", "/preapproval", payload={})
-
-        self.assertEqual(error.exception.code, "mercadopago_request_failed")
-
-        self.assertIn("status_code=422", captured.output[0])
-
-        self.assertIn("message=Invalid payer email", captured.output[0])
-
-        self.assertNotIn("secret-test-token", " ".join(captured.output))
-
-
-
-    def test_provider_client_timeout_and_bad_response_hide_secret(self):
-
-        self.configured()
-
-        with patch.object(mp.httpx, "request", side_effect=httpx.ReadTimeout("secret-test-token")):
-
-            with self.assertRaises(mp.MercadoPagoError) as error:
-
-                mp.request("GET", "/preapproval/provider-123")
-
-        self.assertEqual(error.exception.code, "mercadopago_timeout")
-
-        self.assertNotIn("secret-test-token", str(error.exception))
-
-        with patch.object(mp.httpx, "request", return_value=httpx.Response(200, content=b"invalid")):
-
-            with self.assertRaises(mp.MercadoPagoError) as error:
-
-                mp.request("GET", "/preapproval/provider-123")
-
-        self.assertEqual(error.exception.code, "mercadopago_invalid_response")
-
-
-
-    def test_timeout_keeps_uncertain_intent_and_does_not_retry(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        with patch.object(mp, "request", side_effect=mp.MercadoPagoError("mercadopago_timeout", 503)) as create:
-
-            self.assertEqual(self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"}).status_code, 503)
-
-            self.assertEqual(self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"}).status_code, 409)
-
-            self.assertEqual(self.client.post("/billing/subscription", headers=self.auth()).status_code, 409)
-
-            self.assertEqual(create.call_count, 1)
-
-        with db.connect() as conn:
-
             self.assertEqual(conn.execute("SELECT status FROM billing_subscriptions").fetchone()["status"], "uncertain")
 
-
-
-    def test_invalid_response_does_not_expose_token(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        subscription_id = self.start()["subscription_id"]
-
-        with patch.object(mp, "request", return_value={"id": PROVIDER_ID, "external_reference": "wrong", "status": "authorized"}):
-
-            response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
-
+    def test_invalid_provider_checkout_stays_uncertain(self):
+        def remote(*args, **kwargs):
+            return {**self.provider("pending"), "init_point": "https://evil.test/"}
+        with patch.object(mp, "request", side_effect=remote):
+            response = self.client.post("/billing/subscription", headers=self.auth())
         self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"]["code"], "mercadopago_invalid_checkout_url")
 
-        self.assertNotIn("secret-test-token", response.text)
+    def test_checkout_url_allowlist_and_provider_id(self):
+        self.assertEqual(mp.validate_checkout_url(CHECKOUT, PROVIDER_ID), CHECKOUT)
+        for url in ["http://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id=provider-123", "https://www.mercadopago.com.ar.evil.test/subscriptions/checkout?preapproval_id=provider-123", CHECKOUT + "&preapproval_id=other", CHECKOUT + "&preapproval_plan_id=plan", CHECKOUT + "#bad", CHECKOUT.replace(PROVIDER_ID, "other"), CHECKOUT.replace("www.", "user@www."), CHECKOUT + "\\evil", " " + CHECKOUT]:
+            with self.subTest(url=url), self.assertRaises(mp.MercadoPagoError):
+                mp.validate_checkout_url(url, PROVIDER_ID)
 
-
-
-    def test_approved_invoice_grants_internal_owner_and_cancellation_keeps_paid_period(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        self.assertEqual(self.authorize(self.start()["subscription_id"]).status_code, 200)
-
-        next_date = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-
-        with patch.object(mp, "get_authorized_payment", return_value=self.invoice()), patch.object(mp, "get_subscription", return_value=self.provider(next_date=next_date)):
-
-            first = self.webhook("subscription_authorized_payment", "123")
-
-            second = self.webhook("subscription_authorized_payment", "123")
-
-        self.assertEqual(first.status_code, 200, first.text)
-
-        self.assertEqual(second.status_code, 200, second.text)
-
+    def test_timeout_never_duplicates_and_webhook_can_recover(self):
+        with patch.object(mp, "request", side_effect=mp.MercadoPagoError("mercadopago_timeout", 503)) as remote:
+            first = self.client.post("/billing/subscription", headers=self.auth())
+            second = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(first.status_code, 503)
+        self.assertEqual(second.status_code, 409)
+        remote.assert_called_once()
+        with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": []}):
+            recovered = self.webhook("subscription_preapproval", PROVIDER_ID)
+        self.assertEqual(recovered.status_code, 200, recovered.text)
         with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT provider_subscription_id,status FROM billing_subscriptions").fetchone()["status"], "authorized")
 
+    def test_authorized_webhook_without_invoice_never_grants_premium(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": []}):
+            response = self.webhook("subscription_preapproval", PROVIDER_ID)
+        self.assertEqual(response.status_code, 200)
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
+
+    def test_approved_webhook_is_idempotent_and_grants_internal_owner(self):
+        self.start()
+        with patch.object(mp, "get_authorized_payment", return_value=self.invoice()), patch.object(mp, "get_subscription", return_value=self.provider()):
+            first, second = self.webhook("subscription_authorized_payment", "123"), self.webhook("subscription_authorized_payment", "123")
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        with db.connect() as conn:
             user = conn.execute("SELECT id,plan,billing_source,subscription_expires_at FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
-
-            self.assertEqual(user["id"], INTERNAL_ID)
-
-            self.assertEqual(user["plan"], "premium")
-
-            self.assertEqual(user["billing_source"], "mercadopago")
-
+            self.assertEqual((user["id"], user["plan"], user["billing_source"]), (INTERNAL_ID, "premium", "mercadopago"))
             self.assertIsNotNone(user["subscription_expires_at"])
-
             self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_webhook_events").fetchone()["n"], 1)
 
-        with patch.object(mp, "cancel_subscription", return_value={"status": "canceled"}), patch.object(mp, "request", return_value={"results": []}), patch.object(mp, "get_subscription", return_value=self.provider(status="canceled")):
-
-            canceled = self.client.post("/billing/subscription/cancel", headers=self.auth())
-
-        self.assertEqual(canceled.status_code, 200, canceled.text)
-
-        self.assertEqual(canceled.json()["status"], "canceled")
-
+    def test_foreign_invoice_or_wrong_price_cannot_grant_premium(self):
+        self.start()
+        for i, changes in enumerate([{"preapproval_id": "another-provider"}, {"transaction_amount": "1.00"}, {"currency_id": "USD"}]):
+            invoice = {**self.invoice(), **changes}
+            with patch.object(mp, "get_authorized_payment", return_value=invoice), patch.object(mp, "get_subscription", return_value=self.provider()):
+                response = self.webhook("subscription_authorized_payment", "123", event_id=400+i)
+            self.assertEqual(response.status_code, 502 if i == 0 else 409)
         with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
 
+    def test_approved_invoice_does_not_grant_new_period_for_canceled_or_pending(self):
+        self.start()
+        for i, status in enumerate(["pending", "paused", "cancelled"]):
+            with patch.object(mp, "get_authorized_payment", return_value=self.invoice()), patch.object(mp, "get_subscription", return_value=self.provider(status)):
+                response = self.webhook("subscription_authorized_payment", "123", event_id=500+i)
+            self.assertEqual(response.status_code, 200)
+        with db.connect() as conn:
+            self.assertIsNone(conn.execute("SELECT paid_until FROM billing_subscriptions").fetchone()["paid_until"])
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
+
+    def test_rejected_and_high_risk_are_visible_without_premium(self):
+        self.start()
+        for i, detail in enumerate([None, "cc_rejected_high_risk"]):
+            with patch.object(mp, "get_authorized_payment", return_value=self.invoice("rejected", detail)), patch.object(mp, "get_subscription", return_value=self.provider()):
+                response = self.webhook("subscription_authorized_payment", "123", event_id=200+i)
+            self.assertEqual(response.status_code, 200, response.text)
+            state = self.client.get("/billing/subscription", headers=self.auth()).json()
+            self.assertEqual((state["payment_status"], state["payment_status_detail"]), ("rejected", detail))
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
+
+    def test_refresh_pending_and_rejected_payment(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider("pending")), patch.object(mp, "request", return_value={"results": [self.invoice("rejected", "cc_rejected_high_risk")]}):
+            response = self.client.post("/billing/subscription/refresh", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "pending")
+        self.assertEqual(response.json()["payment_status_detail"], "cc_rejected_high_risk")
+
+    def test_canceled_aliases_and_manual_premium_priority(self):
+        self.start()
+        with db.connect() as conn:
+            conn.execute("UPDATE users SET plan = 'premium', subscription_expires_at = '2030-01-01T00:00:00Z' WHERE id = ?", (INTERNAL_ID,))
+        for i, status in enumerate(["canceled", "cancelled"]):
+            with patch.object(mp, "get_subscription", return_value=self.provider(status)), patch.object(mp, "request", return_value={"results": []}):
+                response = self.webhook("subscription_preapproval", PROVIDER_ID, event_id=300+i)
+            self.assertEqual(response.status_code, 200)
+            state = self.client.get("/billing/subscription", headers=self.auth()).json()
+            self.assertEqual(state["status"], "canceled")
+        with db.connect() as conn:
+            user = conn.execute("SELECT plan,subscription_expires_at,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
+            self.assertEqual(tuple(user), ("premium", "2030-01-01T00:00:00Z", None))
+
+    def test_cancellation_keeps_verified_paid_period(self):
+        self.start()
+        with patch.object(mp, "get_subscription", return_value=self.provider()), patch.object(mp, "request", return_value={"results": [self.invoice()]}):
+            self.assertEqual(self.client.post("/billing/subscription/refresh", headers=self.auth()).status_code, 200)
+        with patch.object(mp, "cancel_subscription"), patch.object(mp, "get_subscription", return_value=self.provider("cancelled")), patch.object(mp, "request", return_value={"results": []}):
+            response = self.client.post("/billing/subscription/cancel", headers=self.auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "canceled")
+        with db.connect() as conn:
             self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "premium")
 
-
-
-    def test_pending_or_failed_payment_never_grants_premium(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        self.assertEqual(self.authorize(self.start()["subscription_id"]).status_code, 200)
-
-        with patch.object(mp, "get_authorized_payment", return_value=self.invoice(status="rejected")), patch.object(mp, "get_subscription", return_value=self.provider(next_date=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat())):
-
-            response = self.webhook("subscription_authorized_payment", "123")
-
-        self.assertEqual(response.status_code, 200, response.text)
-
+    def test_manual_premium_blocks_new_checkout(self):
         with db.connect() as conn:
+            conn.execute("UPDATE users SET plan = 'premium', subscription_expires_at = '2030-01-01T00:00:00Z' WHERE id = ?", (INTERNAL_ID,))
+        with patch.object(mp, "request") as remote:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 409)
+        remote.assert_not_called()
 
+    def test_return_does_not_trust_query_or_grant_premium(self):
+        response = self.client.get("/billing/return?status=approved&user_id="+INTERNAL_ID)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Estamos verificando tu pago", response.text)
+        with db.connect() as conn:
             self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
 
-
-
-    def test_manual_premium_is_not_overwritten(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        self.assertEqual(self.authorize(self.start()["subscription_id"]).status_code, 200)
-
-        with db.connect() as conn:
-
-            conn.execute("UPDATE users SET plan = 'premium', subscription_status = 'active', subscription_expires_at = '2030-01-01T00:00:00Z' WHERE id = ?", (INTERNAL_ID,))
-
-        with patch.object(mp, "get_subscription", return_value=self.provider(status="canceled")):
-
+    def test_webhook_signature_and_reference_ownership(self):
+        self.start()
+        rejected = self.client.post(f"/billing/webhooks/mercadopago?data.id={PROVIDER_ID}", json={})
+        self.assertEqual(rejected.status_code, 401)
+        with patch.object(mp, "get_subscription", return_value=self.provider(reference="scisonomics:other:wrong")), patch.object(mp, "request", return_value={"results": []}):
             response = self.webhook("subscription_preapproval", PROVIDER_ID)
-
-        self.assertEqual(response.status_code, 200, response.text)
-
-        with db.connect() as conn:
-
-            row = conn.execute("SELECT plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
-
-            self.assertEqual(tuple(row), ("premium", "active", "2030-01-01T00:00:00Z", None))
-
-
-
-    def test_manual_premium_cannot_start_duplicate_paid_subscription(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        with db.connect() as conn:
-
-            conn.execute("UPDATE users SET plan = 'premium', subscription_status = 'active', subscription_expires_at = '2030-01-01T00:00:00Z' WHERE id = ?", (INTERNAL_ID,))
-
-        with patch.object(mp, "request") as create:
-
-            response = self.client.post("/billing/subscription", headers=self.auth())
-
         self.assertEqual(response.status_code, 409)
 
-        self.assertEqual(response.json()["detail"]["code"], "already_premium")
-
-        create.assert_not_called()
-
-
-
-    def test_webhook_signature_and_owner_checks(self):
-
-        self.insert_user()
-
-        self.configured()
-
-        self.start()
-
-        rejected = self.client.post(f"/billing/webhooks/mercadopago?data.id={PROVIDER_ID}", json={"id": 1, "type": "subscription_preapproval", "data": {"id": PROVIDER_ID}})
-
-        self.assertEqual(rejected.status_code, 401)
-
-        with patch.object(mp, "get_subscription", return_value=self.provider(reference="scisonomics:other-user:unknown")):
-
-            conflict = self.webhook("subscription_preapproval", PROVIDER_ID)
-
-        self.assertEqual(conflict.status_code, 409)
-
+    def test_historical_creating_intent_resumes_with_same_id(self):
+        now = datetime.now(timezone.utc).isoformat()
         with db.connect() as conn:
+            conn.execute("INSERT INTO billing_subscriptions (id,user_id,provider,status,currency,amount,external_reference,created_at,updated_at) VALUES ('old-intent',?,'mercadopago','creating','ARS','4500.00',?,?,?)", (INTERNAL_ID, f"scisonomics:{INTERNAL_ID}:old-intent", now, now))
+        result = self.start()
+        self.assertEqual(result["subscription_id"], "old-intent")
 
-            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
-
-
-
-    def test_schema_is_idempotent_and_expired_provider_premium_becomes_free(self):
-        self.insert_user()
+    def test_schema_is_idempotent_and_public_price_available(self):
         db.init_db()
-        with db.connect() as conn:
-            conn.execute(
-                "UPDATE users SET plan = 'premium', billing_source = 'mercadopago', subscription_expires_at = '2020-01-01T00:00:00Z' WHERE id = ?",
-                (INTERNAL_ID,),
-            )
-        with patch.object(self.main, "create_entitlement_token", return_value="test-only-entitlement"):
-            response = self.client.get("/billing/entitlements", headers=self.auth())
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["plan"], "free")
-        with db.connect() as conn:
-            self.assertEqual(
-                conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"],
-                "free",
-            )
+        state = self.client.get("/billing/subscription", headers=self.auth()).json()
+        self.assertEqual((state["status"], state["amount"]), ("none", "4500.00"))
 
-        def test_reconcile_normalizes_cancelled_provider_status(self):
-            self.insert_user()
-            self.configured()
+    def test_invalid_price_or_configuration_makes_no_remote_call(self):
+        with patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS": "NaN"}), patch.object(mp, "request") as remote:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 503)
+        remote.assert_not_called()
 
-            subscription_id = self.start()["subscription_id"]
+    def test_http_errors_log_sanitized_diagnostics(self):
+        error = httpx.Response(400, json={"error": "invalid_payer_email", "message": "Payer legacy@example.com rejected for APP_USR-test-only", "details": {"secret": "hidden-value"}})
+        with patch.object(mp.httpx, "request", return_value=error), self.assertLogs(mp.__name__, level="WARNING") as logs:
+            response = self.client.post("/billing/subscription", headers=self.auth())
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("status_code=400", logs.output[0])
+        self.assertIn("code=invalid_payer_email", logs.output[0])
+        for value in ["APP_USR-test-only", "legacy@example.com", "hidden-value"]:
+            self.assertNotIn(value, response.text + " ".join(logs.output))
 
-            with db.connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_subscriptions
-                    SET status = 'authorized',
-                        provider_subscription_id = ?
-                    WHERE id = ?
-                    """,
-                    (PROVIDER_ID, subscription_id),
-                )
-
-            provider = self.provider(status="cancelled")
-
-            with (
-                patch.object(subscriptions, "newest_approved_invoice", return_value=None),
-                patch.object(mp, "get_subscription", return_value=provider),
-            ):
-                response = self.client.post(
-                    "/billing/subscription/refresh",
-                    headers=self.auth(),
-                )
-
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(response.json()["status"], "canceled")
-
-            with db.connect() as conn:
-                row = conn.execute(
-                    "SELECT status FROM billing_subscriptions WHERE id = ?",
-                    (subscription_id,),
-                ).fetchone()
-
-            self.assertEqual(row["status"], "canceled")
-
-    def test_reconcile_keeps_official_canceled_status(self):
-            self.insert_user()
-            self.configured()
-
-            subscription_id = self.start()["subscription_id"]
-
-            with db.connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE billing_subscriptions
-                    SET status = 'authorized',
-                        provider_subscription_id = ?
-                    WHERE id = ?
-                    """,
-                    (PROVIDER_ID, subscription_id),
-                )
-
-            provider = self.provider(status="canceled")
-
-            with (
-                patch.object(subscriptions, "newest_approved_invoice", return_value=None),
-                patch.object(mp, "get_subscription", return_value=provider),
-            ):
-                response = self.client.post(
-                    "/billing/subscription/refresh",
-                    headers=self.auth(),
-                )
-
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(response.json()["status"], "canceled")
-
-            with db.connect() as conn:
-                row = conn.execute(
-                    "SELECT status FROM billing_subscriptions WHERE id = ?",
-                    (subscription_id,),
-                ).fetchone()
-
-            self.assertEqual(row["status"], "canceled")
 
 if __name__ == "__main__":
     unittest.main()

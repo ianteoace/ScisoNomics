@@ -10,21 +10,28 @@ export type PremiumSubscription = {
   paid_until: string | null;
   checkout_url: string | null;
   can_cancel: boolean;
+  payment_status?: "approved" | "rejected" | "pending" | "in_process" | "canceled" | null;
+  payment_status_detail?: "cc_rejected_high_risk" | null;
 };
 
-export function canEnterCard(subscription: PremiumSubscription | null): subscription is PremiumSubscription & { subscription_id: string; amount: string } {
-  return subscription?.status === "creating" && Boolean(subscription.subscription_id && subscription.amount);
+export function canContinuePremium(subscription: PremiumSubscription | null, premiumActive: boolean): boolean {
+  return !premiumActive && (!subscription || ["none", "creating", "canceled"].includes(subscription.status) || (subscription.status === "pending" && Boolean(subscription.checkout_url)));
 }
 
 export function premiumStatusMessage(subscription: PremiumSubscription, premiumActive: boolean): string {
   if (premiumActive) return "Premium activado.";
+  if (subscription.status === "canceled") return "La suscripción fue cancelada.";
+  if (subscription.payment_status === "rejected") {
+    return subscription.payment_status_detail === "cc_rejected_high_risk"
+      ? "El pago fue rechazado por una validación de seguridad de Mercado Pago. Probá más tarde o con otro medio de pago."
+      : "El pago fue rechazado por Mercado Pago. Probá otro medio de pago.";
+  }
   switch (subscription.status) {
-    case "creating": return "Ingresá tu tarjeta.";
+    case "creating": return "Continuá con Mercado Pago para completar el alta.";
     case "uncertain": return "Estamos verificando el alta. No intentes crear otra suscripción; contactá a soporte si persiste.";
-    case "pending": return "Esta suscripción anterior sigue pendiente en Mercado Pago. Verificá su estado o contactá a soporte.";
-    case "authorized": return "Tarjeta autorizada. Esperando confirmación del cobro.";
+    case "pending": return "Completá el pago en Mercado Pago.";
+    case "authorized": return "Suscripción autorizada. Esperando confirmación del cobro.";
     case "paused": return "La suscripción está pausada en Mercado Pago.";
-    case "canceled": return "La suscripción fue cancelada.";
     default: return "Todavía no hay una suscripción activa.";
   }
 }
@@ -55,12 +62,12 @@ async function billingRequest<T>(path: string, method: "GET" | "POST", ownerId: 
     if (code === "subscription_already_exists") throw new Error("Ya hay una suscripción en curso para esta cuenta.");
     if (code === "already_premium") throw new Error("Esta cuenta ya tiene Premium activo.");
     if (code === "subscription_creation_unconfirmed") throw new Error("Estamos verificando el alta anterior. Contactá a soporte antes de volver a suscribirte.");
-    if (code === "subscription_not_found" || code === "subscription_not_creating" || code === "subscription_not_pending") throw new Error("Este intento ya no está disponible para ingresar la tarjeta. Verificá su estado.");
-    if (code === "invalid_card_token") throw new Error("No se pudo validar la tarjeta. Volvé a ingresarla.");
     if (code === "mercadopago_not_configured" || code === "billing_price_not_configured") throw new Error("Los pagos todavía no están disponibles.");
     throw new Error("No se pudo verificar la suscripción. Probá otra vez más tarde.");
   }
-  return await response.json() as T;
+  const result = await response.json() as T;
+  if (getActiveOwnerId() !== ownerId) throw new Error("Cambió la cuenta activa. Volvé a intentar.");
+  return result;
 }
 
 export async function getPremiumSubscription(ownerId: string): Promise<PremiumSubscription> {
@@ -71,11 +78,45 @@ export async function startPremiumSubscription(ownerId: string): Promise<Premium
   return billingRequest("/billing/subscription", "POST", ownerId);
 }
 
-export async function authorizePremiumSubscription(ownerId: string, subscriptionId: string, cardTokenId: string): Promise<PremiumSubscription> {
-  if (!/^[0-9a-fA-F-]{36}$/.test(subscriptionId) || !/^[A-Za-z0-9_-]{8,200}$/.test(cardTokenId)) {
-    throw new Error("No se pudo validar la tarjeta. Volvé a ingresarla.");
+function isDesktop(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+// Reserve the browser tab during the click, before awaiting the backend response.
+export function preparePremiumCheckoutWindow(): Window | null {
+  if (typeof window === "undefined" || isDesktop()) return null;
+  const tab = window.open("about:blank", "_blank");
+  if (tab) tab.opener = null;
+  return tab;
+}
+
+export async function openPremiumCheckout(ownerId: string, subscription: PremiumSubscription, tab: Window | null = null): Promise<void> {
+  try {
+    if (ownerId === "local" || getActiveOwnerId() !== ownerId || getActiveAccount()?.user.id !== ownerId) throw new Error("Cambió la cuenta activa. Volvé a intentar.");
+    const raw = subscription.checkout_url || "";
+    const url = new URL(raw);
+    if (subscription.status !== "pending" || raw !== raw.trim() || /[\\\s]/.test(raw)
+      || url.protocol !== "https:" || !["www.mercadopago.com.ar", "www.mercadopago.com"].includes(url.host)
+      || url.username || url.password || url.pathname !== "/subscriptions/checkout" || url.hash
+      || url.searchParams.getAll("preapproval_id").length !== 1 || !/^[A-Za-z0-9_-]{1,100}$/.test(url.searchParams.get("preapproval_id") || "")
+      || url.searchParams.has("preapproval_plan_id")) throw new Error("invalid_checkout");
+    if (isDesktop()) {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      if (getActiveOwnerId() !== ownerId) throw new Error("account_changed");
+      await openUrl(raw);
+    } else {
+      const checkoutTab = tab || preparePremiumCheckoutWindow();
+      if (checkoutTab) {
+        checkoutTab.opener = null;
+        checkoutTab.location.replace(raw);
+      } else {
+        window.location.assign(raw);
+      }
+    }
+  } catch {
+    tab?.close();
+    throw new Error("No se pudo abrir el checkout de Mercado Pago. Verificá la cuenta activa y probá otra vez.");
   }
-  return billingRequest(`/billing/subscription/${subscriptionId}/authorize`, "POST", ownerId, { card_token_id: cardTokenId });
 }
 
 export async function refreshPremiumSubscription(ownerId: string): Promise<PremiumSubscription> {

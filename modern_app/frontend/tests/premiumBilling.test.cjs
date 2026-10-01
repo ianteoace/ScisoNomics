@@ -36,116 +36,151 @@ require.cache[cloudAuthPath] = {
 };
 process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL = "https://cloud.test";
 const billing = require("../services/premiumBilling.ts");
-const { MercadoPagoCardForm } = require("../components/billing/MercadoPagoCardForm.tsx");
+const { PremiumCheckout } = require("../components/billing/PremiumCheckout.tsx");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const subscriptionId = "11111111-2222-4333-8444-555555555555";
+const checkoutUrl = "https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id=provider123";
+const pending = { status: "pending", subscription_id: subscriptionId, amount: "4500.00", paid_until: null, checkout_url: checkoutUrl, can_cancel: true };
+const opened = [];
+const openerPath = require.resolve("@tauri-apps/plugin-opener");
+require.cache[openerPath] = { id: openerPath, filename: openerPath, loaded: true, exports: { openUrl: async (url) => opened.push(url) } };
 
-test("start returns local creating intent for active internal owner", async (t) => {
+function account() {
   activeOwner = owner;
   token = "access-test-only";
+}
+
+function browser() {
+  const navigated = [];
+  const tab = { opener: "original-opener", location: { replace: (url) => navigated.push(url) }, close: () => { tab.closed = true; }, closed: false };
+  global.window = { open: () => tab, location: { assign: (url) => navigated.push(url) } };
+  return { tab, navigated };
+}
+
+test("start returns an individual pending checkout for the internal owner", async (t) => {
+  account();
   const calls = [];
   global.fetch = t.mock.fn(async (url, options) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ status: "creating", subscription_id: subscriptionId, amount: "4500.00" }) };
+    return { ok: true, json: async () => pending };
   });
   const result = await billing.startPremiumSubscription(owner);
+  assert.equal(result.status, "pending");
   assert.equal(result.subscription_id, subscriptionId);
-  assert.equal(result.status, "creating");
+  assert.equal(result.checkout_url, checkoutUrl);
   assert.equal(calls[0].url, "https://cloud.test/billing/subscription");
   assert.equal(calls[0].options.headers.Authorization, "Bearer access-test-only");
   assert.equal(calls[0].options.body, undefined);
 });
 
-test("card token is sent only to the owned subscription endpoint", async (t) => {
-  activeOwner = owner;
-  token = "access-test-only";
-  const calls = [];
-  global.fetch = t.mock.fn(async (url, options) => {
-    calls.push({ url, options });
-    return { ok: true, json: async () => ({ status: "authorized", paid_until: null }) };
-  });
-  const result = await billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678");
-  assert.equal(result.status, "authorized");
-  assert.equal(result.paid_until, null);
-  assert.equal(calls[0].url, `https://cloud.test/billing/subscription/${subscriptionId}/authorize`);
-  assert.equal(calls[0].options.body, JSON.stringify({ card_token_id: "cardtoken12345678" }));
-  assert.equal(calls[0].options.headers.Authorization, "Bearer access-test-only");
-  activeOwner = "other-internal-owner";
-  await assert.rejects(billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678"), /cuenta cloud activa/);
-  assert.equal(calls.length, 1);
+test("Premium UI offers Mercado Pago checkout and no card fields", () => {
+  const html = renderToStaticMarkup(React.createElement(PremiumCheckout, { subscription: pending, premiumActive: false, local: false, busy: false, onContinue: () => {} }));
+  assert.match(html, /Continuar con Mercado Pago/);
+  assert.match(html, /mes/);
+  assert.match(html, /Pago seguro procesado por Mercado Pago/);
+  assert.doesNotMatch(html, /<input|<iframe|card-token|mp-card/);
+  for (const subscription of [{ ...pending, status: "uncertain" }, { ...pending, status: "authorized" }]) {
+    const disabled = renderToStaticMarkup(React.createElement(PremiumCheckout, { subscription, premiumActive: false, local: false, busy: false, onContinue: () => {} }));
+    assert.doesNotMatch(disabled, /<button/);
+  }
 });
 
-test("tokenization form renders provider-owned card fields", () => {
-  const html = renderToStaticMarkup(React.createElement(MercadoPagoCardForm, { amount: "4500.00", onToken: async () => {}, onError: () => {} }));
-  assert.match(html, /id="mp-card-number"/);
-  assert.match(html, /id="mp-card-security"/);
-  assert.doesNotMatch(html, /<input[^>]+(?:card-number|card-security)/);
-  assert.match(html, /Confirmar tarjeta/);
+test("local mode and active Premium have no checkout CTA", () => {
+  for (const props of [{ local: true, premiumActive: false }, { local: false, premiumActive: true }]) {
+    const html = renderToStaticMarkup(React.createElement(PremiumCheckout, { subscription: pending, busy: false, onContinue: () => {}, ...props }));
+    assert.doesNotMatch(html, /<button/);
+  }
 });
 
-test("refresh and cancel remain scoped to active account", async (t) => {
-  activeOwner = owner;
+test("web reserves a tab before the request and opens the validated checkout without an opener", async () => {
+  account();
+  const { tab, navigated } = browser();
+  const reserved = billing.preparePremiumCheckoutWindow();
+  assert.equal(reserved, tab);
+  assert.equal(tab.opener, null);
+  await billing.openPremiumCheckout(owner, pending, reserved);
+  assert.deepEqual(navigated, [checkoutUrl]);
+  assert.equal(tab.closed, false);
+});
+
+test("desktop opens checkout using the official Tauri opener", async () => {
+  account();
+  global.window = { __TAURI_INTERNALS__: {} };
+  assert.equal(billing.preparePremiumCheckoutWindow(), null);
+  const before = opened.length;
+  await billing.openPremiumCheckout(owner, pending);
+  assert.deepEqual(opened.slice(before), [checkoutUrl]);
+});
+
+test("blocked browser popup uses safe same-tab navigation", async () => {
+  account();
+  const navigated = [];
+  global.window = { open: () => null, location: { assign: (url) => navigated.push(url) } };
+  await billing.openPremiumCheckout(owner, pending);
+  assert.deepEqual(navigated, [checkoutUrl]);
+});
+
+test("invalid checkout or owner change cannot navigate and closes the reserved tab", async () => {
+  account();
+  for (const url of ["https://evil.test/", checkoutUrl.replace("https", "http"), checkoutUrl + "&preapproval_id=other", checkoutUrl + "&preapproval_plan_id=plan", checkoutUrl + "#fragment", checkoutUrl.replace("www.", "user@www.")]) {
+    const { tab, navigated } = browser();
+    await assert.rejects(billing.openPremiumCheckout(owner, { ...pending, checkout_url: url }, tab));
+    assert.equal(tab.closed, true);
+    assert.deepEqual(navigated, []);
+  }
+  const { tab, navigated } = browser();
+  activeOwner = "another-owner";
+  await assert.rejects(billing.openPremiumCheckout(owner, pending, tab));
+  assert.equal(tab.closed, true);
+  assert.deepEqual(navigated, []);
+});
+
+test("checkout eligibility blocks uncertain and reuses the existing pending link", () => {
+  assert.equal(billing.canContinuePremium(pending, false), true);
+  assert.equal(billing.canContinuePremium({ ...pending, status: "uncertain" }, false), false);
+  assert.equal(billing.canContinuePremium({ ...pending, status: "authorized" }, false), false);
+  assert.equal(billing.canContinuePremium({ ...pending, checkout_url: null }, false), false);
+  assert.equal(billing.canContinuePremium(pending, true), false);
+});
+
+test("status messages use the real entitlement and verified rejection detail", () => {
+  assert.match(billing.premiumStatusMessage(pending, false), /Mercado Pago/);
+  assert.match(billing.premiumStatusMessage({ ...pending, status: "authorized" }, false), /Esperando/);
+  assert.match(billing.premiumStatusMessage({ ...pending, status: "authorized", payment_status: "approved" }, false), /Esperando/);
+  assert.equal(billing.premiumStatusMessage(pending, true), "Premium activado.");
+  assert.match(billing.premiumStatusMessage({ ...pending, payment_status: "rejected" }, false), /rechazado.*otro medio/);
+  assert.match(billing.premiumStatusMessage({ ...pending, payment_status: "rejected", payment_status_detail: "cc_rejected_high_risk" }, false), /seguridad de Mercado Pago/);
+  assert.match(billing.premiumStatusMessage({ ...pending, status: "uncertain" }, false), /No intentes crear otra/);
+  assert.match(billing.premiumStatusMessage({ ...pending, status: "canceled" }, false), /cancelada/);
+});
+
+test("refresh and cancel are scoped to the active account", async (t) => {
+  account();
   const paths = [];
   global.fetch = t.mock.fn(async (url) => {
     paths.push(url);
-    return { ok: true, json: async () => ({ status: "authorized", paid_until: "2026-11-01T00:00:00Z" }) };
+    return { ok: true, json: async () => ({ ...pending, status: "authorized", paid_until: "2026-11-01T00:00:00Z" }) };
   });
   assert.equal((await billing.refreshPremiumSubscription(owner)).status, "authorized");
-  assert.equal((await billing.cancelPremiumSubscription(owner)).status, "authorized");
+  await billing.cancelPremiumSubscription(owner);
   assert.deepEqual(paths, ["https://cloud.test/billing/subscription/refresh", "https://cloud.test/billing/subscription/cancel"]);
-  activeOwner = "other-internal-owner";
-  await assert.rejects(billing.refreshPremiumSubscription(owner), /cuenta cloud activa/);
+  activeOwner = "other-owner";
+  await assert.rejects(billing.refreshPremiumSubscription(owner));
   assert.equal(paths.length, 2);
 });
 
-test("pending subscription stays pending until the backend confirms payment", async (t) => {
-  activeOwner = owner;
-  token = "access-test-only";
-  global.fetch = t.mock.fn(async () => ({ ok: true, json: async () => ({ status: "pending", paid_until: null, subscription_id: subscriptionId, amount: "4500.00", can_cancel: true }) }));
-  const status = await billing.getPremiumSubscription(owner);
-  assert.equal(status.status, "pending");
-  assert.equal(status.paid_until, null);
-});
-
-test("status copy distinguishes card entry, authorized without payment, Premium and historical pending", () => {
-  const state = { subscription_id: subscriptionId, amount: "4500.00", paid_until: null, checkout_url: null, can_cancel: false };
-  assert.equal(billing.premiumStatusMessage({ ...state, status: "creating" }, false), "Ingresá tu tarjeta.");
-  assert.equal(billing.premiumStatusMessage({ ...state, status: "authorized" }, false), "Tarjeta autorizada. Esperando confirmación del cobro.");
-  assert.equal(billing.premiumStatusMessage({ ...state, status: "authorized" }, true), "Premium activado.");
-  assert.match(billing.premiumStatusMessage({ ...state, status: "pending" }, false), /anterior sigue pendiente/);
-  assert.match(billing.premiumStatusMessage({ ...state, status: "uncertain" }, false), /No intentes crear otra/);
-  assert.match(billing.premiumStatusMessage({ ...state, status: "canceled" }, false), /cancelada/);
-});
-
-test("card entry requires a complete local creating intent", () => {
-  const state = { subscription_id: subscriptionId, amount: "4500.00", paid_until: null, checkout_url: null, can_cancel: false };
-  assert.equal(billing.canEnterCard({ ...state, status: "creating" }), true);
-  assert.equal(billing.canEnterCard({ ...state, status: "pending" }), false);
-  assert.equal(billing.canEnterCard({ ...state, status: "authorized" }), false);
-  assert.equal(billing.canEnterCard({ ...state, status: "creating", subscription_id: null }), false);
-  assert.equal(billing.canEnterCard(null), false);
-});
-
-test("network and pending errors are clear without exposing tokens", async (t) => {
-  activeOwner = owner;
+test("network and uncertainty errors never expose provider bodies or access tokens", async (t) => {
+  account();
   token = "private-test-token";
-  global.fetch = t.mock.fn(async () => { throw new Error("private-test-token"); });
+  global.fetch = t.mock.fn(async () => { throw new Error(token); });
   await assert.rejects(billing.refreshPremiumSubscription(owner), (error) => !error.message.includes(token));
-  global.fetch = t.mock.fn(async () => ({ ok: false, json: async () => ({ detail: { code: "subscription_creation_unconfirmed" } }) }));
-  await assert.rejects(billing.startPremiumSubscription(owner), /Contactá a soporte/);
-  global.fetch = t.mock.fn(async () => ({ ok: false, json: async () => ({ detail: { code: "invalid_card_token", provider_body: "secret-card-data" } }) }));
-  await assert.rejects(billing.authorizePremiumSubscription(owner, subscriptionId, "cardtoken12345678"), (error) => !error.message.includes("secret-card-data") && /Volvé a ingresarla/.test(error.message));
-  token = "";
-  await assert.rejects(billing.getPremiumSubscription(owner), /sesión cloud/);
+  global.fetch = t.mock.fn(async () => ({ ok: false, json: async () => ({ detail: { code: "subscription_creation_unconfirmed", provider_body: "secret-provider-data" } }) }));
+  await assert.rejects(billing.startPremiumSubscription(owner), (error) => !error.message.includes("secret-provider-data") && /soporte/.test(error.message));
 });
 
-test("a late provider response cannot be applied to another owner", async (t) => {
-  activeOwner = owner;
-  token = "access-test-only";
-  global.fetch = t.mock.fn(async () => {
-    activeOwner = "other-internal-owner";
-    return { ok: true, json: async () => ({ status: "authorized" }) };
-  });
-  await assert.rejects(billing.refreshPremiumSubscription(owner), /Cambió la cuenta activa/);
+test("a late response after JSON parsing cannot be applied to another owner", async (t) => {
+  account();
+  global.fetch = t.mock.fn(async () => ({ ok: true, json: async () => { activeOwner = "other-owner"; return pending; } }));
+  await assert.rejects(billing.refreshPremiumSubscription(owner));
 });
