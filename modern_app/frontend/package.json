@@ -16,7 +16,7 @@
     "release:windows": "npm run tauri:build && npm run updater:manifest"
   },
   "scisonomicsDependencyNotes": {
-    "nextBundledPostcss": "next@16.2.6 empaqueta postcss@8.4.31 con una vulnerabilidad moderada conocida. npm no ofrece un override efectivo; actualizar cuando Next publique el fix upstream."
+    "nextBundledPostcss": "next@16.3.8 incluye postcss@8.5.23 y reemplaza postcss@8.4.31 de next@16.2.6, que tenía una vulnerabilidad moderada conocida."
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
@@ -27,7 +27,7 @@
     "@tauri-apps/plugin-updater": "2.10.1",
     "framer-motion": "^11.3.19",
     "lucide-react": "^0.511.0",
-    "next": "16.2.6",
+    "next": "16.3.8",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "recharts": "2.12.7",
