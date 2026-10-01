@@ -2061,7 +2061,14 @@ async def authorize_billing_subscription(local_subscription_id: str, request: Re
         raise HTTPException(status_code=422, detail={"code": "invalid_card_token"})
     provider_id = row["provider_subscription_id"]
     try:
-        mp_billing.request("PUT", f"/preapproval/{mp_billing._resource_id(provider_id)}", payload={"card_token_id": card_token_id})
+        mp_billing.request(
+    "PUT",
+    f"/preapproval/{mp_billing._resource_id(provider_id)}",
+    payload={
+        "card_token_id": card_token_id,
+        "status": "authorized",
+    },
+)
         # GET verifies the provider reference and amount; no invoice means no Premium grant.
         with connect() as conn:
             result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), expected_subscription_id=local_subscription_id)

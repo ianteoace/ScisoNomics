@@ -123,7 +123,14 @@ class MercadoPagoBillingTests(unittest.TestCase):
             response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["status"], "authorized")
-        update.assert_called_once_with("PUT", f"/preapproval/{PROVIDER_ID}", payload={"card_token_id": "cardtoken12345678"})
+        update.assert_called_once_with(
+    "PUT",
+    f"/preapproval/{PROVIDER_ID}",
+    payload={
+        "card_token_id": "cardtoken12345678",
+        "status": "authorized",
+    },
+)
         with db.connect() as conn:
             user = conn.execute("SELECT id,plan,subscription_status,billing_source FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
             row = conn.execute("SELECT user_id,status,paid_until,external_reference FROM billing_subscriptions WHERE id = ?", (subscription_id,)).fetchone()
