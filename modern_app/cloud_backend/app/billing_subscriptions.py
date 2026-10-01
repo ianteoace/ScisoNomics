@@ -41,15 +41,22 @@ def validate_created_preapproval(provider: dict, intent, payer_email: str) -> st
     """Accept only an authorized subscription for this exact local intent."""
     provider_id = str(provider.get("id") or "")
     recurring = provider.get("auto_recurring")
-    if (not mp.RESOURCE_ID.fullmatch(provider_id)
-            or provider.get("external_reference") != intent["external_reference"]
-            # The create API does not promise payer_email in its response.
-            or (provider.get("payer_email") is not None and str(provider["payer_email"]).casefold() != payer_email.casefold())
-            or provider.get("status") != "authorized"
-            or not isinstance(recurring, dict)
-            or recurring.get("currency_id") != intent["currency"]
-            or _amount(recurring.get("transaction_amount")) != intent["amount"]):
+    provider_payer_email = str(provider.get("payer_email") or "").strip()
+
+    if (
+        not mp.RESOURCE_ID.fullmatch(provider_id)
+        or provider.get("external_reference") != intent["external_reference"]
+        or (
+            provider_payer_email
+            and provider_payer_email.casefold() != payer_email.casefold()
+        )
+        or provider.get("status") != "authorized"
+        or not isinstance(recurring, dict)
+        or recurring.get("currency_id") != intent["currency"]
+        or _amount(recurring.get("transaction_amount")) != intent["amount"]
+    ):
         raise mp.MercadoPagoError("mercadopago_invalid_response")
+
     return provider_id
 
 

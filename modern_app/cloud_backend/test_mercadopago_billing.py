@@ -172,6 +172,85 @@ class MercadoPagoBillingTests(unittest.TestCase):
         with patch.object(mp, "request", return_value=provider), patch.object(mp, "get_subscription", return_value=provider):
             response = self.client.post(f"/billing/subscription/{subscription_id}/authorize", headers=self.auth(), json={"card_token_id": "cardtoken12345678"})
         self.assertEqual(response.status_code, 200, response.text)
+    
+    def test_create_response_accepts_empty_payer_email(self):
+        self.insert_user()
+        self.configured()
+
+        subscription_id = self.start()["subscription_id"]
+
+        provider = {
+            **self.provider(),
+            "payer_email": "",
+        }
+
+        with (
+            patch.object(mp, "request", return_value=provider),
+            patch.object(mp, "get_subscription", return_value=provider),
+        ):
+            response = self.client.post(
+                f"/billing/subscription/{subscription_id}/authorize",
+                headers=self.auth(),
+                json={"card_token_id": "cardtoken12345678"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "authorized")
+
+        with db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, provider_subscription_id
+                FROM billing_subscriptions
+                WHERE id = ?
+                """,
+                (subscription_id,),
+            ).fetchone()
+
+        self.assertEqual(row["status"], "authorized")
+        self.assertEqual(row["provider_subscription_id"], PROVIDER_ID)
+
+    def test_create_response_rejects_different_nonempty_payer_email(self):
+        self.insert_user()
+        self.configured()
+
+        subscription_id = self.start()["subscription_id"]
+
+        provider = {
+            **self.provider(),
+            "payer_email": "other-payer@example.com",
+        }
+
+        with (
+            patch.object(mp, "request", return_value=provider),
+            patch.object(mp, "get_subscription") as lookup,
+        ):
+            response = self.client.post(
+                f"/billing/subscription/{subscription_id}/authorize",
+                headers=self.auth(),
+                json={"card_token_id": "cardtoken12345678"},
+            )
+
+        self.assertEqual(response.status_code, 502, response.text)
+        self.assertEqual(
+            response.json()["detail"]["code"],
+            "mercadopago_invalid_response",
+        )
+
+        lookup.assert_not_called()
+
+        with db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status, provider_subscription_id
+                FROM billing_subscriptions
+                WHERE id = ?
+                """,
+                (subscription_id,),
+            ).fetchone()
+
+        self.assertEqual(row["status"], "uncertain")
+        self.assertIsNone(row["provider_subscription_id"])
 
     def test_duplicate_authorization_never_posts_again(self):
         self.insert_user()
