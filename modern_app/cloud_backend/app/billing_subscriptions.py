@@ -158,10 +158,29 @@ def record_approved_invoice(conn, provider_id: str, invoice: dict, *, now: str) 
 
 
 def newest_approved_invoice(provider_id: str) -> dict | None:
-    result = mp.request("GET", "/authorized_payments/search", params={"preapproval_id": provider_id, "limit": 20})
+    result = mp.request(
+        "GET",
+        "/authorized_payments/search",
+        params={"preapproval_id": provider_id},
+    )
+
     invoices = result.get("results")
+
     if not isinstance(invoices, list):
         raise mp.MercadoPagoError("mercadopago_invalid_response")
-    approved = [item for item in invoices if isinstance(item, dict) and isinstance(item.get("payment"), dict)
-                and item["payment"].get("status") == "approved" and str(item.get("preapproval_id")) == provider_id]
-    return max(approved, key=lambda item: _parse_date(item.get("debit_date")) or datetime.min.replace(tzinfo=timezone.utc), default=None)
+
+    approved = [
+        item
+        for item in invoices
+        if isinstance(item, dict)
+        and isinstance(item.get("payment"), dict)
+        and item["payment"].get("status") == "approved"
+        and str(item.get("preapproval_id")) == provider_id
+    ]
+
+    return max(
+        approved,
+        key=lambda item: _parse_date(item.get("debit_date"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        default=None,
+    )
