@@ -12,6 +12,7 @@ import logging
 import os
 import re
 from decimal import Decimal, InvalidOperation
+from time import time
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -88,13 +89,24 @@ def webhook_secret() -> str:
 
 
 def verify_webhook_signature(*, signature: str, request_id: str, data_id: str) -> bool:
-    """Validate the official x-signature manifest using query-string data.id."""
+    """Validate freshness and the official manifest using query-string data.id."""
     if (not signature or len(signature) > 300 or not request_id or len(request_id) > 200
             or not RESOURCE_ID.fullmatch(data_id)):
         return False
     parts = dict(part.strip().split("=", 1) for part in signature.split(",") if "=" in part)
     ts, actual = parts.get("ts", ""), parts.get("v1", "")
-    if not ts.isdigit() or not re.fullmatch(r"[a-fA-F0-9]{64}", actual):
+    # Bound ASCII integer parsing; milliseconds, signs and huge values are invalid.
+    if not re.fullmatch(r"[0-9]{1,10}", ts) or not re.fullmatch(r"[a-fA-F0-9]{64}", actual):
+        return False
+    max_age_raw = os.getenv("SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS", "300").strip()
+    # Fail closed on invalid configuration; never permit an unbounded replay window.
+    if not re.fullmatch(r"[0-9]{1,5}", max_age_raw):
+        return False
+    max_age = int(max_age_raw)
+    timestamp, now = int(ts), int(time())
+    if not 1 <= max_age <= 86400 or timestamp <= 0:
+        return False
+    if timestamp < now - max_age or timestamp > now + 60:
         return False
     # Mercado Pago's validator normalizes upper-case resource IDs to lower-case.
     manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};"

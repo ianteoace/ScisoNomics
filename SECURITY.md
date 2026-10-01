@@ -35,6 +35,7 @@ produccion fuera de Git; no copiarlas a ejemplos, issues ni resultados publicado
 - Rate limiting por IP e identidad para autenticacion, administracion y sincronizacion.
 - Segundo factor TOTP obligatorio para administradores en produccion.
 - Registro de eventos sensibles en `security_audit_log` sin tokens ni datos financieros.
+- Webhooks de Mercado Pago con HMAC y `compare_digest`, timestamp firmado con antiguedad maxima configurable de 300 segundos por defecto y tolerancia futura fija de 60 segundos. Firmas fuera de la ventana reciben 401. La idempotencia por `billing_webhook_events` se mantiene y Mercado Pago sigue siendo la fuente de verdad antes de actualizar Premium; la firma sola no acredita un pago.
 - Limites de cuerpo, cantidad de registros y longitudes en sincronizacion.
 - Refresh tokens persistentes guardados en el almacen seguro del sistema operativo.
 - Backups portables cifrados con AES-256-GCM y clave derivada mediante scrypt.

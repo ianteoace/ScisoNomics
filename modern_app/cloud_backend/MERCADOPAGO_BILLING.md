@@ -23,6 +23,7 @@ Backend cloud:
 - `SCISONOMICS_MERCADOPAGO_ACCESS_TOKEN`: credencial privada de la aplicación vendedora; nunca en frontend.
 - `SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS`: precio mensual fijo positivo, con hasta dos decimales. La UI recibe el precio del backend.
 - `SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET`: secreto de Webhooks de esa aplicación.
+- `SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS`: antigüedad máxima del timestamp firmado, en segundos; default `300`, rango permitido `1..86400`. La tolerancia futura es fija: `60` segundos. Una configuración inválida rechaza la firma; no desactiva la ventana.
 - `SCISONOMICS_PUBLIC_API_URL`: origen HTTPS público del backend. El retorno es `<origen>/billing/return`.
 - `SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL`: comprador TEST obligatorio cuando el Access Token comienza con `TEST-`. El backend valida el formato antes de crear el intento. Con credenciales de producción utiliza el email real interno y no usa esta sustitución.
 
@@ -34,7 +35,9 @@ Registrar `<origen>/billing/webhooks/mercadopago` en **Tus integraciones → Web
 
 ## Reconciliación, pagos y estados
 
-El webhook valida HMAC de `x-signature`, ID de URL/body y consulta preapproval/factura. La fila se localiza por ID remoto verificado o referencia individual exacta; una referencia contradictoria se rechaza. Los eventos se deduplican y auditan. La notificación de preapproval también busca cuotas, para recuperar aprobaciones si no llegó su notificación específica.
+El webhook valida HMAC de `x-signature` con `compare_digest` y exige frescura del `ts` firmado. `ts` debe ser un entero ASCII positivo de hasta 10 dígitos, expresado como timestamp Unix en segundos. Con la configuración por defecto se acepta `now - 300 <= ts <= now + 60`, incluidos ambos límites; valores ausentes, malformados, antiguos o excesivamente futuros reciben HTTP 401, antes de procesar el evento. El reloj del servidor debe mantenerse sincronizado. No se registran el secreto, la firma completa ni el Access Token en errores.
+
+Además se comprueba el ID de URL/body y se consulta Mercado Pago como fuente de verdad para preapproval/factura antes de actualizar Premium; una firma reciente no demuestra que un pago esté aprobado. La fila se localiza por ID remoto verificado o referencia individual exacta; una referencia contradictoria se rechaza. La idempotencia de `billing_webhook_events` por `event_key` se conserva: una repetición válida dentro de la ventana no vuelve a procesarse. Los eventos se auditan. La notificación de preapproval también busca cuotas, para recuperar aprobaciones si no llegó su notificación específica.
 
 La búsqueda `/authorized_payments/search` distingue la última cuota de la última cuota aprobada. Los datos públicos del cobro se limitan al estado conocido y `cc_rejected_high_risk` cuando corresponde; no se devuelven cuerpos del proveedor. La fecha del último cobro impide que un evento más antiguo reemplace su resultado visible.
 

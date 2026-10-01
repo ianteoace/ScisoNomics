@@ -18,6 +18,81 @@ from modern_app.cloud_backend.test_supabase_auth import INTERNAL_ID
 
 PROVIDER_ID = "provider-123"
 CHECKOUT = f"https://www.mercadopago.com.ar/subscriptions/checkout?preapproval_id={PROVIDER_ID}"
+WEBHOOK_NOW = 1700000000
+
+
+def signed_webhook_headers(ts=str(WEBHOOK_NOW), data_id=PROVIDER_ID):
+    request_id = "request-123"
+    manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};".encode()
+    signature = hmac.new(b"webhook-test-secret", manifest, hashlib.sha256).hexdigest()
+    return {"x-request-id": request_id, "x-signature": f"ts={ts},v1={signature}"}
+
+
+class WebhookSignatureTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {
+            "SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET": "webhook-test-secret",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS", None)
+        clock = patch.object(mp, "time", return_value=WEBHOOK_NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def verify(self, ts):
+        headers = signed_webhook_headers(ts)
+        return mp.verify_webhook_signature(signature=headers["x-signature"],
+                                           request_id=headers["x-request-id"], data_id=PROVIDER_ID)
+
+    def test_current_timestamp_is_valid(self):
+        self.assertTrue(self.verify(str(WEBHOOK_NOW)))
+
+    def test_timestamp_within_max_age_is_valid(self):
+        self.assertTrue(self.verify(str(WEBHOOK_NOW - 299)))
+
+    def test_exact_max_age_is_valid(self):
+        self.assertTrue(self.verify(str(WEBHOOK_NOW - 300)))
+
+    def test_cryptographically_valid_old_signature_is_rejected(self):
+        self.assertFalse(self.verify(str(WEBHOOK_NOW - 301)))
+
+    def test_future_timestamp_within_tolerance_is_valid(self):
+        self.assertTrue(self.verify(str(WEBHOOK_NOW + 59)))
+
+    def test_exact_future_tolerance_is_valid(self):
+        self.assertTrue(self.verify(str(WEBHOOK_NOW + 60)))
+
+    def test_excessively_future_timestamp_is_rejected(self):
+        self.assertFalse(self.verify(str(WEBHOOK_NOW + 61)))
+
+    def test_missing_timestamp_is_rejected(self):
+        signature = signed_webhook_headers()["x-signature"].split(",", 1)[1]
+        self.assertFalse(mp.verify_webhook_signature(signature=signature, request_id="request-123", data_id=PROVIDER_ID))
+
+    def test_malformed_or_unreasonable_timestamp_is_rejected(self):
+        for ts in ("", "abc", "1.7e9", "1700000000.0", "+1700000000", "-1", "0",
+                   "１７００００００００", "9999999999", "1700000000000", "9" * 200):
+            with self.subTest(ts=ts):
+                self.assertFalse(self.verify(ts))
+
+    def test_configured_max_age_has_inclusive_boundary(self):
+        with patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS": "120"}):
+            self.assertTrue(self.verify(str(WEBHOOK_NOW - 120)))
+            self.assertFalse(self.verify(str(WEBHOOK_NOW - 121)))
+            self.assertFalse(self.verify(str(WEBHOOK_NOW + 61)))
+
+    def test_invalid_max_age_configuration_fails_closed(self):
+        for value in ("", "0", "-1", "abc", "300.0", "86401", "9" * 200):
+            with self.subTest(value=value), patch.dict(os.environ, {"SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS": value}):
+                self.assertFalse(self.verify(str(WEBHOOK_NOW)))
+
+    def test_fresh_timestamp_does_not_bypass_hmac(self):
+        headers = signed_webhook_headers()
+        with patch.object(mp.hmac, "compare_digest", wraps=hmac.compare_digest) as compare:
+            self.assertFalse(mp.verify_webhook_signature(signature=headers["x-signature"],
+                                                        request_id="different-request", data_id=PROVIDER_ID))
+        compare.assert_called_once()
 
 
 class MercadoPagoBillingTests(unittest.TestCase):
@@ -36,6 +111,7 @@ class MercadoPagoBillingTests(unittest.TestCase):
             "SCISONOMICS_MERCADOPAGO_TEST_PAYER_EMAIL": "",
             "SCISONOMICS_MERCADOPAGO_MONTHLY_AMOUNT_ARS": "4500.00",
             "SCISONOMICS_MERCADOPAGO_WEBHOOK_SECRET": "webhook-test-secret",
+            "SCISONOMICS_MERCADOPAGO_WEBHOOK_MAX_AGE_SECONDS": "300",
             "SCISONOMICS_PUBLIC_API_URL": "https://cloud.example.test",
         })
         env.start()
@@ -76,13 +152,11 @@ class MercadoPagoBillingTests(unittest.TestCase):
         return {"id": 123, "preapproval_id": PROVIDER_ID, "currency_id": "ARS", "transaction_amount": "4500.00",
                 "debit_date": datetime.now(timezone.utc).isoformat(), "payment": {"status": status, "status_detail": detail}}
 
-    def webhook(self, topic, data_id, event_id=100):
-        request_id, ts = "request-123", "1700000000"
-        manifest = f"id:{data_id.lower()};request-id:{request_id};ts:{ts};".encode()
-        signature = hmac.new(b"webhook-test-secret", manifest, hashlib.sha256).hexdigest()
-        return self.client.post(f"/billing/webhooks/mercadopago?data.id={data_id}",
-                                headers={"x-request-id": request_id, "x-signature": f"ts={ts},v1={signature}"},
-                                json={"id": event_id, "type": topic, "data": {"id": data_id}})
+    def webhook(self, topic, data_id, event_id=100, ts=str(WEBHOOK_NOW)):
+        with patch.object(mp, "time", return_value=WEBHOOK_NOW):
+            return self.client.post(f"/billing/webhooks/mercadopago?data.id={data_id}",
+                                    headers=signed_webhook_headers(ts, data_id),
+                                    json={"id": event_id, "type": topic, "data": {"id": data_id}})
 
     def test_start_creates_individual_no_plan_checkout_and_no_premium(self):
         self.assertEqual(self.client.post("/billing/subscription").status_code, 401)
@@ -198,9 +272,11 @@ class MercadoPagoBillingTests(unittest.TestCase):
 
     def test_approved_webhook_is_idempotent_and_grants_internal_owner(self):
         self.start()
-        with patch.object(mp, "get_authorized_payment", return_value=self.invoice()), patch.object(mp, "get_subscription", return_value=self.provider()):
+        with patch.object(mp, "get_authorized_payment", return_value=self.invoice()) as payment, patch.object(mp, "get_subscription", return_value=self.provider()) as provider:
             first, second = self.webhook("subscription_authorized_payment", "123"), self.webhook("subscription_authorized_payment", "123")
         self.assertEqual((first.status_code, second.status_code), (200, 200))
+        payment.assert_called_once_with("123")
+        provider.assert_called_once_with(PROVIDER_ID)
         with db.connect() as conn:
             user = conn.execute("SELECT id,plan,billing_source,subscription_expires_at FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()
             self.assertEqual((user["id"], user["plan"], user["billing_source"]), (INTERNAL_ID, "premium", "mercadopago"))
@@ -344,6 +420,21 @@ class MercadoPagoBillingTests(unittest.TestCase):
         with patch.object(mp, "get_subscription", return_value=self.provider(reference="scisonomics:other:wrong")), patch.object(mp, "request", return_value={"results": []}):
             response = self.webhook("subscription_preapproval", PROVIDER_ID)
         self.assertEqual(response.status_code, 409)
+
+    def test_expired_or_future_signed_webhook_returns_401_without_processing(self):
+        self.start()
+        for ts in (str(WEBHOOK_NOW - 301), str(WEBHOOK_NOW + 61)):
+            with self.subTest(ts=ts), patch.object(mp, "get_authorized_payment") as payment, patch.object(mp, "get_subscription") as provider:
+                response = self.webhook("subscription_authorized_payment", "123", ts=ts)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json()["detail"], "Invalid webhook signature")
+                payment.assert_not_called()
+                provider.assert_not_called()
+                for sensitive in ("webhook-test-secret", "APP_USR-test-only", signed_webhook_headers(ts, "123")["x-signature"]):
+                    self.assertNotIn(sensitive, response.text)
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM billing_webhook_events").fetchone()["n"], 0)
+            self.assertEqual(conn.execute("SELECT plan FROM users WHERE id = ?", (INTERNAL_ID,)).fetchone()["plan"], "free")
 
     def test_historical_creating_intent_resumes_with_same_id(self):
         now = datetime.now(timezone.utc).isoformat()
