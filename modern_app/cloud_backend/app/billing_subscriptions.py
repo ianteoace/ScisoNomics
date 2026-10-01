@@ -37,6 +37,22 @@ def _amount(value: Any) -> str:
     return str(amount.quantize(Decimal("0.01")))
 
 
+def validate_created_preapproval(provider: dict, intent, payer_email: str) -> str:
+    """Accept only an authorized subscription for this exact local intent."""
+    provider_id = str(provider.get("id") or "")
+    recurring = provider.get("auto_recurring")
+    if (not mp.RESOURCE_ID.fullmatch(provider_id)
+            or provider.get("external_reference") != intent["external_reference"]
+            # The create API does not promise payer_email in its response.
+            or (provider.get("payer_email") is not None and str(provider["payer_email"]).casefold() != payer_email.casefold())
+            or provider.get("status") != "authorized"
+            or not isinstance(recurring, dict)
+            or recurring.get("currency_id") != intent["currency"]
+            or _amount(recurring.get("transaction_amount")) != intent["amount"]):
+        raise mp.MercadoPagoError("mercadopago_invalid_response")
+    return provider_id
+
+
 def _row(conn, user_id: str):
     return conn.execute(
         "SELECT * FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' ORDER BY created_at DESC LIMIT 1",

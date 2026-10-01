@@ -41,15 +41,17 @@ const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const subscriptionId = "11111111-2222-4333-8444-555555555555";
 
-test("start returns pending subscription for active internal owner", async (t) => {
+test("start returns local creating intent for active internal owner", async (t) => {
   activeOwner = owner;
   token = "access-test-only";
   const calls = [];
   global.fetch = t.mock.fn(async (url, options) => {
     calls.push({ url, options });
-    return { ok: true, json: async () => ({ status: "pending", subscription_id: subscriptionId, amount: "4500.00" }) };
+    return { ok: true, json: async () => ({ status: "creating", subscription_id: subscriptionId, amount: "4500.00" }) };
   });
-  assert.equal((await billing.startPremiumSubscription(owner)).subscription_id, subscriptionId);
+  const result = await billing.startPremiumSubscription(owner);
+  assert.equal(result.subscription_id, subscriptionId);
+  assert.equal(result.status, "creating");
   assert.equal(calls[0].url, "https://cloud.test/billing/subscription");
   assert.equal(calls[0].options.headers.Authorization, "Bearer access-test-only");
   assert.equal(calls[0].options.body, undefined);
@@ -104,6 +106,25 @@ test("pending subscription stays pending until the backend confirms payment", as
   const status = await billing.getPremiumSubscription(owner);
   assert.equal(status.status, "pending");
   assert.equal(status.paid_until, null);
+});
+
+test("status copy distinguishes card entry, authorized without payment, Premium and historical pending", () => {
+  const state = { subscription_id: subscriptionId, amount: "4500.00", paid_until: null, checkout_url: null, can_cancel: false };
+  assert.equal(billing.premiumStatusMessage({ ...state, status: "creating" }, false), "Ingresá tu tarjeta.");
+  assert.equal(billing.premiumStatusMessage({ ...state, status: "authorized" }, false), "Tarjeta autorizada. Esperando confirmación del cobro.");
+  assert.equal(billing.premiumStatusMessage({ ...state, status: "authorized" }, true), "Premium activado.");
+  assert.match(billing.premiumStatusMessage({ ...state, status: "pending" }, false), /anterior sigue pendiente/);
+  assert.match(billing.premiumStatusMessage({ ...state, status: "uncertain" }, false), /No intentes crear otra/);
+  assert.match(billing.premiumStatusMessage({ ...state, status: "canceled" }, false), /cancelada/);
+});
+
+test("card entry requires a complete local creating intent", () => {
+  const state = { subscription_id: subscriptionId, amount: "4500.00", paid_until: null, checkout_url: null, can_cancel: false };
+  assert.equal(billing.canEnterCard({ ...state, status: "creating" }), true);
+  assert.equal(billing.canEnterCard({ ...state, status: "pending" }), false);
+  assert.equal(billing.canEnterCard({ ...state, status: "authorized" }), false);
+  assert.equal(billing.canEnterCard({ ...state, status: "creating", subscription_id: null }), false);
+  assert.equal(billing.canEnterCard(null), false);
 });
 
 test("network and pending errors are clear without exposing tokens", async (t) => {
