@@ -7,7 +7,7 @@ use std::sync::{
   atomic::{AtomicBool, Ordering},
   Arc, Condvar, Mutex,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -20,6 +20,7 @@ use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
 mod device_verification;
+mod local_api_token;
 mod supabase_tokens;
 mod supabase_oauth;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
@@ -89,32 +90,6 @@ struct AppCloseSyncState {
 const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
 const APP_CLOSE_SYNC_TIMEOUT_MS: u64 = 6_000;
 const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS: u64 = 10_000;
-
-#[cfg(target_os = "windows")]
-fn fill_random_bytes(bytes: &mut [u8]) -> bool {
-  #[link(name = "advapi32")]
-  extern "system" {
-    fn SystemFunction036(random_buffer: *mut u8, random_buffer_length: u32) -> u8;
-  }
-  unsafe { SystemFunction036(bytes.as_mut_ptr(), bytes.len() as u32) != 0 }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn fill_random_bytes(_bytes: &mut [u8]) -> bool {
-  false
-}
-
-fn generate_local_api_token() -> String {
-  let mut bytes = [0u8; 32];
-  if fill_random_bytes(&mut bytes) {
-    return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-  }
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map(|value| value.as_nanos())
-    .unwrap_or_default();
-  format!("sciso-{}-{}-{:p}", std::process::id(), nanos, &bytes)
-}
 
 #[tauri::command]
 async fn save_binary_file(app: tauri::AppHandle, file_name: String, extension: String, bytes: Vec<u8>) -> Result<bool, String> {
@@ -963,7 +938,8 @@ pub fn run() {
     timeout_ms: APP_CLOSE_SYNC_TIMEOUT_MS,
   }), Condvar::new())));
   let close_in_progress = Arc::new(AtomicBool::new(false));
-  let local_api_token = generate_local_api_token();
+  let local_api_token = local_api_token::generate()
+    .expect("No se pudo inicializar el servicio local con un token seguro.");
   let setup_backend_child = Arc::clone(&backend_child);
   let close_backend_child = Arc::clone(&backend_child);
   let exit_backend_child = Arc::clone(&backend_child);

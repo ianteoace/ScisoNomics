@@ -777,13 +777,14 @@ export default function ConfiguracionPage() {
           Restaurar copia de seguridad reemplaza tus datos actuales por los datos de la copia seleccionada.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
-          <button className="btn-secondary" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada</button>
+          <button className="btn" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada (recomendada)</button>
+          <button className="btn-secondary" onClick={handleCreateSecurityCopy}>Crear copia sin cifrar</button>
           <button className="btn-secondary" onClick={() => setWindowsProtectionOpen(true)}>Proteger datos con Windows</button>
           <button className="btn-secondary" onClick={handlePickRestoreFile}>Restaurar copia de seguridad</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
         </div>
+        <p className="text-sm text-amber-200">La copia sin cifrar contiene tus datos financieros. Guardala solo en un lugar seguro.</p>
         <details className="rounded-2xl border border-line bg-slate-950/20 p-4 text-sm">
           <summary className="cursor-pointer font-semibold text-slate-200">Detalles técnicos</summary>
           <div className="mt-3 space-y-2 text-slate-400">
@@ -838,7 +839,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Último backup</p>
             <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavía no creaste un backup"}</p>
-            <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente.</p>
+            <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente. Las copias sin cifrar contienen tus datos financieros: guardalas solo en un lugar seguro.</p>
           </div>
         </div>
         {localIntegrity?.status === "critical" || repairModeActive ? (
