@@ -7,6 +7,58 @@ NSIS x64 y contiene **el contenido** de su archivo `.sig`. Tauri compara la
 versión con SemVer y verifica la firma antes de preparar el cierre o instalar.
 El feed no se obtiene por scraping y no necesita servicio adicional.
 
+## Estado y auditoría del updater (2026-10-02)
+
+El provider se monta una vez en el layout del dashboard, fuera del árbol que
+cambia con el owner. Sidebar y navegación no disparan checks. El intento
+automático ocurre a los 2,5 segundos, respeta la preferencia del usuario y se
+omite si ya hubo un check manual. No hay polling. Sin actualización o ante un
+fallo de consulta automático, la UI queda silenciosa.
+
+El estado compartido solo conserva `idle`, `checking`, `available`,
+`downloading`, `preparing`, `installing`, `ready` y `error`. Antes, `up_to_date`
+quedaba en ese contexto y Configuración lo volvía a mostrar al regresar.
+Ahora es únicamente el resultado de una acción manual: «ScisoNomics está
+actualizado.» aparece durante cuatro segundos en Configuración; si se reintenta
+desde un error del banner, aparece como toast temporal. Ambos se limpian al
+navegar o desmontar el componente, incluso si la respuesta llega después.
+Los errores manuales de consulta también son locales y temporales. Solo los
+fallos durante descarga, preparación o instalación quedan como error global.
+La actualización disponible, su progreso y el estado instalado siguen siendo
+globales. No se guarda ningún mensaje ni progreso en storage: únicamente la
+preferencia de check automático y la versión pospuesta.
+
+Checks concurrentes comparten una promesa; descargas e instalaciones también
+se serializan. No se permite comprobar mientras se instala. Al desmontar se
+limpian timers y suscripciones, y se espera a las operaciones activas antes de
+liberar su recurso nativo. Los timeouts nativos son 15 segundos para consultar
+y 5 minutos para descargar. Los errores mostrados son mensajes predefinidos,
+sin propagar URLs, tokens ni detalles crudos del proveedor.
+
+El endpoint es HTTPS y la clave pública embebida coincide con la copia pública
+local auditada. El cliente exige SemVer estricta, una versión superior y un
+asset NSIS x64 del repositorio, tag y nombre esperados. El generador aplica la
+misma sintaxis de versión. Tauri mantiene `allowDowngrades: false` y verifica
+la firma del binario antes de preparar el cierre; una firma inválida bloquea
+la instalación. Esta validación inicial de URL no restringe los redirects
+nativos: el cliente oficial sigue los redirects de GitHub/CDN mediante TLS.
+La firma protege el binario, no firma el JSON ni vincula criptográficamente su
+campo `version`; también debe protegerse la cuenta que publica el feed.
+
+En Windows, el plugin lanza NSIS y termina la app al instalar. No se introduce
+una segunda etapa ficticia «reiniciar para instalar». Si `install()` retorna
+sin terminar el proceso, `ready` indica que se instaló y pide cerrar y reabrir.
+El cierre seguro y la restauración del sidecar ante un fallo siguen usando los
+comandos nativos existentes, sin cambios en Rust ni en sync.
+
+Las versiones de producto auditadas están alineadas en **3.3.0** (package,
+lockfiles, Tauri, Cargo y backend local). El `latest.json` generado que queda
+en el directorio local `target/.../bundle/nsis` corresponde a **3.2.2** y se
+dejó intacto. No debe reutilizarse como manifiesto de 3.3.0: una futura release
+autorizada debe generar sus propios assets y firma. Esta auditoría no publicó
+ni instaló una release, ni accedió a la clave privada. La instalación real y
+su reapertura todavía requieren la prueba de staging descrita más abajo.
+
 La clave pública está en `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
 La clave privada generada para este proyecto está fuera del repo, en
 `%USERPROFILE%\.tauri\scisonomics-updater.key`; su contraseña está cifrada con

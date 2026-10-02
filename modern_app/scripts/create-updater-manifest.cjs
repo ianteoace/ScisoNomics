@@ -7,7 +7,8 @@ const frontend = path.resolve(__dirname, "../frontend");
 const repo = "https://github.com/ianteoace/scisonomics";
 
 function createManifest({ installerPath, version, tag }) {
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error("La version no es SemVer.");
+  const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  if (!semver || version.length > 128 || semver[4]?.split(".").some((part) => /^\d+$/.test(part) && part.length > 1 && part.startsWith("0"))) throw new Error("La version no es SemVer.");
   if (tag !== `v${version}`) throw new Error("El tag debe coincidir con la version del bundle.");
   const expectedName = `ScisoNomics_${version}_x64-setup.exe`;
   if (path.basename(installerPath) !== expectedName) throw new Error(`Se esperaba ${expectedName}.`);
