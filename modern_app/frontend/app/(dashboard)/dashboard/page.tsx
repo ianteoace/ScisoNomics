@@ -86,7 +86,7 @@ export default function DashboardPage() {
         setGastosFijos(gf);
         setMetas(metasRows);
         setPrevious({ ingreso: prev.summary.ingreso, gasto: prev.summary.gasto });
-        setSaldoActual(m.rows.length ? m.rows[0].saldo_acumulado : 0);
+        setSaldoActual(m.summary.saldo_actual);
         setError("");
       } catch (err: any) {
         if (isCurrent()) {

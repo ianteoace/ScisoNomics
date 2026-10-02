@@ -970,8 +970,14 @@ class FinanceService:
         ingresos = float(totals["ingreso"] or 0.0)
         gastos = float(totals["gasto"] or 0.0)
         ahorro = float(totals["ahorro"] or 0.0)
+        next_month = 1 if month == 12 else month + 1
+        next_year = year + 1 if month == 12 else year
+        # Reuse the ledger cutoff: all history through this month, once per movement.
+        # Savings/investments keep the same debit semantics as saldo_acumulado.
+        saldo_actual = self.get_saldo_inicial(next_month, next_year)
         return {
             "saldo_inicial": saldo_inicial,
+            "saldo_actual": saldo_actual,
             "ingreso": ingresos,
             "gasto": gastos,
             "ahorro": ahorro,
