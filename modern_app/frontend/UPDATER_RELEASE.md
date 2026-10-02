@@ -76,6 +76,9 @@ variables `NEXT_PUBLIC_`.
 
 ## Preparar una versión
 
+La versión de desarrollo en preparación es **3.3.1**. Las referencias a
+**3.3.0** en la auditoría fechada arriba describen ese estado histórico.
+
 1. Incrementar juntos las versiones en `package.json`, `package-lock.json`,
    `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`
    y `modern_app/backend/app/main.py`. La primera versión con updater es
