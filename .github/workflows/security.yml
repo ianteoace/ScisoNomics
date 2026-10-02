@@ -144,6 +144,15 @@ jobs:
           python -m pip install pip-audit
       - name: Python security tests
         run: python -m unittest modern_app.cloud_backend.test_security -v
+      - name: Smoke import local backend from clean checkout
+        env:
+          # Import-time logs stay in temporary storage; no server or real app data.
+          LOCALAPPDATA: ${{ runner.temp }}/scisonomics-local-backend-tests
+        run: python -c "import finance_app.services; import modern_app.backend.app.main"
+      - name: Backup and restore validation tests
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}/scisonomics-local-backend-tests
+        run: python -m unittest finance_app.test_restore_validation -v
       - name: Audit Python dependencies
         run: |
           python -m pip_audit -r modern_app/backend/requirements.txt
@@ -156,6 +165,15 @@ jobs:
       - name: Install frontend dependencies
         working-directory: modern_app/frontend
         run: npm ci
+      - name: Frontend auth regression tests
+        working-directory: modern_app/frontend
+        run: npm run test:auth
+      - name: Frontend billing regression tests
+        working-directory: modern_app/frontend
+        run: npm run test:billing
+      - name: Frontend updater regression tests
+        working-directory: modern_app/frontend
+        run: npm run test:updater
       - name: Build frontend
         working-directory: modern_app/frontend
         run: npm run build

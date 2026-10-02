@@ -81,9 +81,18 @@ schedule semanal existente; no se activa por tags. Conserva solo
   secretos configurados de ScisoNomics/Tauri, admin JSON y URLs PostgreSQL.
   Las excepciones cubren solo fixtures ficticios concretos; no se excluyen
   directorios de codigo, tests ni commits completos.
-- `application-security`: tests de seguridad Python, `pip-audit` para ambos
-  requirements, build frontend y `npm audit --omit=dev --audit-level=high`.
-  Vulnerabilidades Python o high/critical de produccion npm hacen fallar CI.
+- `application-security`: tests de seguridad Python, smoke imports del backend
+  local (`finance_app.services` y `modern_app.backend.app.main`) desde el
+  checkout limpio, y `finance_app.test_restore_validation` para backup/restore.
+  El smoke no inicia el servidor ni necesita secretos; los logs de importacion
+  se aislan con `LOCALAPPDATA` dentro de `runner.temp`. Al importar el codigo
+  trackeado y sus dependencias transitivas, CI detecta modulos faltantes aunque
+  existan como archivos no trackeados en la PC del desarrollador.
+  Ejecuta `pip-audit` para ambos requirements y, despues de `npm ci`, las
+  suites frontend `test:auth`, `test:billing` y `test:updater`, el build frontend
+  y `npm audit --omit=dev --audit-level=high`. Imports, tests o build fallidos,
+  vulnerabilidades Python o high/critical de produccion npm hacen fallar CI.
+  No duplica el build del sidecar ni las validaciones Rust del job `rust-tauri`.
 - `rust-tauri`: instala `cargo-audit` 0.22.2 con `--locked` y audita
   `modern_app/frontend/src-tauri/Cargo.lock` sin ignorar advisories. Las
   vulnerabilidades bloquean CI; los warnings permanecen visibles en logs y no
