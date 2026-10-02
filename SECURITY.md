@@ -85,8 +85,9 @@ schedule semanal existente; no se activa por tags. Conserva solo
   requirements, build frontend y `npm audit --omit=dev --audit-level=high`.
   Vulnerabilidades Python o high/critical de produccion npm hacen fallar CI.
 - `rust-tauri`: instala `cargo-audit` 0.22.2 con `--locked` y audita
-  `modern_app/frontend/src-tauri/Cargo.lock` con `--deny warnings`, sin ignorar
-  advisories; conserva checks y tests de Tauri Windows con Rust 1.88.0.
+  `modern_app/frontend/src-tauri/Cargo.lock` sin ignorar advisories. Las
+  vulnerabilidades bloquean CI; los warnings permanecen visibles en logs y no
+  bloquean por si solos. Conserva checks y tests de Tauri Windows con Rust 1.88.0.
 - `device-verification-postgres16`: tests de Device Verification con PostgreSQL 16.
 
 Checkout, setup-python y setup-node estan fijadas por SHA completo, con un
@@ -105,6 +106,19 @@ pushes y deletion. Requerir los checks estables `application-security`,
 `rust-tauri`, `device-verification-postgres16` y `secret-scanning`. Configurarlos
 manualmente despues de que hayan corrido; aplicar una politica equivalente a
 `feature/external-auth` si tambien se desea proteger esa rama.
+
+## Warnings conocidos de dependencias Rust
+
+Revisar periodicamente estos warnings y las actualizaciones compatibles del
+ecosistema Tauri; no representan una lista de advisories ignorados:
+
+- `unic-*`: warnings `unmaintained` via `tauri-utils` / `urlpattern`, tambien
+  presentes en Windows.
+- `proc-macro-error` (`unmaintained`) y `glib` (`unsound` en los iteradores de
+  `VariantStrIter`): dependencias GTK de Linux/BSD, ausentes del target Windows.
+
+Al no usar `--deny warnings`, tanto `unmaintained` como `unsound` se reportan sin
+bloquear CI. Esto no elimina los warnings ni resuelve el problema de `glib`.
 
 ## Respuesta a incidentes
 
