@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ScisoNomics",
   "mainBinaryName": "ScisoNomics",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "identifier": "com.scisonomics.desktop",
   "plugins": {
     "deep-link": {

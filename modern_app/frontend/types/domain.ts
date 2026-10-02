@@ -47,6 +47,7 @@ export type MovimientosResponse = {
   rows: Movimiento[];
   summary: {
     saldo_inicial: number;
+    saldo_actual: number;
     ingreso: number;
     gasto: number;
     ahorro?: number;

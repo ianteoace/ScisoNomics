@@ -84,7 +84,7 @@ export default function MovimientosPage() {
     mergedRows.sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
     const m: MovimientosResponse = {
       rows: mergedRows,
-      summary: { saldo_inicial: 0, ingreso: 0, gasto: 0, balance_final: 0 },
+      summary: { saldo_inicial: 0, saldo_actual: 0, ingreso: 0, gasto: 0, balance_final: 0 },
       visible_count: mergedRows.length,
       visible_total: 0,
     };
@@ -92,7 +92,7 @@ export default function MovimientosPage() {
     setMovimientos(m);
     setCategories(c);
     setMetas(ms);
-    setSaldoActual(m.rows.length ? m.rows[0].saldo_acumulado : 0);
+    setSaldoActual(batches.at(-1)?.summary.saldo_actual ?? 0);
     setLoadError("");
     setLoading(false);
   }
