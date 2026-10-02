@@ -1,7 +1,7 @@
 SCISONOMICS
 TÉRMINOS Y CONDICIONES DE USO Y POLÍTICA DE PRIVACIDAD
 
-Última actualización: 10/07/2026
+Última actualización: 02/10/2026
 Autor / Desarrollador: Ian Acevedo
 Contacto de soporte: scisoftwareco@gmail.com
 País de operación principal: República Argentina
@@ -61,11 +61,13 @@ Las funciones incluidas en cada plan podrán variar con el tiempo, siempre procu
 
 6. Suscripción Premium
 
-El acceso a funciones Premium puede requerir una suscripción activa, pago, activación manual, período de prueba o cualquier otra modalidad comercial que ScisoNomics implemente.
+El acceso a funciones Premium puede requerir una suscripción activa, pago, activación manual, período de prueba, promoción o cualquier otra modalidad comercial que ScisoNomics implemente.
 
-Mientras no exista integración automática de pagos, ScisoNomics podrá activar manualmente el acceso Premium a determinados usuarios, cuentas de prueba, usuarios autorizados o usuarios que hayan completado un proceso comercial por fuera de la aplicación.
+Actualmente, ScisoNomics permite contratar una suscripción Premium mensual mediante Mercado Pago. El proceso de pago se realiza a través de los servicios de Mercado Pago y está sujeto también a sus términos, políticas, disponibilidad y medios de pago habilitados.
 
-En el futuro, ScisoNomics podrá integrar proveedores de pago externos para gestionar suscripciones, pagos, renovaciones, cancelaciones, facturación o estados de cuenta.
+ScisoNomics podrá además otorgar acceso Premium de manera manual a determinados usuarios, cuentas de prueba, promociones, acciones comerciales, soporte, usuarios autorizados u otros casos válidos definidos por el responsable del servicio.
+
+La existencia de una suscripción, pago o autorización no garantiza acceso indefinido a Premium. El acceso dependerá del estado vigente de la suscripción, del período abonado y de las condiciones aplicables.
 
 7. Estado de la suscripción
 
@@ -80,15 +82,19 @@ d. vencido;
 e. cancelado;
 f. expirado.
 
-Si la suscripción se encuentra vencida, cancelada, expirada o con pago pendiente, ScisoNomics podrá limitar el acceso a funciones Premium.
+Si la suscripción se encuentra vencida, expirada, impaga, sin autorización válida o cancelada sin un período abonado aún vigente, ScisoNomics podrá limitar el acceso a funciones Premium.
 
 8. Cambios de plan, cancelación y vencimiento
 
-El usuario podrá solicitar cambios de plan, cancelación o modificación de su suscripción mediante los canales disponibles.
+Cuando la suscripción Premium sea gestionada mediante Mercado Pago, el usuario podrá administrar o cancelar dicha suscripción desde las herramientas que Mercado Pago ponga a su disposición.
 
-La cancelación o vencimiento de una suscripción podrá impedir crear, editar o eliminar información dentro de funciones Premium, sin que ello implique necesariamente la eliminación automática de datos existentes.
+El usuario también podrá contactar a soporte de ScisoNomics ante dudas o inconvenientes relacionados con el estado de su suscripción.
 
-ScisoNomics podrá permitir que los usuarios Free visualicen determinados datos Premium existentes en modo solo lectura, sin posibilidad de crear, modificar o eliminar registros asociados a funciones Premium.
+La cancelación de una suscripción no implica necesariamente la pérdida inmediata del acceso Premium. Si existe un período previamente abonado y vigente, ScisoNomics podrá mantener el acceso Premium hasta la finalización de dicho período.
+
+Una vez finalizado el período abonado, o cuando la suscripción se encuentre vencida, cancelada, expirada, impaga o sin autorización válida, ScisoNomics podrá limitar el acceso a funciones Premium.
+
+La pérdida de acceso Premium no implica necesariamente la eliminación de los datos previamente creados mediante funciones Premium. ScisoNomics podrá mantener dichos datos visibles en modo solo lectura.
 
 9. Funciones Premium y modo solo lectura
 
@@ -104,11 +110,24 @@ ScisoNomics podrá modificar precios o condiciones comerciales en el futuro. En 
 
 11. Proveedores de pago
 
-ScisoNomics podrá utilizar proveedores externos de pago, tales como plataformas de cobro, procesadores de tarjetas, billeteras virtuales u otros servicios.
+ScisoNomics utiliza actualmente Mercado Pago como proveedor externo para procesar y gestionar determinadas suscripciones Premium en la versión de escritorio disponible en Windows.
 
-Cuando se utilice un proveedor externo, el pago podrá estar sujeto a los términos, políticas de privacidad, comisiones, reglas, procesos de validación, contracargos y disponibilidad de dicho proveedor.
+El checkout, los medios de pago disponibles y el procesamiento de los datos financieros necesarios para completar la operación son gestionados por Mercado Pago conforme a sus propios términos, políticas de privacidad, procesos de validación, medidas de seguridad y disponibilidad.
 
-ScisoNomics no almacenará datos completos de tarjetas de crédito o débito si el procesamiento se realiza mediante proveedores externos. En esos casos, dichos datos serán tratados por el proveedor de pago conforme a sus propias políticas.
+ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el pago es procesado mediante Mercado Pago.
+
+ScisoNomics podrá recibir y almacenar información limitada necesaria para gestionar el acceso Premium, incluyendo, según corresponda:
+
+a. identificadores internos de suscripción;
+b. identificadores de suscripción del proveedor;
+c. estado de la suscripción;
+d. estado del pago;
+e. moneda y monto;
+f. fechas de activación, pago, renovación, vencimiento o cancelación;
+g. período Premium abonado;
+h. referencias técnicas necesarias para relacionar el pago con la cuenta correspondiente.
+
+La activación de Premium mediante Mercado Pago dependerá de la verificación del estado informado por el proveedor. La existencia de un intento de pago, una redirección o una notificación aislada no implica por sí sola que el acceso Premium haya sido concedido.
 
 12. Responsabilidad sobre la información cargada
 
@@ -174,9 +193,17 @@ Si el almacenamiento seguro no se encuentra disponible o falla, la aplicación p
 
 ScisoNomics podrá recibir actualizaciones destinadas a corregir errores, mejorar seguridad, modificar funciones, ajustar compatibilidad, optimizar rendimiento, mejorar sincronización o agregar nuevas capacidades.
 
-Algunas versiones anteriores de la aplicación podrían dejar de ser compatibles con servicios cloud, sincronización o determinadas funciones.
+La versión de escritorio para Windows puede consultar la disponibilidad de nuevas versiones mediante servicios de distribución externos.
 
-El usuario acepta que puede ser necesario actualizar la aplicación para continuar utilizando ciertas funcionalidades.
+Cuando exista una actualización compatible, ScisoNomics podrá permitir su descarga e instalación mediante el sistema de actualización incorporado en la aplicación.
+
+Las actualizaciones distribuidas mediante dicho mecanismo utilizan validaciones técnicas destinadas a comprobar la autenticidad e integridad del paquete antes de su instalación.
+
+Algunas versiones anteriores de la aplicación podrían dejar de ser compatibles con servicios cloud, sincronización, autenticación, Premium u otras funcionalidades.
+
+El usuario acepta que puede ser necesario actualizar la aplicación para continuar utilizando determinadas funciones.
+
+ScisoNomics no garantiza que todas las actualizaciones estén disponibles de manera inmediata o permanente, ni que todas las versiones anteriores mantengan compatibilidad indefinidamente.
 
 19. Disponibilidad del servicio
 
@@ -215,11 +242,20 @@ f. vulnerar mecanismos de seguridad o autenticación.
 
 23. Servicios de terceros
 
-ScisoNomics puede utilizar servicios, librerías, plataformas, servidores, infraestructura, sistemas operativos, servicios de autenticación, almacenamiento, hosting, analítica técnica, pagos, soporte u otros servicios de terceros.
+ScisoNomics utiliza servicios de terceros necesarios para determinadas funciones de la aplicación.
 
-El uso de esos servicios puede estar sujeto a sus propios términos, políticas de privacidad, condiciones técnicas y disponibilidad.
+Actualmente pueden intervenir, entre otros:
 
-ScisoNomics no controla ni garantiza de manera absoluta el funcionamiento de servicios externos.
+a. Supabase, para servicios asociados a autenticación de cuentas;
+b. Railway, para infraestructura y ejecución de servicios cloud de ScisoNomics;
+c. Mercado Pago, para procesamiento y gestión de determinadas suscripciones y pagos Premium;
+d. GitHub, para distribución de releases y actualizaciones de la aplicación de escritorio para Windows.
+
+También podrán utilizarse librerías, servicios del sistema operativo, infraestructura técnica u otros proveedores necesarios para el funcionamiento, seguridad, distribución o mantenimiento del servicio.
+
+El uso de dichos servicios puede estar sujeto a sus propios términos, políticas de privacidad, medidas de seguridad, disponibilidad y condiciones técnicas.
+
+ScisoNomics no controla ni garantiza de manera absoluta el funcionamiento permanente de servicios externos.
 
 24. Limitación de responsabilidad
 
@@ -369,13 +405,26 @@ e. Datos locales:
 * archivos de logs;
 * tokens o credenciales técnicas almacenadas mediante mecanismos seguros del sistema operativo, cuando corresponda.
 
-5. Datos de pago
+5. Datos de pago y suscripción
 
-Si ScisoNomics integra pagos mediante proveedores externos, los datos de pago podrán ser tratados por dichos proveedores conforme a sus propias políticas de privacidad y términos.
+ScisoNomics utiliza actualmente Mercado Pago para gestionar determinadas suscripciones Premium.
 
-ScisoNomics podrá recibir y almacenar información limitada relacionada con el estado del pago o suscripción, como identificadores de cliente, identificadores de suscripción, estado del pago, fecha de vencimiento, fecha de renovación o estado de cancelación.
+Los datos necesarios para procesar el medio de pago son tratados por Mercado Pago conforme a sus propias políticas, términos y medidas de seguridad.
 
-ScisoNomics no almacenará datos completos de tarjeta de crédito o débito cuando el procesamiento se realice mediante proveedores externos.
+ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el procesamiento se realiza mediante Mercado Pago.
+
+ScisoNomics puede recibir, consultar y almacenar información limitada relacionada con la operación y el estado de la suscripción, incluyendo:
+
+a. identificadores internos de suscripción;
+b. identificadores de suscripción del proveedor;
+c. estado de la suscripción;
+d. estado del pago;
+e. moneda y monto;
+f. fechas relevantes de pago, renovación, vencimiento o cancelación;
+g. período Premium abonado;
+h. referencias técnicas necesarias para vincular la operación con la cuenta del usuario.
+
+Esta información se utiliza para verificar pagos, habilitar o limitar funciones Premium, administrar la relación comercial, brindar soporte y prevenir errores, abusos o fraudes.
 
 6. Datos especialmente sensibles
 
@@ -503,19 +552,32 @@ Sin embargo, ningún sistema puede garantizar seguridad absoluta.
 
 El usuario debe proteger su dispositivo, sistema operativo, cuenta, credenciales y backups.
 
-18. Transferencias y proveedores
+18. Proveedores y encargados tecnológicos
 
-ScisoNomics puede utilizar proveedores de infraestructura, hosting, autenticación, almacenamiento, sincronización, distribución, pagos, analítica técnica, soporte u otros servicios necesarios para operar la aplicación.
+ScisoNomics puede utilizar proveedores externos para prestar determinadas funciones necesarias para el servicio.
 
-Estos proveedores podrán tratar información únicamente en la medida necesaria para prestar dichos servicios.
+Actualmente pueden intervenir, entre otros:
 
-Cuando corresponda, se procurará utilizar proveedores con medidas razonables de seguridad y protección de datos.
+a. Supabase, para servicios asociados a autenticación y gestión técnica de cuentas;
+b. Railway, como infraestructura utilizada para ejecutar servicios backend y funciones cloud de ScisoNomics;
+c. Mercado Pago, para procesamiento y gestión de pagos y suscripciones Premium;
+d. GitHub, para distribución de versiones y actualizaciones de la aplicación de escritorio para Windows.
+
+Estos proveedores podrán tratar información únicamente en la medida necesaria para prestar los servicios utilizados por ScisoNomics y conforme a sus propias políticas y condiciones aplicables.
+
+ScisoNomics procurará utilizar proveedores que ofrezcan medidas razonables de seguridad y protección de datos.
+
+La participación de estos proveedores no implica que todos ellos reciban la totalidad de la información almacenada en ScisoNomics. Cada servicio interviene únicamente en las funciones técnicas para las que es utilizado.
 
 19. Transferencias internacionales
 
-Algunos servicios o proveedores utilizados por ScisoNomics podrían encontrarse fuera de la República Argentina.
+Algunos de los proveedores tecnológicos utilizados por ScisoNomics pueden operar infraestructura o tratar información fuera de la República Argentina.
 
-En esos casos, la información podría ser transferida o tratada en otras jurisdicciones, de acuerdo con la finalidad del servicio y la normativa aplicable.
+Por este motivo, determinada información vinculada a cuentas, autenticación, servicios cloud, pagos, soporte o distribución técnica podría ser almacenada o tratada en otras jurisdicciones cuando resulte necesario para prestar el servicio correspondiente.
+
+Estas transferencias se realizarán conforme a la finalidad del servicio y a la normativa aplicable.
+
+Los datos financieros almacenados únicamente de forma local en el dispositivo del usuario no son transferidos automáticamente a estos proveedores por el solo hecho de utilizar ScisoNomics. La transmisión de información dependerá de las funciones cloud, autenticación, sincronización, pagos u otros servicios que el usuario utilice.
 
 20. Confidencialidad
 
@@ -557,9 +619,11 @@ En caso de detectar un incidente de seguridad que pudiera afectar datos personal
 
 27. Cambios en esta Política de Privacidad
 
-Esta Política de Privacidad podrá actualizarse para reflejar cambios legales, técnicos, operativos, comerciales o funcionales.
+Esta Política de Privacidad podrá actualizarse para reflejar cambios legales, técnicos, operativos, comerciales, de proveedores o funcionales.
 
-En caso de modificaciones relevantes, se procurará informar al usuario mediante la aplicación, instalador, sitio web, email u otro canal razonable.
+Cuando existan modificaciones relevantes que afecten la forma en que se tratan los datos personales, se procurará informar al usuario mediante la aplicación, el instalador, el sitio web, email u otro canal razonable.
+
+La versión vigente de esta Política podrá ponerse a disposición del usuario mediante los canales oficiales de ScisoNomics.
 
 28. Contacto para privacidad
 
@@ -573,6 +637,17 @@ En la República Argentina, la autoridad de control en materia de protección de
 
 El usuario podrá acudir ante la autoridad competente si considera vulnerados sus derechos conforme a la normativa aplicable.
 
+30. Alcance del modelo local-first
+
+ScisoNomics está diseñada bajo un enfoque local-first.
+
+Esto significa que la información financiera principal se almacena primero en el dispositivo del usuario.
+
+La creación de una cuenta o el uso de proveedores externos no implica por sí solo que la totalidad de la base de datos local sea enviada a servidores externos.
+
+Cuando el usuario utiliza funciones de sincronización cloud, únicamente se transmiten los datos y metadatos necesarios para las funciones de sincronización implementadas por ScisoNomics.
+
+El usuario puede utilizar determinadas funciones de ScisoNomics sin cuenta cloud, sujeto a las funcionalidades disponibles en modo local.
 ============================================================
 SECCIÓN III — ACEPTACIÓN
 ========================
