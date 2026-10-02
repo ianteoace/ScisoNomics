@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ConfirmDialog } from "../../../components/ui/ConfirmDialog";
 import { ErrorState } from "../../../components/ui/ErrorState";
@@ -9,27 +10,32 @@ import { PlanificacionView } from "../../../components/views/PlanificacionView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
+import { getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
 import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { Categoria, GastoProgramado } from "../../../types/domain";
 
 export default function PlanificacionPage() {
+  const router = useRouter();
   const { showError, showSuccess } = useToast();
   const { setSaldoActual } = useDashboardUi();
   const [rows, setRows] = useState<GastoProgramado[]>([]);
   const [categories, setCategories] = useState<Categoria[]>([]);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  useEntitlementsUpdates(setEntitlements);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [confirmState, setConfirmState] = useState<{ open: boolean; action: (() => Promise<void>) | null }>({ open: false, action: null });
 
   async function load() {
+    const entitlementsOwnerId = getActiveOwnerId();
     setLoading(true);
     try {
       const [gp, c] = await Promise.all([api.gastosProgramados("todos"), api.categorias("todos")]);
-      const loadedEntitlements = await loadEntitlements({ force: true });
+      const loadedEntitlements = await loadEntitlements({ force: true, ownerId: entitlementsOwnerId });
       setRows(gp);
       setCategories(c);
-      setEntitlements(loadedEntitlements);
+      if (getActiveOwnerId() === entitlementsOwnerId) setEntitlements(loadedEntitlements);
       setSaldoActual(0);
       setLoadError("");
     } finally {
@@ -62,7 +68,7 @@ export default function PlanificacionPage() {
       {!loading && loadError ? null : (
         <PremiumGate
           enabled={premiumEnabled}
-          onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+          onUpgrade={() => router.push("/configuracion?section=general")}
         >
           <PlanificacionView
             rows={rows}

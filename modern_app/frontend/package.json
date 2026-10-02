@@ -1,25 +1,33 @@
 {
   "name": "registro-finanzas-web",
   "private": true,
-  "version": "3.2.0",
+  "version": "3.3.0",
   "scripts": {
     "dev": "next dev --webpack -p 3000",
     "build": "next build",
+    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs",
+    "test:billing": "node --test tests/premiumBilling.test.cjs",
+    "test:updater": "node --test tests/appUpdater.test.cjs",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
     "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",
-    "tauri:build": "npm run prepare:sidecar && tauri build -- --locked"
+    "tauri:build": "node ../scripts/check-installer-env.cjs && npm run prepare:sidecar && tauri build --target x86_64-pc-windows-msvc -- --locked",
+    "updater:manifest": "node ../scripts/create-updater-manifest.cjs",
+    "release:windows": "npm run tauri:build && npm run updater:manifest"
   },
   "scisonomicsDependencyNotes": {
-    "nextBundledPostcss": "next@16.2.6 empaqueta postcss@8.4.31 con una vulnerabilidad moderada conocida. npm no ofrece un override efectivo; actualizar cuando Next publique el fix upstream."
+    "nextBundledPostcss": "next@16.3.8 incluye postcss@8.5.23 y reemplaza postcss@8.4.31 de next@16.2.6, que tenía una vulnerabilidad moderada conocida."
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.2",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-deep-link": "~2.4.0",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-opener": "^2.4.1",
+    "@tauri-apps/plugin-updater": "2.10.1",
     "framer-motion": "^11.3.19",
     "lucide-react": "^0.511.0",
-    "next": "16.2.6",
+    "next": "16.3.8",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "recharts": "2.12.7",
@@ -27,12 +35,14 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.1",
-    "@tauri-apps/cli-win32-x64-msvc": "^2.11.1",
     "@types/node": "20.14.10",
     "@types/react": "18.3.3",
     "autoprefixer": "^10.4.21",
     "postcss": "8.5.15",
     "tailwindcss": "^3.4.17",
     "typescript": "5.5.4"
+  },
+  "optionalDependencies": {
+    "@tauri-apps/cli-win32-x64-msvc": "^2.11.1"
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -11,6 +11,8 @@ import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
+import { getActiveOwnerId } from "../../../services/cloudAuth";
+import { subscribeDashboardRefresh } from "../../../services/dashboardRefresh";
 import type { GastoFijo, GastoProgramado, MetaAhorro, Movimiento, MovimientosResponse, Presupuesto, StatsResponse } from "../../../types/domain";
 
 export default function DashboardPage() {
@@ -29,14 +31,43 @@ export default function DashboardPage() {
   const [resumenPotente, setResumenPotente] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [retryNonce, setRetryNonce] = useState(0);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const requestEpochRef = useRef(0);
+
+  useEffect(() => subscribeDashboardRefresh({
+    target: window,
+    getOwnerId: getActiveOwnerId,
+    onReload: () => setReloadNonce((value) => value + 1),
+    onInvalidate: (ownerChanged) => {
+      requestEpochRef.current += 1;
+      setLoading(true);
+      setError("");
+      if (!ownerChanged) return;
+      setMovimientos(null);
+      setPrevious(null);
+      setStats(null);
+      setPlanificacion([]);
+      setPresupuestos([]);
+      setGastosFijos([]);
+      setMetas([]);
+      setResumenPotente(null);
+      setSaldoActual(0);
+    },
+  }), [setSaldoActual]);
 
   useEffect(() => {
+    if (!reloadNonce) return;
     let cancelled = false;
+    const requestEpoch = ++requestEpochRef.current;
+    const ownerId = getActiveOwnerId();
+    const isCurrent = () => !cancelled && requestEpochRef.current === requestEpoch && getActiveOwnerId() === ownerId;
     (async () => {
       setLoading(true);
+      setError("");
       try {
-        const [m, s, gp, rp, p, gf, metasRows] = await Promise.all([
+        const prevMonth = month === 1 ? 12 : month - 1;
+        const prevYear = month === 1 ? year - 1 : year;
+        const [m, s, gp, rp, p, gf, metasRows, prev] = await Promise.all([
           api.movimientos(month, year, "todos", debounced, ""),
           api.stats(month, year),
           api.gastosProgramados("todos"),
@@ -44,8 +75,9 @@ export default function DashboardPage() {
           api.presupuestos(month, year),
           api.gastosFijos(),
           api.metas(),
+          api.movimientos(prevMonth, prevYear, "todos", "", ""),
         ]);
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setMovimientos(m);
         setStats(s);
         setPlanificacion(gp);
@@ -53,26 +85,22 @@ export default function DashboardPage() {
         setPresupuestos(p);
         setGastosFijos(gf);
         setMetas(metasRows);
+        setPrevious({ ingreso: prev.summary.ingreso, gasto: prev.summary.gasto });
         setSaldoActual(m.rows.length ? m.rows[0].saldo_acumulado : 0);
         setError("");
-
-        const prevMonth = month === 1 ? 12 : month - 1;
-        const prevYear = month === 1 ? year - 1 : year;
-        const prev = await api.movimientos(prevMonth, prevYear, "todos", "", "");
-        if (!cancelled) setPrevious({ ingreso: prev.summary.ingreso, gasto: prev.summary.gasto });
       } catch (err: any) {
-        if (!cancelled) {
+        if (isCurrent()) {
           setError(err.message || "No se pudo cargar el resumen.");
           showError(err.message || "No se pudo cargar el resumen.");
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [month, year, debounced, setSaldoActual, showError, retryNonce]);
+  }, [month, year, debounced, setSaldoActual, showError, reloadNonce]);
 
   async function handleExport() {
     try {
@@ -109,7 +137,7 @@ export default function DashboardPage() {
     }
   }
 
-  if (error) return <ErrorState title="No se pudo cargar el resumen." description={error} onRetry={() => setRetryNonce((value) => value + 1)} />;
+  if (error) return <ErrorState title="No se pudo cargar el resumen." description={error} onRetry={() => setReloadNonce((value) => value + 1)} />;
 
   return (
     <DashboardView

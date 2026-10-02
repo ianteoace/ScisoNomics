@@ -1,8 +1,19 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ScisoNomics",
-  "version": "3.2.0",
+  "mainBinaryName": "ScisoNomics",
+  "version": "3.3.0",
   "identifier": "com.scisonomics.desktop",
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["scisonomics"] }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZEQURDNjE3QkUwQkE1RDIKUldUU3BRdStGOGF0YlpndTk1aW1zN25jajNxL1JVb0hraVJSWnZtL3o3Zm1CME5xQkhtNlZGTEwK",
+      "endpoints": ["https://github.com/ianteoace/scisonomics/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://127.0.0.1:3000",
@@ -22,11 +33,13 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8000 https://scisonomics-production-d8a3.up.railway.app; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
-      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://scisonomics-production-d8a3.up.railway.app; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8000 https://scisonomics-production-d8a3.up.railway.app https://egwxtvroruvjwhpizbeg.supabase.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:",
+      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://scisonomics-production-d8a3.up.railway.app https://egwxtvroruvjwhpizbeg.supabase.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
     }
   },
   "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "homepage": "https://github.com/ianteoace/scisonomics/releases",
     "licenseFile": "LICENSE.txt",

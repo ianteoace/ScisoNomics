@@ -7,7 +7,7 @@ use std::sync::{
   atomic::{AtomicBool, Ordering},
   Arc, Condvar, Mutex,
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -15,11 +15,14 @@ use std::process::Command;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
 
 mod device_verification;
+mod local_api_token;
+mod supabase_tokens;
+mod supabase_oauth;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
@@ -80,38 +83,13 @@ struct AppCloseSyncSignal(Arc<(Mutex<AppCloseSyncState>, Condvar)>);
 #[derive(Clone, Copy)]
 struct AppCloseSyncState {
   completed: bool,
+  success: bool,
   timeout_ms: u64,
 }
 
 const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
 const APP_CLOSE_SYNC_TIMEOUT_MS: u64 = 6_000;
 const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS: u64 = 10_000;
-
-#[cfg(target_os = "windows")]
-fn fill_random_bytes(bytes: &mut [u8]) -> bool {
-  #[link(name = "advapi32")]
-  extern "system" {
-    fn SystemFunction036(random_buffer: *mut u8, random_buffer_length: u32) -> u8;
-  }
-  unsafe { SystemFunction036(bytes.as_mut_ptr(), bytes.len() as u32) != 0 }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn fill_random_bytes(_bytes: &mut [u8]) -> bool {
-  false
-}
-
-fn generate_local_api_token() -> String {
-  let mut bytes = [0u8; 32];
-  if fill_random_bytes(&mut bytes) {
-    return bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-  }
-  let nanos = SystemTime::now()
-    .duration_since(UNIX_EPOCH)
-    .map(|value| value.as_nanos())
-    .unwrap_or_default();
-  format!("sciso-{}-{}-{:p}", std::process::id(), nanos, &bytes)
-}
 
 #[tauri::command]
 async fn save_binary_file(app: tauri::AppHandle, file_name: String, extension: String, bytes: Vec<u8>) -> Result<bool, String> {
@@ -668,10 +646,11 @@ fn delete_account_device_identity(account_binding: String) -> Result<bool, Strin
 }
 
 #[tauri::command]
-fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>) {
+fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>, success: Option<bool>) {
   let (lock, condition) = &*signal.0;
   if let Ok(mut state) = lock.lock() {
     state.completed = true;
+    state.success = success.unwrap_or(false);
     condition.notify_all();
   }
 }
@@ -692,29 +671,30 @@ fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   let (lock, _) = &*signal.0;
   if let Ok(mut state) = lock.lock() {
     state.completed = false;
+    state.success = false;
     state.timeout_ms = APP_CLOSE_SYNC_TIMEOUT_MS;
   }
 }
 
-fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> bool {
+fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> Option<bool> {
   let (lock, condition) = &*signal.0;
   let Ok(mut state) = lock.lock() else {
-    return false;
+    return None;
   };
   let started_at = Instant::now();
   loop {
     if state.completed {
-      return true;
+      return Some(state.success);
     }
     let timeout = Duration::from_millis(state.timeout_ms);
     if started_at.elapsed() >= timeout {
-      return false;
+      return None;
     }
     let remaining = timeout.saturating_sub(started_at.elapsed());
     let wait_step = remaining.min(Duration::from_millis(100));
     match condition.wait_timeout(state, wait_step) {
       Ok((next_state, _)) => state = next_state,
-      Err(_) => return false,
+      Err(_) => return None,
     }
   }
 }
@@ -917,15 +897,49 @@ fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   }
 }
 
+#[tauri::command]
+async fn prepare_update_install(
+  app: tauri::AppHandle,
+  signal: tauri::State<'_, AppCloseSyncSignal>,
+  backend_child: tauri::State<'_, BackendChild>,
+  local_api_token: tauri::State<'_, LocalApiToken>,
+) -> Result<(), String> {
+  let signal = signal.inner().clone();
+  let backend_child = Arc::clone(backend_child.inner());
+  let local_api_token = local_api_token.0.clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    reset_app_close_sync(&signal);
+    app.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ())
+      .map_err(|_| "No se pudo solicitar el cierre seguro antes de actualizar.".to_string())?;
+    match wait_for_app_close_sync(&signal) {
+      Some(true) => {},
+      Some(false) => return Err("No se pudo completar la sincronizacion de cierre. Intenta de nuevo mas tarde.".to_string()),
+      None => return Err("El cierre seguro tardo demasiado. Intenta de nuevo mas tarde.".to_string()),
+    }
+    stop_backend_sidecar(&backend_child, &local_api_token);
+    if !wait_for_local_port_release(Duration::from_secs(2)) {
+      return Err("El backend local sigue en ejecucion. Cierra ScisoNomics y usa el instalador manual.".to_string());
+    }
+    Ok(())
+  }).await.map_err(|_| "No se pudo preparar la actualizacion.".to_string())?
+}
+
+#[tauri::command]
+fn restart_after_failed_update_install(app: tauri::AppHandle) {
+  app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let backend_child: BackendChild = Arc::new(Mutex::new(None));
   let app_close_sync_signal = AppCloseSyncSignal(Arc::new((Mutex::new(AppCloseSyncState {
     completed: false,
+    success: false,
     timeout_ms: APP_CLOSE_SYNC_TIMEOUT_MS,
   }), Condvar::new())));
   let close_in_progress = Arc::new(AtomicBool::new(false));
-  let local_api_token = generate_local_api_token();
+  let local_api_token = local_api_token::generate()
+    .expect("No se pudo inicializar el servicio local con un token seguro.");
   let setup_backend_child = Arc::clone(&backend_child);
   let close_backend_child = Arc::clone(&backend_child);
   let exit_backend_child = Arc::clone(&backend_child);
@@ -934,12 +948,25 @@ pub fn run() {
   let close_local_api_token = local_api_token.clone();
   let exit_local_api_token = local_api_token.clone();
 
-  tauri::Builder::default()
+  let builder = tauri::Builder::default();
+  #[cfg(desktop)]
+  let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    // The deep-link feature forwards the event. Never log argv/callback URLs.
+    if let Some(window) = app.get_webview_window("main") {
+      let _ = window.unminimize();
+      let _ = window.show();
+      let _ = window.set_focus();
+    }
+  }));
+  builder
+    .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
+    .plugin(tauri_plugin_updater::Builder::new().build())
     .manage(LocalApiToken(local_api_token.clone()))
     .manage(app_close_sync_signal)
+    .manage(Arc::clone(&backend_child))
     .invoke_handler(tauri::generate_handler![
       save_binary_file,
       get_local_api_token,
@@ -950,6 +977,12 @@ pub fn run() {
       save_persistent_cloud_refresh_token,
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
+      supabase_tokens::save_persistent_supabase_refresh_token,
+      supabase_tokens::load_persistent_supabase_refresh_token,
+      supabase_tokens::delete_persistent_supabase_refresh_token,
+      supabase_oauth::save_pending_supabase_oauth,
+      supabase_oauth::load_pending_supabase_oauth,
+      supabase_oauth::delete_pending_supabase_oauth,
       debug_refresh_keyring_status,
       get_or_create_account_device_identity,
       sign_device_enrollment_proof,
@@ -957,13 +990,26 @@ pub fn run() {
       sign_refresh_proof,
       sign_device_management_proof,
       complete_app_close_sync,
-      set_app_close_sync_timeout
+      set_app_close_sync_timeout,
+      prepare_update_install,
+      restart_after_failed_update_install
     ])
     .setup(move |app| {
+      #[cfg(all(debug_assertions, any(windows, target_os = "linux")))]
+      {
+        use tauri_plugin_deep_link::DeepLinkExt;
+        // Development only; production registration belongs to the installer.
+        if app.deep_link().register_all().is_err() {
+          log::warn!("No se pudo registrar el callback de ScisoNomics para desarrollo");
+        }
+      }
       if cfg!(debug_assertions) {
         app.handle().plugin(
           tauri_plugin_log::Builder::default()
             .level(log::LevelFilter::Info)
+            // Upstream deep-link warnings can include the raw CLI URL.
+            .level_for("tauri_plugin_deep_link", log::LevelFilter::Off)
+            .level_for("tauri_plugin_single_instance", log::LevelFilter::Off)
             .build(),
         )?;
       }
@@ -1049,7 +1095,7 @@ pub fn run() {
           log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
         }
         std::thread::spawn(move || {
-          if !wait_for_app_close_sync(&sync_signal) {
+          if wait_for_app_close_sync(&sync_signal).is_none() {
             log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
           }
           stop_backend_sidecar(&backend_child, &local_api_token);

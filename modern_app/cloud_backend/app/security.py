@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from ipaddress import ip_address
 import os
 import threading
 import time
@@ -20,18 +21,37 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _normalized_ip(value: str) -> str | None:
+    # Do not truncate malformed addresses into valid ones or accept IPv6 zone IDs.
+    if not value or len(value) > 64 or "%" in value:
+        return None
+    try:
+        return str(ip_address(value.strip()))
+    except ValueError:
+        return None
+
+
 def client_ip(request: Request) -> str:
-    direct = request.client.host if request.client else "unknown"
+    direct = _normalized_ip(request.client.host) if request.client else None
+    railway = os.getenv("SCISONOMICS_ENV", "").strip().lower() == "production" and all(
+        os.getenv(name, "").strip()
+        for name in ("RAILWAY_ENVIRONMENT_ID", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID")
+    )
+    if railway:
+        real_headers = request.headers.getlist("X-Real-IP")
+        real = _normalized_ip(real_headers[0]) if len(real_headers) == 1 else None
+        if real:
+            return real
     trusted = {
-        value.strip()
+        normalized
         for value in os.getenv("SCISONOMICS_TRUSTED_PROXY_IPS", "").split(",")
-        if value.strip()
+        if (normalized := _normalized_ip(value)) is not None
     }
     if direct in trusted:
-        forwarded = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        forwarded = _normalized_ip(request.headers.get("X-Forwarded-For", "").split(",", 1)[0])
         if forwarded:
-            return forwarded[:64]
-    return str(direct)[:64]
+            return forwarded
+    return direct or "unknown"
 
 
 def enforce_rate_limit(

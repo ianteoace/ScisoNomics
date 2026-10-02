@@ -27,6 +27,7 @@ const DEFAULT_ENTITLEMENTS: BillingEntitlements = {
 };
 
 const entitlementsCache = new Map<string, BillingEntitlements>();
+const entitlementsRequestVersion = new Map<string, number>();
 
 function normalizeEntitlements(raw: unknown): BillingEntitlements {
   const source = raw && typeof raw === "object" ? raw as Record<string, any> : {};
@@ -92,14 +93,14 @@ export function getCachedEntitlements(ownerId = getActiveOwnerId()): BillingEnti
 async function cacheLocalEntitlements(ownerId: string) {
   try {
     const session = await getActiveCloudSessionAsync();
-    if (!session?.token) return;
+    if (!session?.token || session.user.id !== ownerId || getActiveOwnerId() !== ownerId) return;
+    const headers = await getLocalRequestHeaders({ "Content-Type": "application/json", Authorization: `Bearer ${session.token}` }, ownerId);
+    if (getActiveOwnerId() !== ownerId) return;
     await fetch(`${API_URL}/billing/entitlements/cache`, {
       method: "POST",
-      headers: await getLocalRequestHeaders({
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.token}`,
-      }, ownerId),
+      headers,
       body: JSON.stringify({ refresh: true }),
+      signal: AbortSignal.timeout(3000),
     });
   } catch {
     // El cache local mejora enforcement, pero la UI debe degradar a Free si falla.
@@ -116,7 +117,9 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
   const account = getActiveAccount();
   if (!account || account.user.id !== ownerId) return getCachedEntitlements(ownerId);
   const session = await getActiveCloudSessionAsync();
-  if (!session?.token || !CLOUD_API_URL) return getCachedEntitlements(ownerId);
+  if (!session?.token || session.user.id !== ownerId || getActiveOwnerId() !== ownerId || !CLOUD_API_URL) return getCachedEntitlements(ownerId);
+  const requestVersion = (entitlementsRequestVersion.get(ownerId) || 0) + 1;
+  entitlementsRequestVersion.set(ownerId, requestVersion);
 
   try {
     const response = await fetch(`${CLOUD_API_URL}/billing/entitlements`, {
@@ -128,8 +131,9 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const entitlements = normalizeEntitlements(await response.json());
+    if (getActiveOwnerId() !== ownerId || getActiveAccount()?.user.id !== ownerId || entitlementsRequestVersion.get(ownerId) !== requestVersion) return getCachedEntitlements(ownerId);
     setCachedEntitlements(ownerId, entitlements);
-    void cacheLocalEntitlements(ownerId);
+    await cacheLocalEntitlements(ownerId);
     return entitlements;
   } catch {
     return getCachedEntitlements(ownerId);

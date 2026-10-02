@@ -45,7 +45,8 @@ from finance_app.services import (
     set_current_owner_id,
 )
 from finance_app.paths import get_app_data_dir, get_backup_dir, get_data_dir, get_db_path, get_logs_dir
-from finance_app.secure_backup import decrypt_backup, encrypt_backup, is_encrypted_backup
+from finance_app.secure_backup import decrypt_backup, encrypt_backup
+from finance_app.restore_validation import copy_restore_source
 from openpyxl import load_workbook
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -67,7 +68,7 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # expondria superficie interna innecesaria aunque los endpoints tengan token.
 app = FastAPI(
     title="Registro Finanzas API",
-    version="3.2.0",
+    version="3.3.0",
     docs_url=None if _IS_FROZEN else "/docs",
     redoc_url=None if _IS_FROZEN else "/redoc",
     openapi_url=None if _IS_FROZEN else "/openapi.json",
@@ -4258,6 +4259,7 @@ def export_backup(service: FinanceService = Depends(get_service)):
 @app.post("/backup/restore")
 async def restore_backup(request: Request, service: FinanceService = Depends(get_service)):
     decrypted: Path | None = None
+    selected_copy: Path | None = None
     try:
         ensure_app_data_initialized()
         try:
@@ -4274,8 +4276,14 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
         if not source_path_value:
             raise HTTPException(status_code=400, detail="Debes indicar source_path.")
 
-        source = Path(source_path_value).expanduser()
-        if is_encrypted_backup(source):
+        source = Path(source_path_value)
+        # Read the validated file handle into an internal snapshot; never
+        # decrypt or restore a subsequently reopened client-controlled path.
+        extension = ".sciso-backup" if source.suffix.lower() == ".sciso-backup" else ".db"
+        selected_copy = Path(mkdtemp(prefix="finanzas_restore_")) / ("selected" + extension)
+        kind = copy_restore_source(source, selected_copy, allow_encrypted=True)
+        source = selected_copy
+        if kind == "encrypted":
             passphrase = str(payload.get("passphrase") or "")
             decrypted = Path(mkdtemp(prefix="finanzas_restore_")) / "restored.db"
             source = decrypt_backup(source, decrypted, passphrase)
@@ -4283,12 +4291,12 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
         safety = service.restore_database_from_path(source, pre_restore_backups)
         invalidate_app_data_initialized()
         _logger.info("Restaurar copia OK. source=%s backup_pre_restore=%s", source.name, safety.name)
-        return {"ok": True, "safety_backup": str(safety)}
+        return {"ok": True, "safety_backup": safety.name}
     except HTTPException:
         raise
     except (FileNotFoundError, ValueError) as exc:
         # No registrar paths completos provenientes del request de restore.
-        _logger.exception("Error restaurando copia de seguridad. error_type=%s", type(exc).__name__)
+        _logger.warning("Copia rechazada. error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         _logger.exception("Error restaurando copia de seguridad. error_type=%s", type(exc).__name__)
@@ -4299,6 +4307,8 @@ async def restore_backup(request: Request, service: FinanceService = Depends(get
     finally:
         if decrypted is not None:
             _cleanup_temp_snapshot(decrypted)
+        if selected_copy is not None:
+            _cleanup_temp_snapshot(selected_copy)
 
 
 @app.get("/backup/download")

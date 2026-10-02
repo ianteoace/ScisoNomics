@@ -434,6 +434,18 @@ def _ensure_google_auth_columns(conn: CloudConnection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email_normalized ON users(LOWER(TRIM(email)))")
 
 
+def _ensure_external_auth_schema(conn: CloudConnection) -> None:
+    # Additive identity mapping; users.id and all financial foreign keys stay intact.
+    _ensure_column(conn, "users", "auth_provider_id", "TEXT")
+    # SQLite cannot relax NOT NULL without rebuilding users. Empty means no
+    # password, never a fabricated hash; legacy credentials remain unchanged.
+    _ensure_column(conn, "users", "password_auth_enabled", "INTEGER NOT NULL DEFAULT 1")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_provider_id "
+        "ON users(auth_provider_id) WHERE auth_provider_id IS NOT NULL AND auth_provider_id <> ''"
+    )
+
+
 def _ensure_refresh_token_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "cloud_refresh_tokens", "device_id", "TEXT")
     _ensure_column(conn, "cloud_refresh_tokens", "device_name", "TEXT")
@@ -470,6 +482,46 @@ def _ensure_billing_columns(conn: CloudConnection) -> None:
     _ensure_column(conn, "users", "subscription_expires_at", "TEXT")
     conn.execute("UPDATE users SET plan = COALESCE(NULLIF(plan, ''), 'free')")
     conn.execute("UPDATE users SET subscription_status = COALESCE(NULLIF(subscription_status, ''), 'active')")
+    # Existing rows (including manually granted Premium) remain manual.
+    _ensure_column(conn, "users", "billing_source", "TEXT")
+
+
+def _ensure_billing_subscription_schema(conn: CloudConnection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_subscriptions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id),
+            provider TEXT NOT NULL,
+            provider_subscription_id TEXT,
+            provider_plan_id TEXT,
+            status TEXT NOT NULL,
+            currency TEXT,
+            amount TEXT,
+            external_reference TEXT NOT NULL UNIQUE,
+            checkout_url TEXT,
+            paid_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_provider_sync_at TEXT,
+            canceled_at TEXT
+        )
+        """
+    )
+    _ensure_column(conn, "billing_subscriptions", "payment_status", "TEXT")
+    _ensure_column(conn, "billing_subscriptions", "payment_status_detail", "TEXT")
+    _ensure_column(conn, "billing_subscriptions", "last_payment_at", "TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_provider_subscription ON billing_subscriptions(provider, provider_subscription_id) WHERE provider_subscription_id IS NOT NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_user ON billing_subscriptions(user_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_one_open_per_user ON billing_subscriptions(user_id, provider) WHERE status IN ('creating', 'uncertain', 'pending', 'authorized', 'paused')")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_webhook_events (
+            event_key TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _ensure_email_verification_schema(conn: CloudConnection) -> None:
@@ -996,9 +1048,11 @@ def _init_sqlite() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_external_auth_schema(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
+        _ensure_billing_subscription_schema(conn)
         _ensure_email_verification_schema(conn)
         _ensure_device_verification_schema(conn)
         _ensure_cloud_sync_schema(conn)
@@ -1262,9 +1316,11 @@ def _init_postgres() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_user ON cloud_refresh_tokens(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_refresh_tokens_expires ON cloud_refresh_tokens(expires_at)")
         _ensure_google_auth_columns(conn)
+        _ensure_external_auth_schema(conn)
         _ensure_refresh_token_columns(conn)
         _ensure_security_audit_schema(conn)
         _ensure_billing_columns(conn)
+        _ensure_billing_subscription_schema(conn)
         _ensure_email_verification_schema(conn)
         _ensure_device_verification_schema(conn)
         # Historical sync timestamp updates can touch many rows. Keep their

@@ -77,6 +77,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
       setAccounts(getStoredAccounts());
       setAccountAvailability(authState.availability);
       const entitlements = await loadEntitlements({ force: true, ownerId }).catch(() => getCachedEntitlements(ownerId));
+      if (cancelled || getActiveOwnerId() !== ownerId) return;
       setHasPremiumAccess(entitlements.plan === "premium" && ["active", "trialing"].includes(entitlements.status));
       if (!activeAccount) {
         setAccountUser(null);
@@ -88,15 +89,21 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     }
 
     loadAccount();
+    const updatePremium = () => {
+      const entitlements = getCachedEntitlements(getActiveOwnerId());
+      setHasPremiumAccess(entitlements.plan === "premium" && ["active", "trialing"].includes(entitlements.status));
+    };
     const openAddAccountModal = () => setAddAccountOpen(true);
     window.addEventListener(ACCOUNT_SESSION_CHANGED_EVENT, loadAccount);
     window.addEventListener(OWNER_CHANGED_EVENT, loadAccount);
+    window.addEventListener("scisonomics:premium-entitlements-changed", updatePremium);
     window.addEventListener("focus", loadAccount);
     window.addEventListener("scisonomics:open-add-account-modal", openAddAccountModal);
     return () => {
       cancelled = true;
       window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, loadAccount);
       window.removeEventListener(OWNER_CHANGED_EVENT, loadAccount);
+      window.removeEventListener("scisonomics:premium-entitlements-changed", updatePremium);
       window.removeEventListener("focus", loadAccount);
       window.removeEventListener("scisonomics:open-add-account-modal", openAddAccountModal);
     };

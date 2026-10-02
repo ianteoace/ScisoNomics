@@ -6,7 +6,7 @@ export function PremiumGate({
   enabled,
   title = "Esta función es parte de ScisoNomics Premium",
   description = "Actualizá a Premium para usar Presupuestos, Metas, Gastos fijos y Planificación.",
-  actionLabel = "Actualizar a Premium",
+  actionLabel = "Pasar a Premium",
   onUpgrade,
   children,
 }: {

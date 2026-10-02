@@ -1,17 +1,31 @@
+!macro SCISO_REQUIRE_STOPPED processName
+  StrCpy $1 0
+  ${Do}
+    nsis_tauri_utils::FindProcessCurrentUser "${processName}"
+    Pop $0
+    ${If} $0 != 0
+      ${Break}
+    ${EndIf}
+    ${If} $1 >= 20
+      ${Break}
+    ${EndIf}
+    Sleep 250
+    IntOp $1 $1 + 1
+  ${Loop}
+  ${If} $0 = 0
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Cerrá ${processName} antes de continuar. Volvé a ejecutar el instalador cuando termine de cerrarse."
+    Abort "ScisoNomics sigue en ejecución."
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
-  DetailPrint "Preparando actualizacion segura de ScisoNomics..."
-  DetailPrint "Si Windows informa archivos en uso, cancela la instalacion y cerra ScisoNomics. No uses Omitir."
-  DetailPrint "Cerrando procesos anteriores de ScisoNomics si siguen abiertos..."
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM ScisoNomics.exe' $0
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM scisonomics-backend.exe' $0
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM scisonomics-backend-x86_64-pc-windows-msvc.exe' $0
-  DetailPrint "Procesos anteriores revisados. Continuando instalacion..."
+  !insertmacro SCISO_REQUIRE_STOPPED "ScisoNomics.exe"
+  !insertmacro SCISO_REQUIRE_STOPPED "scisonomics-backend.exe"
+  !insertmacro SCISO_REQUIRE_STOPPED "scisonomics-backend-x86_64-pc-windows-msvc.exe"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  DetailPrint "Cerrando procesos de ScisoNomics antes de desinstalar..."
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM ScisoNomics.exe' $0
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM scisonomics-backend.exe' $0
-  ExecWait '"$SYSDIR\taskkill.exe" /F /T /IM scisonomics-backend-x86_64-pc-windows-msvc.exe' $0
-  DetailPrint "Procesos de ScisoNomics revisados. Continuando desinstalacion..."
+  !insertmacro SCISO_REQUIRE_STOPPED "ScisoNomics.exe"
+  !insertmacro SCISO_REQUIRE_STOPPED "scisonomics-backend.exe"
+  !insertmacro SCISO_REQUIRE_STOPPED "scisonomics-backend-x86_64-pc-windows-msvc.exe"
 !macroend

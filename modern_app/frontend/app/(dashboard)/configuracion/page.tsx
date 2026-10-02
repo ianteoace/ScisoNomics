@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
+import { PremiumCheckout, PremiumSubscriptionDetails, PremiumVerificationFallback } from "../../../components/billing/PremiumCheckout";
+import { AppUpdateSettings } from "../../../components/app/AppUpdateProvider";
 import { ErrorState } from "../../../components/ui/ErrorState";
 import { LoadingSkeleton } from "../../../components/ui/LoadingSkeleton";
 import { Modal } from "../../../components/ui/Modal";
@@ -12,7 +14,10 @@ import { useToast } from "../../../hooks/useToast";
 import { api } from "../../../services/api";
 import { createEncryptedSecurityCopyWithSaveDialog, createSecurityCopyWithSaveDialog } from "../../../services/backupDownload";
 import { ACCOUNT_SESSION_CHANGED_EVENT, OWNER_CHANGED_EVENT, getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
+import { premiumAutoRefresh, PREMIUM_REFRESH_CHANGED_EVENT, type PremiumRefreshState } from "../../../services/premiumAutoRefresh";
 import { loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
+import { getPremiumSubscription, openPremiumCheckout, preparePremiumCheckoutWindow, premiumStatusMessage, startPremiumSubscription, type PremiumSubscription } from "../../../services/premiumBilling";
 import {
   SYNC_STATE_CHANGED_EVENT,
   getLastAutoSyncAt,
@@ -53,7 +58,7 @@ const SETTINGS_SECTIONS = [
   { id: "sync", label: "Sincronización", hint: "Manual y automática" },
   { id: "datos", label: "Datos y backups", hint: "Datos locales y copias" },
   { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
-  { id: "actualizaciones", label: "Actualizaciones", hint: "Releases manuales" },
+  { id: "actualizaciones", label: "Actualizaciones", hint: "Buscar e instalar" },
   { id: "acerca", label: "Acerca de", hint: "Versión y novedades" },
 ] as const;
 
@@ -110,6 +115,9 @@ export default function ConfiguracionPage() {
   const [localIntegrity, setLocalIntegrity] = useState<LocalDbIntegrityResult | null>(null);
   const [backupState, setBackupState] = useState<BackupState | null>(null);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  const [premiumSubscription, setPremiumSubscription] = useState<PremiumSubscription | null>(null);
+  const [premiumAction, setPremiumAction] = useState<"start" | null>(null);
+  const [premiumMessage, setPremiumMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [restoring, setRestoring] = useState(false);
@@ -141,6 +149,7 @@ export default function ConfiguracionPage() {
   }
 
   async function load() {
+    const requestedOwnerId = getActiveOwnerId();
     setLoading(true);
     try {
       const settings = await api.settingsInfo();
@@ -155,12 +164,17 @@ export default function ConfiguracionPage() {
         getLocalDbIntegrity().catch(() => null),
         api.backups().catch(() => null),
       ]);
-      const entitlementsResult = await loadEntitlements({ force: true }).catch(() => null);
+      const entitlementsResult = await loadEntitlements({ force: true, ownerId: requestedOwnerId }).catch(() => null);
+      if (getActiveOwnerId() === requestedOwnerId && entitlementsResult?.plan === "premium") {
+        // Read webhook-confirmed cancellations even while automatic payment checks are idle.
+        const subscription = await getPremiumSubscription(requestedOwnerId).catch(() => null);
+        if (subscription && getActiveOwnerId() === requestedOwnerId) premiumAutoRefresh.update(subscription);
+      }
       setDiagnostics(diagnosticsResult as AppDiagnostics | null);
       setSyncOverview(overviewResult as SyncOverview | null);
       setLocalIntegrity(integrityResult as LocalDbIntegrityResult | null);
       setBackupState(backupsResult);
-      setEntitlements(entitlementsResult);
+      if (getActiveOwnerId() === requestedOwnerId) setEntitlements(entitlementsResult);
       setAutoSyncEnabledState(isAutoSyncEnabled());
       setAutoSyncIntervalMsState(getAutoSyncIntervalMs());
       setLoadError("");
@@ -204,6 +218,67 @@ export default function ConfiguracionPage() {
       window.removeEventListener("scisonomics:open-account-panel", openAccountSection);
     };
   }, []);
+
+  const billingOwnerId = getActiveOwnerId();
+  useEffect(() => {
+    setPremiumSubscription(null);
+    setPremiumMessage("");
+  }, [billingOwnerId]);
+
+  useEntitlementsUpdates(setEntitlements);
+  const [premiumVerifying, setPremiumVerifying] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      const state: PremiumRefreshState = premiumAutoRefresh.state();
+      if (state.ownerId !== getActiveOwnerId()) return;
+      setPremiumSubscription(state.subscription);
+      setPremiumVerifying(state.verifying);
+      setPremiumMessage(state.message);
+    };
+    update();
+    window.addEventListener(PREMIUM_REFRESH_CHANGED_EVENT, update);
+    void premiumAutoRefresh.activate().then(() => premiumAutoRefresh.verify());
+    return () => window.removeEventListener(PREMIUM_REFRESH_CHANGED_EVENT, update);
+  }, [billingOwnerId]);
+
+  async function handlePremiumAction(action: "start" | "refresh") {
+    const ownerId = getActiveOwnerId();
+    if (ownerId === "local" || premiumAction || premiumVerifying) return;
+    const checkoutTab = action === "start" ? preparePremiumCheckoutWindow() : null;
+    let checkoutOpened = false;
+    if (action === "refresh") { await premiumAutoRefresh.verify(true); return; }
+    premiumAutoRefresh.setBusy(true);
+    setPremiumAction(action);
+    setPremiumMessage("");
+    try {
+      if (action === "start") {
+        const result = await startPremiumSubscription(ownerId);
+        if (getActiveOwnerId() === ownerId) {
+          setPremiumSubscription(result);
+          premiumAutoRefresh.update(result);
+          premiumAutoRefresh.checkout(true);
+          await openPremiumCheckout(ownerId, result, checkoutTab);
+          checkoutOpened = true;
+          if (getActiveOwnerId() === ownerId) setPremiumMessage(premiumStatusMessage(result, false));
+        }
+      }
+    } catch (error) {
+      premiumAutoRefresh.checkout(false);
+      if (action === "start" && getActiveOwnerId() === ownerId) {
+        try {
+          const latest = await getPremiumSubscription(ownerId);
+          if (getActiveOwnerId() === ownerId) { setPremiumSubscription(latest); premiumAutoRefresh.update(latest); }
+        } catch {
+          // Preserve the original error if the status lookup also fails.
+        }
+      }
+      if (getActiveOwnerId() === ownerId) setPremiumMessage(error instanceof Error ? error.message : "No se pudo completar la operación.");
+    } finally {
+      if (!checkoutOpened) checkoutTab?.close();
+      setPremiumAction(null);
+      premiumAutoRefresh.setBusy(false);
+    }
+  }
 
   async function handleCreateSecurityCopy() {
     try {
@@ -535,7 +610,7 @@ export default function ConfiguracionPage() {
               <p className="font-semibold">ScisoNomics Premium</p>
               <p className="mt-1 text-sm text-slate-400">
                 {premiumActive
-                  ? "Tu plan Premium está activo."
+                  ? "Premium activo."
                   : "Premium desbloquea Presupuestos, Metas de ahorro, Gastos fijos y Planificación."}
               </p>
               <p className="mt-2 text-sm text-slate-300">
@@ -547,12 +622,15 @@ export default function ConfiguracionPage() {
                 </p>
               ) : null}
             </div>
-            {!premiumActive ? (
-              <button className="btn" type="button" onClick={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}>
-                Actualizar a Premium
-              </button>
-            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <PremiumCheckout subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onContinue={() => void handlePremiumAction("start")} />
+              <PremiumVerificationFallback subscription={premiumSubscription} premiumActive={premiumActive} local={activeOwner === "local"} busy={premiumAction !== null || premiumVerifying} onVerify={() => void handlePremiumAction("refresh")} />
+            </div>
           </div>
+          {activeOwner === "local" ? <p className="mt-3 text-sm text-slate-400">Iniciá sesión en una cuenta cloud para contratar Premium.</p> : null}
+          {activeOwner !== "local" ? <PremiumSubscriptionDetails subscription={premiumSubscription} premiumActive={premiumActive} /> : null}
+          {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
+          {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
           <p className="font-semibold">Accesos rápidos</p>
@@ -573,7 +651,7 @@ export default function ConfiguracionPage() {
         <div>
           <h3 className="text-2xl font-black">Cuenta</h3>
           <p className="mt-1 text-sm text-slate-400">
-            Administra modo local, multicuentas, Google Login y cuentas guardadas en este dispositivo.
+            Administrá el modo local, tus cuentas y el acceso con Google en este dispositivo.
           </p>
         </div>
         <AccountPanel showHeader={false} hideSyncCenter />
@@ -699,13 +777,14 @@ export default function ConfiguracionPage() {
           Restaurar copia de seguridad reemplaza tus datos actuales por los datos de la copia seleccionada.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <button className="btn" onClick={handleCreateSecurityCopy}>Crear copia de seguridad</button>
-          <button className="btn-secondary" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada</button>
+          <button className="btn" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada (recomendada)</button>
+          <button className="btn-secondary" onClick={handleCreateSecurityCopy}>Crear copia sin cifrar</button>
           <button className="btn-secondary" onClick={() => setWindowsProtectionOpen(true)}>Proteger datos con Windows</button>
           <button className="btn-secondary" onClick={handlePickRestoreFile}>Restaurar copia de seguridad</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
         </div>
+        <p className="text-sm text-amber-200">La copia sin cifrar contiene tus datos financieros. Guardala solo en un lugar seguro.</p>
         <details className="rounded-2xl border border-line bg-slate-950/20 p-4 text-sm">
           <summary className="cursor-pointer font-semibold text-slate-200">Detalles técnicos</summary>
           <div className="mt-3 space-y-2 text-slate-400">
@@ -760,7 +839,7 @@ export default function ConfiguracionPage() {
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Último backup</p>
             <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavía no creaste un backup"}</p>
-            <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente.</p>
+            <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente. Las copias sin cifrar contienen tus datos financieros: guardalas solo en un lugar seguro.</p>
           </div>
         </div>
         {localIntegrity?.status === "critical" || repairModeActive ? (
@@ -797,15 +876,16 @@ export default function ConfiguracionPage() {
       <div className="space-y-5">
         <div>
           <h3 className="text-2xl font-black">Actualizaciones</h3>
-          <p className="mt-1 text-sm text-slate-400">Las actualizaciones se descargan manualmente desde GitHub Releases.</p>
+          <p className="mt-1 text-sm text-slate-400">ScisoNomics comprueba actualizaciones firmadas en segundo plano.</p>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Versión instalada</p>
           <p className="mt-2 text-3xl font-black text-cyan-100">{APP_VERSION}</p>
-          <p className="mt-2 text-sm text-slate-400">No hay auto-updater real en esta versión. ScisoNomics no descarga ni reemplaza ejecutables automáticamente.</p>
+          <p className="mt-2 text-sm text-slate-400">Tus datos locales y credenciales permanecen en su ubicación habitual al actualizar.</p>
         </div>
+        <AppUpdateSettings />
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-          <button className="btn" type="button" onClick={handleOpenReleases}>Buscar actualizaciones</button>
+          <button className="btn-secondary" type="button" onClick={handleOpenReleases}>Ver instaladores en GitHub</button>
           <button className="btn-secondary" type="button" onClick={() => copyText(RELEASES_URL, "Link de Releases copiado.")}>Copiar link de Releases</button>
         </div>
       </div>
@@ -848,9 +928,9 @@ export default function ConfiguracionPage() {
             <li>Sincronización durante el uso configurable por cuenta e intervalo.</li>
             <li>Sincronización reforzada con snapshot de owner por corrida.</li>
             <li>API local protegida con token de sidecar en app instalada.</li>
-            <li>Google Login consume el resultado de polling una sola vez.</li>
+            <li>Acceso con Google y confirmación de correo desde la app.</li>
             <li>Verificación de cuenta más segura ante errores de red.</li>
-            <li>Migración legacy de movimientos preservando metadata.</li>
+            <li>Los movimientos existentes conservan su cuenta y sus datos.</li>
           </ul>
         </div>
         <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades en modal</button>
@@ -1010,7 +1090,7 @@ export default function ConfiguracionPage() {
             <li>La sincronización usa owner/token congelados durante toda la corrida.</li>
             <li>La app no elimina cuentas guardadas por fallas temporales de conexión.</li>
             <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>
-            <li>Google Login invalida el resultado de polling tras el primer consumo.</li>
+            <li>El acceso con Google vuelve a la app de forma segura.</li>
             <li>Se redujo PII en logs cloud y se corrigieron mensajes visibles.</li>
           </ul>
         </div>

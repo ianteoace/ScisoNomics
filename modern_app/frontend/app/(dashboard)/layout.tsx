@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { Toaster } from "sonner";
 
 import { BackendStartupGate } from "../../components/app/BackendStartupGate";
+import { AppUpdateBanner, AppUpdateProvider } from "../../components/app/AppUpdateProvider";
+import { PremiumAutoRefreshProvider } from "../../components/billing/PremiumAutoRefreshProvider";
 import { Sidebar } from "../../components/layout/Sidebar";
 import { AutoSyncProvider } from "../../components/sync/AutoSyncProvider";
 import { Topbar } from "../../components/layout/Topbar";
@@ -192,13 +194,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
+    <AppUpdateProvider>
     <DashboardUiProvider key={activeOwnerId}>
       <BackendStartupGate>
         <AutoSyncProvider>
+          <PremiumAutoRefreshProvider />
           <div className={`min-h-screen lg:grid ${collapsed ? "lg:grid-cols-[84px_1fr]" : "lg:grid-cols-[250px_1fr]"}`}>
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
             <div className="p-4 lg:p-6">
               <Topbar />
+              <AppUpdateBanner />
               <div className="relative">
                 <div
                   key={`${activeOwnerId}:${currentPathname}`}
@@ -224,5 +229,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </BackendStartupGate>
       <Toaster richColors position="bottom-right" />
     </DashboardUiProvider>
+    </AppUpdateProvider>
   );
 }

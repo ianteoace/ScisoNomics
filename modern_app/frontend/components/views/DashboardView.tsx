@@ -130,7 +130,8 @@ export function DashboardView({
             <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
               <button className="btn" onClick={onQuickNewMovement}>Registrar primer movimiento</button>
               <button className="btn-secondary" onClick={() => window.dispatchEvent(new Event("scisonomics:open-add-account-modal"))}>Agregar cuenta</button>
-              <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear backup</button>
+              <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia sin cifrar</button>
+              <p className="w-full text-xs text-amber-200">Esta copia contiene tus datos financieros sin cifrar. Guardala solo en un lugar seguro.</p>
             </div>
           </div>
         </section>
@@ -220,7 +221,8 @@ export function DashboardView({
           <button className="btn-secondary" onClick={onQuickMovements}>Ver movimientos</button>
           <button className="btn-secondary" onClick={onQuickStats}>Ver estadísticas</button>
           <button className="btn-secondary" onClick={() => onQuickExport().catch(() => undefined)}>Exportar reporte</button>
-          <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia de seguridad</button>
+          <button className="btn-secondary" onClick={() => onQuickBackup().catch(() => undefined)}>Crear copia sin cifrar</button>
+          <p className="w-full text-xs text-amber-200">Esta copia contiene tus datos financieros sin cifrar. Guardala solo en un lugar seguro.</p>
         </div>
       </section>
 

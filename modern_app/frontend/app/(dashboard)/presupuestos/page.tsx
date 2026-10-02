@@ -13,6 +13,8 @@ import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { money, monthName, parseCurrencyInput, yearOptions } from "../../../lib/format";
 import { api } from "../../../services/api";
+import { getActiveOwnerId } from "../../../services/cloudAuth";
+import { useEntitlementsUpdates } from "../../../hooks/useEntitlementsUpdates";
 import { canUseFeature, loadEntitlements, type BillingEntitlements } from "../../../services/entitlements";
 import type { Categoria, Presupuesto } from "../../../types/domain";
 
@@ -23,6 +25,7 @@ export default function PresupuestosPage() {
   const [rows, setRows] = useState<Presupuesto[]>([]);
   const [cats, setCats] = useState<Categoria[]>([]);
   const [entitlements, setEntitlements] = useState<BillingEntitlements | null>(null);
+  useEntitlementsUpdates(setEntitlements);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [open, setOpen] = useState(false);
@@ -34,11 +37,12 @@ export default function PresupuestosPage() {
   const [confirmId, setConfirmId] = useState<number | null>(null);
 
   async function load() {
+    const entitlementsOwnerId = getActiveOwnerId();
     setLoading(true);
-    const [p, c, e] = await Promise.all([api.presupuestos(month, year), api.categorias("gasto"), loadEntitlements({ force: true })]);
+    const [p, c, e] = await Promise.all([api.presupuestos(month, year), api.categorias("gasto"), loadEntitlements({ force: true, ownerId: entitlementsOwnerId })]);
     setRows(Array.isArray(p) ? p : []);
     setCats(Array.isArray(c) ? c : []);
-    setEntitlements(e);
+    if (getActiveOwnerId() === entitlementsOwnerId) setEntitlements(e);
     setLoadError("");
     setLoading(false);
   }
@@ -163,7 +167,7 @@ export default function PresupuestosPage() {
 
       <PremiumGate
         enabled={premiumEnabled}
-        onUpgrade={() => showError("ScisoNomics Premium todavía se habilita manualmente en esta versión.")}
+        onUpgrade={() => router.push("/configuracion?section=general")}
       >
       <section className="card p-5">
       <div className="mb-3 flex items-center justify-between">

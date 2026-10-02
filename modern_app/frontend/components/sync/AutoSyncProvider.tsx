@@ -259,6 +259,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
           unlistenClose = await listen(APP_CLOSE_SYNC_EVENT, async () => {
             clearTimer();
             clearStartupTimer();
+            let safeToInstall = false;
             try {
               await updateCloseTimeoutBudget();
               const idleBeforeClose = await waitForSyncShutdownWindow(updateCloseTimeoutBudget);
@@ -284,6 +285,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
                   ownerId: state.ownerId ? `${state.ownerId.slice(0, 6)}...` : "unknown",
                 });
               } else {
+                safeToInstall = outcome === "success" || outcome === "skipped_no_session";
                 await updateCloseTimeoutBudget();
                 console.info("[auto-sync] app_close sync finished", {
                   reason: "app_close",
@@ -293,7 +295,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
                 });
               }
             } finally {
-              await invoke("complete_app_close_sync").catch(() => null);
+              await invoke("complete_app_close_sync", { success: safeToInstall }).catch(() => null);
             }
           });
         })

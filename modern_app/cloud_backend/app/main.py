@@ -13,9 +13,10 @@ import os
 import re
 import secrets
 import socket
+import sqlite3
 import smtplib
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 from typing import Any, Callable
@@ -23,7 +24,10 @@ from typing import Any, Callable
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import ValidationError
 
 from .auth import (
     create_entitlement_token,
@@ -49,15 +53,21 @@ from .schemas import (
     BillingFeaturesOut,
     AuthResponse,
     EmailVerificationRequiredOut,
+    GoogleLoginStatusRequest,
     LoginRequest,
     LogoutRequest,
     RefreshRequest,
     RegisterRequest,
     ResendEmailVerificationRequest,
+    SupabaseBootstrapRequest,
     UserOut,
     VerifyEmailRequest,
 )
 from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, reset_rate_limit, sync_max_records
+from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supabase_access_token
+from .supabase_bootstrap import audit_link, bootstrap_user
+from . import billing_subscriptions as subscriptions
+from . import mercadopago_billing as mp_billing
 
 
 app = FastAPI(title="ScisoNomics Cloud Auth API", version="3.2.0")
@@ -119,6 +129,33 @@ async def security_limits_middleware(request: Request, call_next):
         except ValueError:
             return JSONResponse(status_code=400, content={"detail": "Content-Length invalido."})
     return await call_next(request)
+
+
+AUTH_NO_STORE_PATHS = {
+    "/auth/register", "/auth/login", "/auth/verify-email",
+    "/auth/resend-email-verification", "/auth/refresh",
+    "/auth/google/start", "/auth/google/status", "/auth/google/callback",
+}
+
+
+@app.middleware("http")
+async def auth_no_store_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith("/auth/google/status/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_auth_validation_error(request: Request, exc: RequestValidationError):
+    # Pydantic's default error includes the rejected input; never echo a login ID.
+    if request.url.path == "/auth/google/status":
+        return JSONResponse(status_code=422, content={"detail": "Solicitud de Google invalida."})
+    if request.url.path in AUTH_NO_STORE_PATHS:
+        errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
+    return await request_validation_exception_handler(request, exc)
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -980,7 +1017,7 @@ def _admin_update_user_entitlements(
     conn.execute(
         """
         UPDATE users
-        SET plan = ?, subscription_status = ?, subscription_expires_at = ?, updated_at = ?
+        SET plan = ?, subscription_status = ?, subscription_expires_at = ?, billing_source = 'manual', updated_at = ?
         WHERE id = ?
         """,
         (normalized_plan, normalized_status, expires_at, now, row["id"]),
@@ -1498,6 +1535,74 @@ def _validate_sync_payload(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _auth_provider_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "auth_provider_conflict", "message": "La identidad externa ya tiene otro vinculo. Requiere revision manual."},
+    )
+
+
+def _get_supabase_user(token: str) -> UserOut:
+    try:
+        identity = verify_supabase_access_token(token)
+    except SupabaseAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
+
+    provider_id = identity["sub"]
+    email = identity["email"]
+    columns = "id, email, display_name, created_at, updated_at, auth_provider_id"
+    try:
+        with connect() as conn:
+            # The provider identity is authoritative once linked. Email changes
+            # must never move it to another internal account.
+            row = conn.execute(
+                f"SELECT {columns} FROM users WHERE auth_provider_id = ?",
+                (provider_id,),
+            ).fetchone()
+            if row is not None:
+                return row_to_user(row)
+
+            rows = conn.execute(
+                f"SELECT {columns} FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 2",
+                (email,),
+            ).fetchall()
+            if not rows:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "internal_account_required", "message": "No existe una cuenta interna. Completa el alta o la migracion de ScisoNomics antes de continuar."},
+                )
+            if len(rows) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "auth_email_ambiguous", "message": "Hay varias cuentas con ese email. Requiere revision manual."},
+                )
+            row = rows[0]
+            if row["auth_provider_id"] not in (None, "", provider_id):
+                raise _auth_provider_conflict()
+
+            # Compare-and-set prevents replacing a concurrently established
+            # link. The partial unique index also protects the provider ID.
+            row = conn.execute(
+                f"UPDATE users SET auth_provider_id = ? "
+                f"WHERE id = ? AND LOWER(TRIM(email)) = ? "
+                f"AND (auth_provider_id IS NULL OR auth_provider_id = '' OR auth_provider_id = ?) "
+                f"RETURNING {columns}",
+                (provider_id, row["id"], email, provider_id),
+            ).fetchone()
+            if row is None:
+                raise _auth_provider_conflict()
+            audit_link(conn, row["id"], "supabase_account_linked")
+            return row_to_user(row)
+    except Exception as exc:
+        # Both engines roll the transaction back before returning a conflict.
+        constraint = getattr(getattr(exc, "diag", None), "constraint_name", None)
+        postgres_collision = getattr(exc, "sqlstate", None) == "23505" and constraint == "idx_users_auth_provider_id"
+        sqlite_collision = isinstance(exc, sqlite3.IntegrityError) and "users.auth_provider_id" in str(exc)
+        if postgres_collision or sqlite_collision:
+            raise _auth_provider_conflict() from None
+        raise
+
+
 def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -1505,7 +1610,9 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
     try:
         payload = decode_access_token(token)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        if not supabase_auth_enabled():
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return _get_supabase_user(token)
 
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Sesion no valida.")
@@ -1640,11 +1747,11 @@ def login(payload: LoginRequest, request: Request):
     enforce_rate_limit(request, "auth-login", identity=email, limit=8, window_seconds=300)
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
+            "SELECT id, email, password_hash, password_auth_enabled, display_name, created_at, updated_at, email_verified FROM users WHERE LOWER(TRIM(email)) = ?",
             (email,),
         ).fetchone()
 
-    if row is None or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
+    if row is None or not row["password_auth_enabled"] or not row["password_hash"] or not verify_password(payload.password, row["password_hash"]):
         with connect() as conn:
             _security_audit(conn, "auth.login", outcome="denied", source_ip=client_ip(request), details={"email": mask_email(email)})
         raise HTTPException(status_code=401, detail="Email o contrasena incorrectos.")
@@ -1746,6 +1853,18 @@ def resend_email_verification(payload: ResendEmailVerificationRequest, request: 
         return _create_signup_verification(conn, user_id=user_row["id"], email=user_row["email"], now=now)
 
 
+@app.post("/auth/supabase/bootstrap", response_model=UserOut)
+def supabase_bootstrap(payload: SupabaseBootstrapRequest, request: Request, authorization: str | None = Header(default=None)):
+    enforce_rate_limit(request, "supabase-bootstrap", limit=30, window_seconds=60)
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, detail={"code": "invalid_supabase_token", "message": "Sesion Supabase requerida."})
+    try:
+        identity = verify_supabase_access_token(authorization.split(" ", 1)[1].strip())
+    except SupabaseAuthError as exc:
+        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
+    return row_to_user(bootstrap_user(identity, _insert_user_with_device_namespace))
+
+
 @app.get("/auth/me")
 def me(user: UserOut = Depends(get_current_user)):
     return {"ok": True, "user_id": user.id, **user.dict()}
@@ -1754,6 +1873,7 @@ def me(user: UserOut = Depends(get_current_user)):
 @app.get("/billing/entitlements", response_model=BillingEntitlementsOut)
 def billing_entitlements(user: UserOut = Depends(get_current_user)):
     with connect() as conn:
+        subscriptions.expire_entitlement_if_due(conn, user.id, now=now_iso())
         row = conn.execute(
             "SELECT id, plan, subscription_status, subscription_expires_at FROM users WHERE id = ?",
             (user.id,),
@@ -1799,6 +1919,206 @@ def admin_set_billing_entitlements_by_email(
         _normalize_subscription_status(payload.subscription_status),
     )
     return _entitlements_from_user_row(updated)
+
+
+def _billing_error(exc: mp_billing.MercadoPagoError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": "No se pudo verificar la suscripcion con Mercado Pago."})
+
+
+@app.get("/billing/subscription")
+def get_billing_subscription(user: UserOut = Depends(get_current_user)):
+    with connect() as conn:
+        return subscriptions.public_status(conn, user.id)
+
+
+@app.post("/billing/subscription")
+def start_billing_subscription(request: Request, user: UserOut = Depends(get_current_user)):
+    enforce_rate_limit(request, "billing-subscription-create", identity=user.id, limit=5, window_seconds=3600)
+    if not mp_billing.configured():
+        raise _billing_error(mp_billing.MercadoPagoError("mercadopago_not_configured", 503))
+    try:
+        amount_text = mp_billing.monthly_amount()
+        base_url = mp_billing.public_api_url()
+        mp_billing.webhook_secret()
+        payer_email = mp_billing.payer_email_for(user.email)
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    with connect() as conn:
+        billing_user = conn.execute("SELECT plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (user.id,)).fetchone()
+        if billing_user is None:
+            raise HTTPException(status_code=404, detail={"code": "user_not_found"})
+        manual_expires = parse_sync_datetime(str(billing_user["subscription_expires_at"] or ""))
+        if (billing_user["billing_source"] != "mercadopago" and billing_user["plan"] == "premium"
+                and billing_user["subscription_status"] in {"active", "trialing"}
+                and (manual_expires is None or manual_expires > datetime.now(timezone.utc))):
+            raise HTTPException(status_code=409, detail={"code": "already_premium"})
+        current = conn.execute("SELECT * FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' AND status IN ('creating','uncertain','pending','authorized','paused') LIMIT 1", (user.id,)).fetchone()
+        if current and current["status"] == "pending" and current["checkout_url"]:
+            try:
+                mp_billing.validate_checkout_url(current["checkout_url"], current["provider_subscription_id"])
+            except mp_billing.MercadoPagoError as exc:
+                raise _billing_error(exc) from exc
+            return subscriptions.public_status(conn, user.id)
+        if current and (current["status"] != "creating" or current["provider_subscription_id"] or current["provider_plan_id"]):
+            raise HTTPException(status_code=409, detail={"code": "subscription_already_exists", "status": current["status"]})
+        if current:
+            if current["currency"] != "ARS":
+                raise HTTPException(status_code=409, detail={"code": "subscription_currency_mismatch"})
+            # Resume an old CardForm intent that has never contacted the provider.
+            intent_id, reference, amount_text = current["id"], current["external_reference"], current["amount"]
+        else:
+            intent_id = str(uuid4())
+            reference = f"scisonomics:{user.id}:{intent_id}"
+            now = now_iso()
+            try:
+                conn.execute(
+                    "INSERT INTO billing_subscriptions (id,user_id,provider,status,currency,amount,external_reference,created_at,updated_at) VALUES (?,?,'mercadopago','creating','ARS',?,?,?,?)",
+                    (intent_id, user.id, amount_text, reference, now, now),
+                )
+            except Exception as exc:
+                if isinstance(exc, sqlite3.IntegrityError) or getattr(exc, "sqlstate", None) == "23505":
+                    raise HTTPException(status_code=409, detail={"code": "subscription_already_exists"}) from None
+                raise
+            _security_audit(conn, "subscription.created", outcome="intent", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
+    # Commit a claim before the POST: even a timeout must never cause a second POST.
+    with connect() as conn:
+        claimed = conn.execute("UPDATE billing_subscriptions SET status = 'uncertain', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'creating' AND provider_subscription_id IS NULL", (now_iso(), intent_id, user.id))
+        if claimed.rowcount != 1:
+            raise HTTPException(status_code=409, detail={"code": "subscription_creation_unconfirmed"})
+    try:
+        provider = mp_billing.request("POST", "/preapproval", payload={
+            "reason": "ScisoNomics Premium mensual",
+            "external_reference": reference,
+            "payer_email": payer_email,
+            "auto_recurring": {"frequency": 1, "frequency_type": "months", "transaction_amount": float(amount_text), "currency_id": "ARS"},
+            "back_url": f"{base_url}/billing/return",
+            "status": "pending",
+        })
+        provider_id, checkout_url = subscriptions.validate_pending_preapproval(provider, reference, amount_text, payer_email)
+        with connect() as conn:
+            updated = conn.execute(
+                "UPDATE billing_subscriptions SET provider_subscription_id = ?, checkout_url = ?, status = CASE WHEN status IN ('creating','uncertain') THEN 'pending' ELSE status END, last_provider_sync_at = ?, updated_at = ? WHERE id = ? AND (provider_subscription_id IS NULL OR provider_subscription_id = ?)",
+                (provider_id, checkout_url, now_iso(), now_iso(), intent_id, provider_id),
+            )
+            if updated.rowcount != 1:
+                raise subscriptions.BillingConflict("subscription_not_owned")
+            _security_audit(conn, "subscription.created", outcome="success", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
+            return subscriptions.public_status(conn, user.id)
+    except mp_billing.MercadoPagoError as exc:
+        with connect() as conn:
+            _security_audit(conn, "subscription.created", outcome="uncertain", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request), details={"code": exc.code})
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+
+
+@app.get("/billing/return", response_class=HTMLResponse)
+def billing_return():
+    return "<html><head><meta charset=\"utf-8\"></head><body><h1>Volvé a ScisoNomics.</h1><p>Estamos verificando tu pago.</p></body></html>"
+
+
+def _refresh_billing_for_user(user_id: str, *, source_ip: str | None = None):
+    with connect() as conn:
+        row = conn.execute("SELECT provider_subscription_id,status FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' ORDER BY created_at DESC LIMIT 1", (user_id,)).fetchone()
+        if row is None:
+            return subscriptions.public_status(conn, user_id)
+        if row["status"] == "creating":
+            return subscriptions.public_status(conn, user_id)
+        provider_id = row["provider_subscription_id"]
+    if not provider_id:
+        raise HTTPException(status_code=409, detail={"code": "subscription_creation_unconfirmed"})
+    invoice, latest_invoice = subscriptions.payment_evidence(provider_id)
+    with connect() as conn:
+        result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=invoice, payment_invoice=latest_invoice)
+        _security_audit(conn, "subscription.updated", outcome="success", actor_id=user_id, source_ip=source_ip, details={"status": result["status"]})
+        return result
+
+
+@app.post("/billing/subscription/refresh")
+def refresh_billing_subscription(request: Request, user: UserOut = Depends(get_current_user)):
+    enforce_rate_limit(request, "billing-subscription-refresh", identity=user.id, limit=12, window_seconds=300)
+    try:
+        return _refresh_billing_for_user(user.id, source_ip=client_ip(request))
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+
+
+@app.post("/billing/subscription/cancel", deprecated=True, include_in_schema=False)
+def cancel_billing_subscription(request: Request, user: UserOut = Depends(get_current_user)):
+    """Temporary compatibility for older desktop clients; current UI uses Mercado Pago."""
+    enforce_rate_limit(request, "billing-subscription-cancel", identity=user.id, limit=5, window_seconds=3600)
+    with connect() as conn:
+        row = conn.execute("SELECT provider_subscription_id,status FROM billing_subscriptions WHERE user_id = ? AND provider = 'mercadopago' ORDER BY created_at DESC LIMIT 1", (user.id,)).fetchone()
+    if row is None or row["status"] not in {"pending", "authorized", "paused"} or not row["provider_subscription_id"]:
+        raise HTTPException(status_code=409, detail={"code": "subscription_not_cancelable"})
+    try:
+        mp_billing.cancel_subscription(row["provider_subscription_id"])
+        result = _refresh_billing_for_user(user.id, source_ip=client_ip(request))
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+    with connect() as conn:
+        _security_audit(conn, "subscription.canceled", outcome="success", actor_id=user.id, source_ip=client_ip(request))
+    return result
+
+
+@app.post("/billing/webhooks/mercadopago")
+async def mercadopago_webhook(request: Request):
+    data_id = request.query_params.get("data.id", "")
+    try:
+        valid = mp_billing.verify_webhook_signature(signature=request.headers.get("x-signature", ""), request_id=request.headers.get("x-request-id", ""), data_id=data_id)
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    if not valid:
+        with connect() as conn:
+            _security_audit(conn, "webhook.rejected", outcome="invalid_signature", source_ip=client_ip(request))
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    try:
+        body = await request.json()
+    except ValueError:
+        with connect() as conn:
+            _security_audit(conn, "webhook.rejected", outcome="invalid_body", source_ip=client_ip(request))
+        raise HTTPException(status_code=400, detail="Invalid webhook body") from None
+    if not isinstance(body, dict) or not isinstance(body.get("data"), dict) or str(body["data"].get("id") or "").lower() != data_id.lower():
+        with connect() as conn:
+            _security_audit(conn, "webhook.rejected", outcome="resource_mismatch", source_ip=client_ip(request))
+        raise HTTPException(status_code=400, detail="Webhook resource mismatch")
+    topic = str(body.get("type") or "")
+    if topic not in {"subscription_preapproval", "subscription_authorized_payment"}:
+        return {"ok": True}
+    event_key = f"{topic}:{body.get('id')}"
+    if not isinstance(body.get("id"), (int, str)) or len(event_key) > 160:
+        raise HTTPException(status_code=400, detail="Invalid webhook event")
+    with connect() as conn:
+        if conn.execute("SELECT 1 FROM billing_webhook_events WHERE event_key = ?", (event_key,)).fetchone():
+            return {"ok": True}
+    try:
+        invoice = mp_billing.get_authorized_payment(data_id) if topic == "subscription_authorized_payment" else None
+        provider_id = str(invoice.get("preapproval_id") or "") if invoice else data_id
+        if not mp_billing.RESOURCE_ID.fullmatch(provider_id):
+            raise mp_billing.MercadoPagoError("mercadopago_invalid_response")
+        approved_invoice, latest_invoice = (invoice if isinstance(invoice.get("payment"), dict) and invoice["payment"].get("status") == "approved" else None, invoice) if invoice else subscriptions.payment_evidence(provider_id)
+        with connect() as conn:
+            result = subscriptions.reconcile_subscription(conn, provider_id=provider_id, now=now_iso(), approved_invoice=approved_invoice, payment_invoice=latest_invoice)
+            subscription_row = conn.execute("SELECT user_id,id FROM billing_subscriptions WHERE provider = 'mercadopago' AND provider_subscription_id = ?", (provider_id,)).fetchone()
+            conn.execute("INSERT INTO billing_webhook_events (event_key,created_at) VALUES (?,?)", (event_key, now_iso()))
+            _security_audit(conn, "subscription.updated", outcome="success", actor_id=subscription_row["user_id"] if subscription_row else None, target_id=subscription_row["id"] if subscription_row else None, details={"status": result["status"]}, source_ip=client_ip(request))
+            _security_audit(conn, "webhook.processed", outcome="success", details={"topic": topic, "status": result["status"]}, source_ip=client_ip(request))
+    except mp_billing.MercadoPagoError as exc:
+        raise _billing_error(exc) from exc
+    except subscriptions.BillingConflict as exc:
+        with connect() as conn:
+            _security_audit(conn, "webhook.rejected", outcome="conflict", details={"code": str(exc)}, source_ip=client_ip(request))
+        raise HTTPException(status_code=409, detail={"code": str(exc)}) from exc
+    except Exception as exc:
+        constraint = getattr(getattr(exc, "diag", None), "constraint_name", None)
+        if constraint == "billing_webhook_events_pkey" or (isinstance(exc, sqlite3.IntegrityError) and "billing_webhook_events.event_key" in str(exc)):
+            return {"ok": True}
+        raise
+    return {"ok": True}
 
 
 @app.post("/auth/refresh", response_model=AuthResponse)
@@ -2029,8 +2349,21 @@ def google_start(request: Request):
     }
 
 
-@app.get("/auth/google/status/{login_request_id}")
-def google_status(login_request_id: str, request: Request):
+@app.post("/auth/google/status")
+def google_status(payload: GoogleLoginStatusRequest, request: Request):
+    return _google_status(payload.login_request_id, request)
+
+
+@app.get("/auth/google/status/{login_request_id}", deprecated=True, include_in_schema=False)
+def google_status_legacy(login_request_id: str, request: Request):
+    try:
+        payload = GoogleLoginStatusRequest(login_request_id=login_request_id)
+    except ValidationError:
+        raise HTTPException(status_code=422, detail="Solicitud de Google invalida.") from None
+    return _google_status(payload.login_request_id, request)
+
+
+def _google_status(login_request_id: str, request: Request):
     init_db()
     now = now_iso()
     device_id, device_name = _extract_device_context(request)
@@ -2059,15 +2392,17 @@ def google_status(login_request_id: str, request: Request):
         if not user_row:
             return {"status": "error", "message": "No se pudo recuperar la sesion de Google."}
         user = row_to_user(user_row)
-        response = _issue_auth_response(conn, user, now=now, device_id=device_id, device_name=device_name)
-        conn.execute(
+        consumed = conn.execute(
             """
             UPDATE google_login_requests
             SET status = 'consumed', updated_at = ?
-            WHERE login_request_id = ?
+            WHERE login_request_id = ? AND status = 'completed' AND expires_at >= ?
             """,
-            (now, login_request_id),
+            (now, login_request_id, now),
         )
+        if consumed.rowcount != 1:
+            return {"status": "consumed", "message": "Esta solicitud de Google Login ya fue utilizada. Intenta nuevamente."}
+        response = _issue_auth_response(conn, user, now=now, device_id=device_id, device_name=device_name)
         return {"status": "completed", **response.model_dump()}
 
 

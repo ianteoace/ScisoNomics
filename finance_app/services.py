@@ -15,6 +15,7 @@ from contextlib import closing
 from contextvars import ContextVar
 
 from .db import CURRENT_SCHEMA_VERSION, Database
+from .restore_validation import open_restore_source, copy_restore_source
 
 _logger = logging.getLogger("scisonomics.backup")
 
@@ -851,18 +852,12 @@ class FinanceService:
         return False
 
     def validate_restore_source(self, source_path: Path) -> None:
-        if not source_path.exists():
-            raise FileNotFoundError("La copia seleccionada no existe.")
-        if source_path.stat().st_size <= 0:
-            raise ValueError("La copia seleccionada esta vacia.")
-        if source_path.suffix.lower() != ".db":
-            raise ValueError("Debes seleccionar un archivo .db valido.")
+        with open_restore_source(source_path):
+            pass
         self._validate_scisonomics_db(source_path)
 
     def restore_database_from_path(self, source_path: Path, backup_before_restore_dir: Path) -> Path:
-        self.validate_restore_source(source_path)
         target = Path(self.db.db_path)
-        safety = self._create_pre_restore_backup(target, backup_before_restore_dir)
 
         tmp_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         tmp = target.parent / f"tmp_restore_{tmp_stamp}.db"
@@ -872,8 +867,9 @@ class FinanceService:
             tmp_suffix += 1
 
         try:
-            shutil.copy2(source_path, tmp)
+            copy_restore_source(source_path, tmp)
             self._validate_scisonomics_db(tmp)
+            safety = self._create_pre_restore_backup(target, backup_before_restore_dir)
             os.replace(tmp, target)
             _logger.info("Restore atomico completado. source=%s safety=%s", source_path.name, safety.name)
         except PermissionError as exc:
