@@ -10,11 +10,28 @@ Desde v3.1.0, una cuenta cloud activa intenta sincronizar al abrir y cerrar la a
 
 ## Descarga
 
-Versión estable actual: **v3.2.0**
+Versión de la aplicación: **3.3.1**
 
-[Descargar ScisoNomics v3.2.0](../../releases/tag/v3.2.0)
+[Descargar ScisoNomics](../../releases)
 
-### Actualizar manualmente
+---
+
+## Novedades de v3.3.1
+
+- Tu saldo ahora se mantiene correctamente al comenzar un nuevo mes.
+- Sincronización cloud opcional para mantener tus datos entre dispositivos.
+- ScisoNomics Premium integrado con Mercado Pago.
+- Backups cifrados para proteger copias de tus datos.
+- Actualizaciones automáticas y verificadas desde la aplicación.
+- Mejoras de seguridad, estabilidad y recuperación de datos.
+
+---
+
+## Historial de versiones
+
+Las siguientes notas e instrucciones describen versiones anteriores.
+
+### Actualizar manualmente — v3.2.0 (referencia histórica)
 
 - Cerra ScisoNomics antes de instalar una version nueva.
 - El instalador de v3.2.0 mantiene el cierre robusto del sidecar, sync confiable y permisos Premium firmados.

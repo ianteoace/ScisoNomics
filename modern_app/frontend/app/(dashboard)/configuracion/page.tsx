@@ -897,7 +897,7 @@ export default function ConfiguracionPage() {
       <div className="space-y-5">
         <div>
           <h3 className="text-2xl font-black">Acerca de ScisoNomics</h3>
-          <p className="mt-1 text-sm text-slate-400">App desktop local-first para finanzas personales.</p>
+          <p className="mt-1 text-sm text-slate-400">Tus finanzas personales, organizadas en tu equipo.</p>
         </div>
         <div className="grid gap-3 lg:grid-cols-2">
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4 text-sm">
@@ -905,35 +905,32 @@ export default function ConfiguracionPage() {
             <div className="mt-3 space-y-1 text-slate-300">
               <p><strong className="text-white">ScisoNomics</strong></p>
               <p>Versión instalada: {APP_VERSION}</p>
-              <p>Tipo: Local-first</p>
-              <p>Stack: Next.js - Tauri - FastAPI - SQLite</p>
+              <p>Tus datos se guardan en tu equipo.</p>
+              <p>Con una cuenta opcional, podés sincronizarlos entre dispositivos.</p>
             </div>
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4 text-sm">
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Estado actual</p>
             <div className="mt-3 space-y-1 text-slate-300">
-              <p>Backend local: <strong>{backendLabel}</strong></p>
+              <p>Estado local: <strong>{backendLabel}</strong></p>
               <p>Base de datos: <strong>{databaseLabel}</strong></p>
               <p>Modo: <strong>{currentMode}</strong></p>
-              <p>Cuenta activa: <strong>{activeSession?.user.email || "local"}</strong></p>
-              <p>Versión backend: <strong>{backendVersion}</strong></p>
-              <p>Compatibilidad: <strong>{backendCompatibilityLabel}</strong></p>
+              <p>Cuenta activa: <strong>{activeSession?.user.email || "Modo local"}</strong></p>
             </div>
           </div>
         </div>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
           <p className="font-semibold">Novedades de v{APP_VERSION}</p>
           <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-slate-300">
-            <li>Sincronización confiable al abrir y cerrar la aplicación.</li>
-            <li>Sincronización durante el uso configurable por cuenta e intervalo.</li>
-            <li>Sincronización reforzada con snapshot de owner por corrida.</li>
-            <li>API local protegida con token de sidecar en app instalada.</li>
-            <li>Acceso con Google y confirmación de correo desde la app.</li>
-            <li>Verificación de cuenta más segura ante errores de red.</li>
-            <li>Los movimientos existentes conservan su cuenta y sus datos.</li>
+            <li>Tu saldo ahora se mantiene correctamente al comenzar un nuevo mes.</li>
+            <li>Sincronización cloud opcional para mantener tus datos entre dispositivos.</li>
+            <li>ScisoNomics Premium integrado con Mercado Pago.</li>
+            <li>Backups cifrados para proteger copias de tus datos.</li>
+            <li>Actualizaciones automáticas y verificadas desde la aplicación.</li>
+            <li>Mejoras de seguridad, estabilidad y recuperación de datos.</li>
           </ul>
         </div>
-        <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades en modal</button>
+        <button className="btn-secondary" type="button" onClick={() => setReleaseNotesOpen(true)}>Ver novedades</button>
       </div>
     );
   }
@@ -1083,15 +1080,14 @@ export default function ConfiguracionPage() {
 
       <Modal open={releaseNotesOpen} title={`Novedades de ScisoNomics ${APP_VERSION}`} onClose={() => setReleaseNotesOpen(false)}>
         <div className="mt-2 space-y-2 text-sm text-slate-300">
-          <p>Esta versión se enfoca en estabilización, seguridad y hardening de sincronización.</p>
+          <p>Tus finanzas, más claras, seguras y conectadas.</p>
           <ul className="list-disc space-y-1 pl-5">
-            <li>La app intenta sincronizar siempre al abrir y cerrar si hay una cuenta cloud activa.</li>
-            <li>La sincronización durante el uso permite elegir un intervalo por cuenta.</li>
-            <li>La sincronización usa owner/token congelados durante toda la corrida.</li>
-            <li>La app no elimina cuentas guardadas por fallas temporales de conexión.</li>
-            <li>El backend local puede requerir token de sidecar para endpoints sensibles.</li>
-            <li>El acceso con Google vuelve a la app de forma segura.</li>
-            <li>Se redujo PII en logs cloud y se corrigieron mensajes visibles.</li>
+            <li>Tu saldo ahora se mantiene correctamente al comenzar un nuevo mes.</li>
+            <li>Sincronización cloud opcional para mantener tus datos entre dispositivos.</li>
+            <li>ScisoNomics Premium integrado con Mercado Pago.</li>
+            <li>Backups cifrados para proteger copias de tus datos.</li>
+            <li>Actualizaciones automáticas y verificadas desde la aplicación.</li>
+            <li>Mejoras de seguridad, estabilidad y recuperación de datos.</li>
           </ul>
         </div>
       </Modal>
