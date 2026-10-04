@@ -82,6 +82,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",

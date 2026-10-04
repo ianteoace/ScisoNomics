@@ -2,15 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getLocalDateInputValue } from "../../lib/date";
-import type { Categoria, GastoFijo, Presupuesto, MetaAhorro } from "../../types/domain";
+import type { Categoria, GastoFijo, Presupuesto, MetaAhorro, GastoProgramado } from "../../types/domain";
 import { getFinanceRepository } from "../../services/data/financeRepository";
-import type { FinanceRepository, FinanceMovimiento } from "../../services/data/financeRepositoryTypes";
+import type { FinanceRepository, FinanceMovimiento, FinanceCalendarDay, SchedulingSummary } from "../../services/data/financeRepositoryTypes";
+import { groupCalendarMovements } from "../../services/data/financeCalendar";
 import type { FinanceSummary } from "../../services/data/financeSummary";
 
 export function useMobileFinance() {
   const [period, setPeriod] = useState(() => getLocalDateInputValue().slice(0, 7));
   const [revision, setRevision] = useState(0);
-  const [data, setData] = useState<{ categories: Categoria[]; movements: FinanceMovimiento[]; summary: FinanceSummary; fixedExpenses: GastoFijo[]; budgets: Presupuesto[]; goals: MetaAhorro[] } | null>(null);
+  const [data, setData] = useState<{ categories: Categoria[]; movements: FinanceMovimiento[]; summary: FinanceSummary; fixedExpenses: GastoFijo[]; budgets: Presupuesto[]; goals: MetaAhorro[]; scheduled: GastoProgramado[]; projection: SchedulingSummary; calendar: FinanceCalendarDay[] } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -23,11 +24,12 @@ export function useMobileFinance() {
     setLoading(true); setError(""); setData(null);
     const [year, month] = period.split("-").map(Number);
     void getFinanceRepository().then(async (repository) => {
-      const [categories, movements, summary, fixedExpenses, budgets, goals] = await Promise.all([
+      const [categories, movements, summary, fixedExpenses, budgets, goals, scheduled, projection] = await Promise.all([
         repository.listCategorias(), repository.listMovimientos({ month, year }), repository.getSummary({ month, year }),
         repository.listGastosFijos(), repository.listPresupuestos({ month, year }), repository.listMetas(),
+        repository.listGastosProgramados(), repository.getSchedulingSummary({ month, year }),
       ]);
-      if (active) setData({ categories, movements, summary, fixedExpenses, budgets, goals });
+      if (active) setData({ categories, movements, summary, fixedExpenses, budgets, goals, scheduled, projection, calendar: groupCalendarMovements(movements) });
     }).catch(() => { if (active) setError("No se pudieron cargar tus datos. Podés reintentar sin borrarlos."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };

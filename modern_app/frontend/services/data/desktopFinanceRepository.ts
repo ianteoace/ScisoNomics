@@ -4,6 +4,13 @@ import { calculateFinanceSummary } from "./financeSummary";
 
 // Keep the existing HTTP, ownership and sync notifications in api.ts.
 export const desktopFinanceRepository: FinanceRepository = {
+  listGastosProgramados: (state = "todos", days) => api.gastosProgramados(state, days),
+  async createGastoProgramado(input) { await api.createGastoProgramado(input); },
+  async updateGastoProgramado(id, input) { await api.updateGastoProgramado(id, input); },
+  async deleteGastoProgramado(id) { await api.deleteGastoProgramado(id); },
+  markGastoProgramadoPaid: (id) => api.marcarPagado(id),
+  getSchedulingSummary: async ({ month, year }) => (await api.stats(month, year)).planificacion,
+  getCalendar: ({ month, year }) => api.calendario(month, year),
   listGastosFijos: () => api.gastosFijos(),
   async createGastoFijo(input) { await api.createGastoFijo(input); },
   async updateGastoFijo(id, input) { await api.updateGastoFijo(id, input); },

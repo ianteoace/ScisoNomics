@@ -1,7 +1,7 @@
-# ScisoNomics Mobile: interfaz local (milestone 4)
+# ScisoNomics Mobile: interfaz local (milestone 5)
 
 La versión de producto sigue siendo 3.3.1. Este milestone implementa únicamente
-categorías, movimientos, gastos fijos, presupuestos y metas locales. Android usa SQLite nativo; Windows continúa
+categorías, movimientos, gastos fijos, planificación, calendario, presupuestos y metas locales. Android usa SQLite nativo; Windows continúa
 usando FastAPI y su SQLite existente. No se cambia el modelo ni los datos desktop.
 
 ## Runtime y almacenamiento
@@ -76,6 +76,65 @@ tres páginas desktop, `GastosFijosView` y la asignación de metas de `Movimient
   el gating comercial mobile es requisito antes de cualquier release pública.
   No se alteran entitlements ni gating desktop.
 
+## Auditoría desktop y decisiones del milestone 5 (previa a implementación)
+
+Revisados `finance_app/db.py`, `finance_app/services.py`, schemas y endpoints
+locales, `services/api.ts`, `types/domain.ts`, las páginas Next de Planificación
+y Calendario, `PlanificacionView`, la ventana Python de planificación y sus
+relaciones con categorías/movimientos/gastos fijos/presupuestos/metas.
+
+- Planificación persiste **gastos_programados**: descripción 1–500, categoría,
+  monto_estimado >0, fecha_vencimiento YYYY-MM-DD, estado pendiente/pagado/cancelado,
+  es_recurrente 0/1, frecuencia mensual/semanal/anual (NULL si no recurrente).
+  Lista global del owner, ordenada por vencimiento/id; filtros de estado y ventana
+  opcional desde hoy hasta hoy + N días, ambos extremos incluidos. Lleva toda la
+  metadata de sync y borrado lógico del resto de entidades.
+- Crear/editar un gasto programado, incluso con estado pagado, **no crea un
+  movimiento**. Marcar pagado es una operación explícita diferente: en una misma
+  transacción cambia estado, crea un gasto real con fecha local de hoy, descripción,
+  categoría y monto estimado, y genera el siguiente pendiente si es recurrente.
+  Repetir sobre pagado no modifica nada. Desktop también admite la operación sobre
+  cancelado desde el servicio, aunque la UI sólo la ofrece para pendiente.
+- La recurrencia usa el vencimiento anterior, no la fecha de pago: semanal +7 días;
+  mensual +1 mes con día limitado al último del destino; anual +1 año con el mismo
+  ajuste (29/2 → 28/2). Desktop evita duplicar el siguiente pendiente por owner,
+  descripción/categoría/monto/fecha, sin requerir igual frecuencia. Editar o borrar
+  planificación no elimina movimientos ya creados. Eliminar una categoría sin
+  movimientos activos también borra lógicamente sus gastos programados.
+- El resumen existente calcula vencidos (<hoy), pendientes próximos 30 días
+  inclusivos, pagados según vencimiento del **mes actual**, y proyección del mes
+  elegido = ingresos reales − gastos reales − pendientes que vencen ese mes.
+  No incluye saldo anterior, ahorros, inversiones, presupuestos, metas ni plantillas
+  de gastos fijos. Se conservarán estos detalles, sin escenarios nuevos ni modificar
+  el saldo real del Dashboard. El resumen se mostrará identificado como proyección.
+- Calendario es **derivado exclusivamente de movimientos reales activos** del
+  owner y mes solicitado, agrupados por fecha y ordenados fecha/id ascendente.
+  No muestra gastos fijos, vencimientos, planificación pendiente ni fechas de metas.
+  Para sus totales desktop clasifica como inversión cualquier categoría cuyo nombre
+  contenga `invers`, conservando el tipo original en el detalle del movimiento.
+  Balance diario = ingreso − gasto − ahorro − inversión. No tiene filtros de eventos.
+- Su grilla desktop empieza lunes, contiene 42 días y permite seleccionar días
+  adyacentes; sólo el mes consultado lleva datos. Al tocar se muestra detalle o
+  estado vacío. Mobile conservará esa semántica con celdas compactas y cantidades,
+  y detalle separado, sin tablas HTML. No habrá tabla calendario ni expansión de
+  gastos fijos día 31: éstos no son una fuente del calendario actual. La regla de
+  ajustar meses cortos pertenece a la recurrencia programada/aplicación de fijos,
+  no a eventos inventados del calendario.
+- V3 será aditiva: una sola tabla gastos_programados, FK compuesta categoría/owner,
+  checks de fecha/estado/frecuencia/montos, índices y trigger de cascade lógico de
+  categoría. V1/v2 permanecerán byte a byte intactas. No se alteran filas existentes.
+- Para el pago explícito se necesita una conexión transaccional única: ejecutar
+  BEGIN/COMMIT mediante llamadas separadas al pool del plugin SQL sería inseguro.
+  Se agregará un puente nativo mobile para ejecutar un batch con bindings en una
+  transacción del pool existente. El SQL seguirá en el repository; no en React.
+  SQLx 0.8.6 ya está en el lockfile; se declarará directamente sólo en target mobile,
+  sin cambiar versiones ni el grafo Windows. No se agregará otro archivo SQLite.
+- Las fechas son días locales sin hora; pago usa getLocalDateInputValue y el
+  calendario Date local al mediodía. No convertir fechas de dominio a UTC.
+  UI compartirá mes/estado y refrescará una vez tras mutar. Planificación lleva
+  premium=true / planning; Calendario es free. Ambos accesibles en desarrollo;
+  gating comercial mobile sigue pendiente antes de distribuir públicamente.
+
 ## Migración v1
 
 Fuente de verdad: `modern_app/frontend/src-tauri/migrations/0001_mobile_finance.sql`.
@@ -86,7 +145,7 @@ El SQL inicial también usa `IF NOT EXISTS`; no incluye DROP ni copia datos desk
 Una migración publicada debe conservarse y las ampliaciones usar otra versión.
 
 SQLx configura `foreign_keys=ON` por conexión, también en el pool. La migración
-declara el PRAGMA y el startup comprueba su valor y que las versiones 1 y 2 figuren exitosas
+declara el PRAGMA y el startup comprueba su valor y que las versiones 1, 2 y 3 figuren exitosas
 en `_sqlx_migrations`. Un PRAGMA ejecutado una sola vez desde JS no garantizaría
 las restricciones en todas las conexiones del pool.
 
@@ -157,7 +216,8 @@ No hay users/auth mobile ni traducción de IDs Windows/Android.
 ## FinanceRepository
 
 Contrato en `services/data/financeRepositoryTypes.ts`: list/create/update/delete
-para categorías y movimientos, más `getSummary({month, year})`.
+para categorías, movimientos, gastos fijos, presupuestos, metas y gastos programados;
+`getSummary`, `getSchedulingSummary`, `getCalendar` y `markGastoProgramadoPaid`.
 Devuelve los tipos existentes `Categoria` y `Movimiento`; las creaciones devuelven
 void como las operaciones desktop. El nombre evita la colisión Windows entre
 `FinanceRepository.ts` y `financeRepository.ts`.
@@ -176,7 +236,7 @@ Al guardar en otro mes la UI muestra ese período.
 
 `MobileApp` es un shell: usa `usePathname()` y los enlaces Next existentes.
 Monta una sola vista según `/dashboard`, `/movimientos`, `/categorias`,
-`/gastos-fijos`, `/presupuestos` o `/metas`.
+`/gastos-fijos`, `/planificacion`, `/calendario`, `/presupuestos` o `/metas`.
 No crea otro router ni monta los layouts/providers financieros desktop.
 Las rutas no implementadas en mobile vuelven a `/dashboard`.
 
@@ -192,6 +252,10 @@ La lista de secciones permite agregar módulos futuros cuando estén implementad
 - Movimientos: cards, mes/año, filtro por tipo y crear/editar/eliminar con confirmación.
 - Categorías: filtro por tipo, crear/editar/eliminar con confirmación.
 - Gastos fijos: plantillas mensuales, categoría, monto, día y estado; CRUD.
+- Planificación: gastos programados CRUD, filtros de estado, recurrencias, proyección
+  y pago explícito con confirmación que registra un gasto real.
+- Calendario: grilla lunes/domingo de 42 celdas, navegación mensual y detalle de
+  movimientos reales al tocar un día. Sin fuentes planificadas ni tabla calendario.
 - Presupuestos: mes/año, límites por categoría, consumo real, restante y porcentaje; CRUD.
 - Metas: objetivo/inicial/fecha/estado, avance por ahorros asignados y CRUD.
 - Formularios: montos con teclado decimal/parser desktop, fecha local, categoría,
@@ -218,7 +282,9 @@ un nombre/tipo eliminado sigue reservado, como desktop; no se resucita en silenc
 No se modifica la migración v1. V2 agrega los módulos descritos más abajo.
 
 Después de cada escritura hay una recarga compartida de categorías, movimientos
-y resumen, gastos fijos, presupuestos y metas. Las seis lecturas se hacen en paralelo
+y resumen, gastos fijos, presupuestos, metas, gastos programados y proyección.
+Las ocho lecturas se hacen en paralelo; el calendario deriva de los movimientos
+ya cargados sin otra consulta. Se ejecutan
 una vez por carga/escritura/período, no por navegación. Se bloquean submits duplicados, se descartan lecturas tardías de otro
 período y no se actualiza un componente desmontado. No hay polling.
 
@@ -285,7 +351,7 @@ Windows, Premium, backups y demás módulos requieren milestones independientes.
 
 `0002_mobile_planning.sql` se registra como versión 2 / `mobile_planning`, sólo
 en el plugin mobile. SQLx aplica una vez y verifica el checksum. Startup comprueba
-v1 y v2 antes de abrir el shell; un fallo permite Reintentar sin borrar almacenamiento.
+v1 y v2 (desde milestone 5 también v3) antes de abrir el shell; un fallo permite Reintentar sin borrar almacenamiento.
 
 | Tabla | Campos propios y restricciones |
 |---|---|
@@ -313,7 +379,116 @@ del API existente. No se agregan llamadas HTTP ni se modifica el API desktop.
 Sidebar reserva metadata `premium=true`, feature keys `fixed_expenses`, `budgets`,
 `saving_goals`. No representa una autorización comercial ni llama a billing.
 El gating mobile deberá implementarse antes de distribuir una release pública.
-Siguen pendientes Planificación, Calendario, Estadísticas, Reporte y Configuración.
+Planificación y Calendario se incorporan en v3; siguen pendientes Estadísticas,
+Reporte y Configuración.
+
+## Migración v3, planificación y calendario
+
+`0003_mobile_scheduling.sql`, versión 3 / `mobile_scheduling`, crea únicamente
+`gastos_programados`: id, descripción, categoría, monto estimado, vencimiento,
+estado, recurrencia y frecuencia, más owner/sync_id/created_at/updated_at/deleted_at/
+sync_status/last_synced_at. CHECK exige texto no vacío hasta 500, monto positivo,
+fecha real YYYY-MM-DD, estado válido y frecuencia coherente con recurrencia.
+FK `(categoria_id, owner_user_id)` mantiene aislamiento; índices por owner/estado/
+vencimiento y categoría/owner. Un trigger nuevo borra lógicamente planificación
+cuando se elimina una categoría, sin alterar los triggers ni SQL de v1/v2.
+
+Los nuevos métodos son listGastosProgramados(estado, días), createGastoProgramado,
+updateGastoProgramado, deleteGastoProgramado, markGastoProgramadoPaid,
+getSchedulingSummary(período) y getCalendar(período). Desktop delega a
+gastosProgramados/create/update/delete/marcarPagado, stats.planificacion y
+calendario del API existente; no se cambia ningún endpoint ni página desktop.
+
+`mobileSchedulingRepository` conserva todo el SQL con bindings. El pago usa tres
+sentencias que vuelven a comprobar registro/owner/estado/categoría dentro de la
+misma transacción: insertar el gasto real de hoy, crear el siguiente pendiente
+si no existe, y marcar pagado. Si una falla, rollback revierte las tres. Repetir
+un pago no vuelve a generar movimientos. No usa valores financieros de una lectura
+previa para escribir. El puente `mobile_sql_transaction` usa el pool del plugin
+existente, sólo se compila/registra en mobile y devuelve cantidades de cambios;
+los errores nativos no exponen SQL ni datos. SQLx se declara en Cargo sólo para
+Android/iOS en la misma versión 0.8.6 previamente resuelta, sin nuevas versiones.
+
+Calendar deriva de los movimientos compartidos, sin otra lectura ni tabla.
+También existe getCalendar para consumidores del contrato: filtra por owner y
+mes y excluye tombstones. Días sin datos siguen visibles; detalle distingue
+Ingreso/Gasto/Ahorro/Inversión textualmente. La categoría legacy `invers` sólo
+afecta sus totales, igual que desktop. Metadatos timestamp nunca son fechas de
+evento: el modelo de dominio sólo admite fechas sin hora. `financeCalendar`
+construye fechas locales al mediodía y reusa getLocalDateInputValue; evita parsear
+YYYY-MM-DD como UTC. Navegar diciembre/enero conserva el año correctamente.
+
+Drawer: Inicio, Movimientos, Categorías, Gastos fijos, Planificación, Calendario,
+Presupuestos, Metas. Planificación lleva premium/planning; Calendario free.
+No se implementan auth, billing, gating, sync ni notificaciones mobile.
+Diferencias UX: cards en lugar de tablas y confirmación explícita antes de
+registrar un pago. El Dashboard real conserva su fórmula; proyección se muestra
+por separado en Planificación. El calendario no anticipa gastos fijos día 31 ni
+vencimientos programados: sólo muestra movimientos reales, como desktop.
+
+## Prueba manual del milestone 5
+
+Instalar sobre el mismo sandbox v2, sin desinstalar ni limpiar datos. Comparar
+por SELECT todos los campos de las cinco tablas anteriores, incluidos tombstones;
+comprobar SQLx v1/v2/v3 y foreign_key_check. Después crear/editar un gasto
+programado recurrente, cerrar/reabrir y verificar identidad y proyección. Usar
+Marcar pagado y su confirmación para probar la transacción nativa: exactamente
+un gasto real con fecha local de hoy y el próximo vencimiento. Eliminar el
+programado pagado no debe borrar el movimiento ni la próxima recurrencia.
+
+Calendario: seleccionar un día con movimientos y otro vacío; navegar meses y
+ambos cruces de año. Los vencimientos planificados/fijos no deben aparecer sin
+movimiento real. Comprobar las ocho rutas desde drawer, su cierre/foco/scroll y
+las vistas/formulario a 320, 360, 390 y 430 px, sin desborde horizontal.
+
+Validación automática del milestone 5: test:mobile 76/76, mobileUi 38/38,
+platformStartup 24/24, auth 68/68, billing 45/45 y updater 32/32. TypeScript y
+build/export frontend correctos. Cargo check Windows correcto y cargo test
+Windows 9/9 en ejecución normal, incluido PKCE, sin repetir en serial ni tocar
+auth. Android x86_64 compiló e instaló mediante el comando indicado.
+
+Upgrade real comprobado el 4 de octubre de 2026 sobre el mismo package debug:
+SQLx v1/v2/v3 exitosas y foreign_key_check vacío. Las cinco categorías, cinco
+movimientos (incluidos tombstones), gasto fijo eliminado, presupuesto activo y
+meta eliminada conservaron exactamente todos sus campos. La tabla nueva estaba
+vacía y el Dashboard mantuvo saldo 7734 y balance mensual 8234. No se modificaron
+las migrations v1/v2, la versión, identifiers ni configuración desktop.
+
+Prueba funcional desde la UI del WebView: Seguro M5, categoría Servicios M4,
+mensual con vencimiento 2026-10-31, monto 100 → 150. La proyección pasó de 8134
+a 8084 y el saldo real siguió en 7734. Se guardó la edición con teclado Android
+abierto, desplazando el formulario y tocando Guardar. Un force-stop y arranque
+COLD conservaron todos los campos editados, sync_id, owner y created_at.
+
+Marcar pagado y Confirmar pago ejecutaron la transacción nativa: exactamente un
+gasto de 150 con fecha local 2026-10-04, owner local y UUID propio; programado
+original pagado y próxima recurrencia pendiente 2026-11-30. Calendario mostró
+cinco movimientos ese día, ingreso 11234, gasto 3150, ahorro 500 y balance 7584.
+Los días 31/10 y 30/11 siguieron vacíos. Se comprobó septiembre vacío, octubre,
+noviembre, diciembre, enero 2027 y regreso a diciembre 2026/octubre.
+
+Eliminar la planificación pagada y otro force-stop/arranque COLD conservaron su
+tombstone, el gasto real y la próxima recurrencia. Todos los campos de las cinco
+tablas anteriores siguieron idénticos; foreign_key_check vacío. El presupuesto
+mostró consumo 3150, restante -650 y 126%, sólo después del pago real. No hubo
+consumo por el vencimiento pendiente de noviembre.
+
+Las ocho rutas se navegaron continuamente desde el drawer, sin home intermedia.
+X/Escape/overlay cerraron y restauraron foco al menú. A 320 × 400 el drawer tuvo
+398 px de alto y 651 px de contenido con ocho enlaces accesibles mediante scroll.
+Planificación, su formulario y Calendario pasaron las 12 combinaciones a
+320/360/390/430 px sin desborde horizontal, botones de al menos 44 px de alto y
+42 celdas en Calendario. Se inspeccionaron capturas nativas, incluido Calendario
+a 320 px, y el WebView final no registró errores de JavaScript.
+
+Incidencia del entorno: Pixel_8 con imagen Android 17 beta perdió temporalmente
+el servicio activity y registró abortos repetidos del HAL UWB. El reinicio normal
+restauró ese estado bloqueado. El arranque sin snapshot, autorizado expresamente,
+conservó el disco de datos; todos los campos anteriores se volvieron a comparar.
+Durante el arranque lento hubo un aborto de Wry GetWebViewVersion/SendError; una
+vez completado el boot, el siguiente inicio de la app y las pruebas anteriores
+pasaron. No se parchearon Wry/Android ni se borró el sandbox. No se validó iOS,
+un dispositivo físico ni un instalador Windows completo en este milestone.
 
 ## Prueba manual del milestone 4
 

@@ -15,6 +15,8 @@ require.extensions[".ts"] = (module, filename) => {
 const root = path.resolve(__dirname, "..");
 const schema = fs.readFileSync(path.join(root, "src-tauri/migrations/0001_mobile_finance.sql"), "utf8");
 const planningSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0002_mobile_planning.sql"), "utf8");
+const schedulingSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0003_mobile_scheduling.sql"), "utf8");
+const corePath = require.resolve("@tauri-apps/api/core");
 const driverPath = require.resolve("@tauri-apps/plugin-sql");
 const apiPath = path.join(root, "services/api.ts");
 const movement = { fecha: "2026-10-04", tipo: "ingreso", categoria_id: 1, descripcion: "Ingreso demo", monto: 10000 };
@@ -22,6 +24,7 @@ const period = { year: 2026, month: 10 };
 
 function fixture(t, filename = ":memory:") {
   const previousWindow = global.window;
+  const previousCore = require.cache[corePath];
   const previousDriver = require.cache[driverPath], previousApi = require.cache[apiPath];
   global.window = { __TAURI_INTERNALS__: {}, navigator: { userAgent: "Android" } };
   const state = { loads: 0, statements: [], databases: [], failLoads: false, disableFK: false, omitMigration: false, failWrites: false, desktopCalls: [] };
@@ -40,6 +43,8 @@ function fixture(t, filename = ":memory:") {
       raw.exec("CREATE TABLE IF NOT EXISTS _sqlx_migrations(version INTEGER PRIMARY KEY, success INTEGER)");
       if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=1").get()) { raw.exec(schema); raw.exec("INSERT INTO _sqlx_migrations VALUES(1,1)"); }
       if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=2").get()) { raw.exec(planningSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(2,1)"); }
+      if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=3").get()) { raw.exec(schedulingSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(3,1)"); }
+      if (state.omitSchedulingMigration) raw.exec("DELETE FROM _sqlx_migrations WHERE version=3");
       if (state.disableFK) raw.exec("PRAGMA foreign_keys = OFF");
       if (state.omitMigration) raw.exec("DELETE FROM _sqlx_migrations");
       if (state.omitPlanningMigration) raw.exec("DELETE FROM _sqlx_migrations WHERE version=2");
@@ -58,9 +63,21 @@ function fixture(t, filename = ":memory:") {
     }
   }
   require.cache[driverPath] = { id: driverPath, filename: driverPath, loaded: true, exports: { __esModule: true, default: Driver } };
-  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento", "gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta"].map((name) => [name, async (...args) => {
+  require.cache[corePath] = { id: corePath, filename: corePath, loaded: true, exports: { invoke: async (name, { statements }) => {
+    assert.equal(name, "mobile_sql_transaction");
+    const raw = state.databases.at(-1); raw.exec("BEGIN IMMEDIATE");
+    try {
+      const changes = statements.map(({ sql, values }, index) => {
+        if (state.failTransactionAt === index) throw new Error("private SQL transaction error");
+        state.statements.push({ sql, params: values });
+        const bound = bind(raw, sql, values); return Number(bound.statement.run(...bound.values).changes);
+      });
+      raw.exec("COMMIT"); return changes;
+    } catch (error) { raw.exec("ROLLBACK"); throw error; }
+  } } };
+  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento", "gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta", "gastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "marcarPagado", "stats", "calendario"].map((name) => [name, async (...args) => {
     state.desktopCalls.push({ name, args });
-    return name === "categorias" ? [{ id: 41, nombre: "Desktop", tipo: "gasto" }] : name === "movimientos" ? { rows: [{ ...movement, id: 42, categoria: "Desktop", saldo_acumulado: 10000 }], summary: { saldo_inicial: 700 } } : { ok: true };
+    return name === "categorias" ? [{ id: 41, nombre: "Desktop", tipo: "gasto" }] : name === "movimientos" ? { rows: [{ ...movement, id: 42, categoria: "Desktop", saldo_acumulado: 10000 }], summary: { saldo_inicial: 700 } } : name === "stats" ? { planificacion: { balance_proyectado_mes: 0 } } : { ok: true };
   }]));
   require.cache[apiPath] = { id: apiPath, filename: apiPath, loaded: true, exports: { api } };
   function modules() {
@@ -70,6 +87,7 @@ function fixture(t, filename = ":memory:") {
   t.after(() => {
     for (const db of state.databases) db.close();
     global.window = previousWindow;
+    if (previousCore) require.cache[corePath] = previousCore; else delete require.cache[corePath];
     if (previousDriver) require.cache[driverPath] = previousDriver; else delete require.cache[driverPath];
     if (previousApi) require.cache[apiPath] = previousApi; else delete require.cache[apiPath];
   });
@@ -80,7 +98,7 @@ test("repository contract selects mobile without any desktop API calls", async (
   const state = fixture(t), m = state.modules();
   const repository = await m.getFinanceRepository();
   assert.equal(repository, m.mobileFinanceRepository);
-  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento", "listGastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "listPresupuestos", "createPresupuesto", "updatePresupuesto", "deletePresupuesto", "listMetas", "createMeta", "updateMeta", "deleteMeta"].sort());
+  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento", "listGastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "listPresupuestos", "createPresupuesto", "updatePresupuesto", "deletePresupuesto", "listMetas", "createMeta", "updateMeta", "deleteMeta", "listGastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "markGastoProgramadoPaid", "getSchedulingSummary", "getCalendar"].sort());
   await repository.createCategoria({ nombre: "Prueba Mobile", tipo: "ingreso" });
   await repository.createMovimiento(movement);
   assert.equal((await repository.listCategorias())[0].id, 1);
@@ -119,14 +137,14 @@ test("SQLite is lazy, reused by concurrent callers and guarded even after cachin
 
 test("failed initialization is sanitized, retryable and checks migration and foreign keys", async (t) => {
   const state = fixture(t), m = state.modules();
-  for (const flag of ["failLoads", "disableFK", "omitMigration", "omitPlanningMigration"]) {
+  for (const flag of ["failLoads", "disableFK", "omitMigration", "omitPlanningMigration", "omitSchedulingMigration"]) {
     state[flag] = true;
     await assert.rejects(m.getMobileDatabase(), (error) => {
       assert.match(error.message, /almacenamiento local/); assert.doesNotMatch(error.message, /private|SELECT/); return true;
     });
     state[flag] = false;
   }
-  await m.getMobileDatabase(); assert.equal(state.loads, 5);
+  await m.getMobileDatabase(); assert.equal(state.loads, 6);
 });
 
 test("new local records have independent UUIDs, timestamps, pending status and valid mapping", async (t) => {
@@ -216,7 +234,7 @@ test("migration v1 is idempotent and rejects invalid direct writes", async (t) =
   for (const [fecha, tipo, monto] of [["2026-02-30", "gasto", 10], ["2026-01-01", "other", 10], ["2026-01-01", "gasto", 0]]) {
     assert.throws(() => raw.prepare("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,sync_id) VALUES(?, ?, 1, ?, 'bad')").run(fecha, tipo, monto), /CHECK/);
   }
-  assert.deepEqual(raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_sqlx_%' ORDER BY name").all().map((r) => r.name), ["categorias", "gastos_fijos", "metas_ahorro", "movimientos", "presupuestos"]);
+  assert.deepEqual(raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_sqlx_%' ORDER BY name").all().map((r) => r.name), ["categorias", "gastos_fijos", "gastos_programados", "metas_ahorro", "movimientos", "presupuestos"]);
 });
 
 test("saved demo data survives closing and reopening the database with balance 7500", async (t) => {
@@ -388,7 +406,7 @@ test("v1 to v2 upgrade preserves every existing field, tombstones, IDs and balan
   assert.deepEqual(upgraded.prepare("PRAGMA foreign_key_check").all(), []);
   await (await m.getMobileDatabase()).close(); m = state.modules(); await m.getMobileDatabase();
   assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo, 700);
-  assert.deepEqual(state.databases[0].prepare("SELECT version,success FROM _sqlx_migrations ORDER BY version").all().map((r) => ({ ...r })), [{ version: 1, success: 1 }, { version: 2, success: 1 }]);
+  assert.deepEqual(state.databases[0].prepare("SELECT version,success FROM _sqlx_migrations ORDER BY version").all().map((r) => ({ ...r })), [{ version: 1, success: 1 }, { version: 2, success: 1 }, { version: 3, success: 1 }]);
 });
 
 test("fixed expense CRUD preserves identity and persists without generating financial movements", async (t) => {
@@ -536,4 +554,145 @@ test("desktop planning adapter delegates to existing API and never opens SQLite"
   await r.listMetas(); await r.createMeta(goal); await r.updateMeta(1, goal); await r.deleteMeta(1);
   assert.deepEqual(state.desktopCalls.map((r) => r.name), ["gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta"]);
   assert.deepEqual(state.desktopCalls[4].args, [10, 2026]); assert.deepEqual(state.desktopCalls[6].args, [budget]); assert.equal(state.loads, 0);
+});
+
+const scheduled = { descripcion: "Seguro", categoria_id: 1, monto_estimado: 100, fecha_vencimiento: "2026-10-31", estado: "pendiente", es_recurrente: 1, frecuencia: "mensual" };
+const { calendarGrid, adjacentPeriod, localCalendarDate } = require("../services/data/financeCalendar.ts");
+const { getLocalDateInputValue } = require("../lib/date.ts");
+
+test("scheduling CRUD persists identity and tombstones without changing real balance or budgets", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "scisonomics-scheduling-"));
+  const state = fixture(t, path.join(temp, "mobile.db")); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  let m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Seguro", tipo: "gasto" }); await r.createPresupuesto(budget); await r.createMovimiento(movement);
+  await r.createGastoProgramado(scheduled);
+  const raw = state.databases[0], before = raw.prepare("SELECT * FROM gastos_programados").get();
+  await r.updateGastoProgramado(1, { ...scheduled, monto_estimado: 200, descripcion: "Seguro editado", estado: "pagado", es_recurrente: 0, frecuencia: "mensual" });
+  assert.deepEqual(identity(raw.prepare("SELECT * FROM gastos_programados").get()), identity(before));
+  assert.equal((await r.getSummary(period)).saldo, 10000); assert.equal((await r.listPresupuestos(period))[0].monto_gastado, 0);
+  assert.equal((await r.listGastosProgramados())[0].frecuencia, null);
+  await (await m.getMobileDatabase()).close(); m = state.modules(); r = m.mobileFinanceRepository;
+  assert.equal((await r.listGastosProgramados("pagado"))[0].descripcion, "Seguro editado");
+  await r.deleteGastoProgramado(1); await (await m.getMobileDatabase()).close(); m = state.modules();
+  assert.deepEqual(await m.mobileFinanceRepository.listGastosProgramados(), []);
+  assert.ok(state.databases[0].prepare("SELECT deleted_at FROM gastos_programados").get().deleted_at);
+  assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo, 10000);
+});
+
+test("explicit payment is atomic, idempotent and creates exactly one real expense plus next recurrence", async (t) => {
+  t.mock.method(require("../lib/date.ts"), "getLocalDateInputValue", () => "2026-10-04");
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Seguro", tipo: "gasto" }); await r.createPresupuesto(budget); await r.createGastoProgramado(scheduled);
+  state.failTransactionAt = 1;
+  await assert.rejects(r.markGastoProgramadoPaid(1), (e) => { assert.match(e.message, /No se guardaron/); assert.doesNotMatch(e.message, /SQL|private/); return true; });
+  assert.equal((await r.listMovimientos(period)).length, 0); assert.equal((await r.listGastosProgramados())[0].estado, "pendiente");
+  delete state.failTransactionAt;
+  const results = await Promise.all([r.markGastoProgramadoPaid(1), r.markGastoProgramadoPaid(1)]);
+  assert.equal(results.filter((r) => r.changed).length, 1);
+  const moves = await r.listMovimientos(period); assert.equal(moves.length, 1); assert.equal(moves[0].fecha, getLocalDateInputValue()); assert.equal(moves[0].tipo, "gasto");
+  assert.equal(moves[0].monto, 100); assert.equal((await r.listPresupuestos(period))[0].monto_gastado, 100);
+  const next = (await r.listGastosProgramados("pendiente"))[0]; assert.equal(next.fecha_vencimiento, "2026-11-30");
+  assert.equal((await r.getSummary(period)).saldo, -100);
+  assert.equal((await r.markGastoProgramadoPaid(1)).changed, false);
+  await r.deleteGastoProgramado(1); assert.equal((await r.listMovimientos(period)).length, 1);
+});
+
+test("recurrence follows desktop clamping, week/year transitions and next-pending deduplication", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Seguro", tipo: "gasto" });
+  const cases = [["2026-01-31","mensual","2026-02-28"],["2028-01-31","mensual","2028-02-29"],["2026-12-31","mensual","2027-01-31"],["2028-02-29","anual","2029-02-28"],["2026-12-28","semanal","2027-01-04"]];
+  for (const [date, frequency, expected] of cases) {
+    await r.createGastoProgramado({ ...scheduled, descripcion: date, fecha_vencimiento: date, frecuencia: frequency });
+    const current = (await r.listGastosProgramados()).find((row) => row.descripcion === date && row.fecha_vencimiento === date);
+    await r.markGastoProgramadoPaid(current.id);
+    assert.equal((await r.listGastosProgramados("pendiente")).find((row) => row.descripcion === date).fecha_vencimiento, expected);
+  }
+  await r.createGastoProgramado(scheduled);
+  await r.createGastoProgramado({ ...scheduled, fecha_vencimiento: "2026-11-30", frecuencia: "anual" });
+  const current = (await r.listGastosProgramados()).find((row) => row.descripcion === "Seguro" && row.fecha_vencimiento === scheduled.fecha_vencimiento);
+  assert.equal((await r.markGastoProgramadoPaid(current.id)).generated_next, false);
+  assert.equal((await r.listGastosProgramados("pendiente")).filter((r) => r.descripcion === "Seguro").length, 1);
+  await r.createGastoProgramado({ ...scheduled, descripcion: "Boundary", fecha_vencimiento: "9999-12-31" });
+  const boundary = (await r.listGastosProgramados()).find((r) => r.descripcion === "Boundary");
+  const count = state.databases[0].prepare("SELECT COUNT(*) AS n FROM movimientos").get().n;
+  await assert.rejects(r.markGastoProgramadoPaid(boundary.id));
+  assert.equal(state.databases[0].prepare("SELECT COUNT(*) AS n FROM movimientos").get().n, count);
+  assert.equal((await r.listGastosProgramados()).find((r) => r.id === boundary.id).estado, "pendiente");
+});
+
+test("scheduling projections retain desktop today-window and due-month semantics", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Seguro", tipo: "gasto" });
+  const today = getLocalDateInputValue(), [year,month,day] = today.split("-").map(Number);
+  const dateAt = (delta) => getLocalDateInputValue(localCalendarDate(year,month,day+delta));
+  for (const [date, amount, status] of [[dateAt(-1), 10, "pendiente"], [today,20,"pendiente"], [dateAt(30),30,"pendiente"], [dateAt(31),40,"pendiente"], [today,50,"pagado"], [today,60,"cancelado"]]) await r.createGastoProgramado({ ...scheduled, fecha_vencimiento: date, monto_estimado: amount, estado: status });
+  assert.equal((await r.listGastosProgramados("pendiente",30)).length, 2);
+  await r.createMovimiento({ ...movement, fecha: today, monto: 1000 });
+  await r.createMovimiento({ ...movement, fecha: today, tipo: "gasto", monto: 100 });
+  await r.createMovimiento({ ...movement, fecha: today, tipo: "ahorro", monto: 200 });
+  const projection = await r.getSchedulingSummary({ year,month });
+  assert.equal(projection.total_pendiente_30_dias,50); assert.equal(projection.total_vencido,10); assert.equal(projection.total_pagado_mes,50);
+  const dueThisMonth = (await r.listGastosProgramados("pendiente")).filter((row) => row.fecha_vencimiento.slice(0,7) === today.slice(0,7)).reduce((sum,row)=>sum+row.monto_estimado,0);
+  assert.equal(projection.balance_proyectado_mes,900-dueThisMonth);
+  assert.equal((await r.getSummary({ year,month })).saldo,700);
+  await r.deleteGastoProgramado(2); assert.equal((await r.getSchedulingSummary({year,month})).total_pendiente_30_dias,30);
+});
+
+test("scheduling rejects invalid inputs, foreign owners, deleted records and unsafe relationships", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  for (const patch of [{ descripcion:" " },{ descripcion:"x".repeat(501) },{ monto_estimado:0 },{ categoria_id:-1 },{ fecha_vencimiento:"2026-02-29" },{ estado:"bad" },{ es_recurrente:2 },{ frecuencia:"diaria" }]) await assert.rejects(r.createGastoProgramado({...scheduled,...patch}));
+  assert.equal(state.loads,0);
+  await r.createCategoria({nombre:"Seguro",tipo:"gasto"}); await r.createGastoProgramado(scheduled);
+  const raw=state.databases[0]; raw.exec("INSERT INTO categorias(nombre,tipo,owner_user_id,sync_id) VALUES('Other','gasto','other','other-cat')");
+  raw.exec("INSERT INTO gastos_programados(descripcion,categoria_id,monto_estimado,fecha_vencimiento,owner_user_id,sync_id) VALUES('Other',2,1,'2026-10-04','other','other-schedule')");
+  await assert.rejects(r.markGastoProgramadoPaid(2)); await assert.rejects(r.updateGastoProgramado(2,scheduled)); await assert.rejects(r.deleteGastoProgramado(2));
+  assert.throws(()=>raw.exec("INSERT INTO gastos_programados(descripcion,categoria_id,monto_estimado,fecha_vencimiento,sync_id) VALUES('Cross',2,1,'2026-10-04','cross')"), /FOREIGN KEY/);
+  await r.deleteCategoria(1); assert.deepEqual(await r.listGastosProgramados(),[]); await assert.rejects(r.markGastoProgramadoPaid(1));
+  assert.ok(raw.prepare("SELECT deleted_at FROM gastos_programados WHERE id=1").get().deleted_at);
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(),[]);
+});
+
+test("calendar uses actual active movements only, groups days and preserves desktop investment totals", async (t) => {
+  t.mock.method(require("../lib/date.ts"), "getLocalDateInputValue", () => "2026-10-04");
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;
+  await r.createCategoria({nombre:"Seguro",tipo:"gasto"}); await r.createCategoria({nombre:"Inversiones legacy",tipo:"gasto"});
+  await r.createGastoProgramado(scheduled); await r.createGastoFijo(fixed); await r.createMeta(goal);
+  await r.createMovimiento({...movement,monto:500}); await r.createMovimiento({...movement,tipo:"gasto",monto:100});
+  await r.createMovimiento({...movement,tipo:"gasto",categoria_id:2,monto:20}); await r.createMovimiento({...movement,fecha:"2026-10-05",tipo:"ahorro",monto:50});
+  await r.createMovimiento({...movement,monto:999}); await r.deleteMovimiento(5);
+  let days=await r.getCalendar(period); assert.equal(days.length,2); assert.deepEqual(days[0].movimientos.map(r=>r.id),[1,2,3]);
+  assert.deepEqual(days[0].totales,{ingreso:500,gasto:100,ahorro:0,inversion:20}); assert.equal(days[0].movimientos[2].tipo,"gasto");
+  assert.deepEqual(await r.getCalendar({year:2027,month:1}),[]);
+  await r.markGastoProgramadoPaid(1); days=await r.getCalendar(period);
+  assert.equal(days.reduce((n,d)=>n+d.movimientos.length,0),5);
+  assert.deepEqual(state.desktopCalls,[]);
+});
+
+test("calendar grid starts Monday with 42 cells and correct local dates across month/year boundaries", (t) => {
+  const previous=process.env.TZ; process.env.TZ="America/Argentina/Buenos_Aires"; t.after(()=>{if(previous===undefined)delete process.env.TZ;else process.env.TZ=previous;});
+  for(const [year,month,total] of [[2026,2,28],[2028,2,29],[2026,12,31],[2027,1,31]]) {
+    const cells=calendarGrid({year,month}); assert.equal(cells.length,42); assert.equal(cells.filter(c=>c.inMonth).length,total);
+    const [y,m,d]=cells[0].iso.split("-").map(Number); assert.equal(localCalendarDate(y,m,d).getDay(),1);
+  }
+  assert.deepEqual(adjacentPeriod({year:2026,month:12},1),{year:2027,month:1});
+  assert.deepEqual(adjacentPeriod({year:2027,month:1},-1),{year:2026,month:12});
+  assert.equal(calendarGrid({year:2028,month:2},"2028-02-29").find(c=>c.isToday).iso,"2028-02-29");
+});
+
+test("v2 to v3 migration preserves every field of all five existing tables and balances", async (t) => {
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),"scisonomics-v3-upgrade-")), filename=path.join(temp,"mobile.db"),raw=new DatabaseSync(filename);
+  raw.exec(schema);raw.exec(planningSchema);raw.exec("CREATE TABLE _sqlx_migrations(version INTEGER PRIMARY KEY,success INTEGER); INSERT INTO _sqlx_migrations VALUES(1,1),(2,1)");
+  raw.exec("INSERT INTO categorias(nombre,tipo,sync_id) VALUES('V2','gasto','cat-v2'); INSERT INTO movimientos(fecha,tipo,categoria_id,monto,sync_id) VALUES('2026-10-04','ingreso',1,700,'move-v2')");
+  raw.exec("INSERT INTO gastos_fijos(categoria_id,descripcion,monto,dia_vencimiento,sync_id,deleted_at) VALUES(1,'V2',10,31,'fixed-v2','2026-10-03'); INSERT INTO presupuestos(categoria_id,mes,anio,monto,sync_id) VALUES(1,10,2026,100,'budget-v2'); INSERT INTO metas_ahorro(nombre,monto_objetivo,sync_id) VALUES('V2',100,'goal-v2')");
+  const tables=["categorias","movimientos","gastos_fijos","presupuestos","metas_ahorro"], baseline=Object.fromEntries(tables.map(name=>[name,raw.prepare(`SELECT * FROM ${name}`).all()]));raw.close();
+  const state=fixture(t,filename);t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));const m=state.modules();await m.getMobileDatabase();
+  for(const name of tables)assert.deepEqual(state.databases[0].prepare(`SELECT * FROM ${name}`).all(),baseline[name]);
+  assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo,700);assert.deepEqual(state.databases[0].prepare("PRAGMA foreign_key_check").all(),[]);
+});
+
+test("desktop scheduling and calendar adapters preserve the existing HTTP API", async (t) => {
+  const state=fixture(t),m=state.modules();global.window.navigator.userAgent="Windows NT";const r=await m.getFinanceRepository();
+  await r.listGastosProgramados("pendiente",30);await r.createGastoProgramado(scheduled);await r.updateGastoProgramado(1,scheduled);await r.deleteGastoProgramado(1);await r.markGastoProgramadoPaid(1);await r.getSchedulingSummary(period);await r.getCalendar(period);
+  assert.deepEqual(state.desktopCalls.map(c=>c.name),["gastosProgramados","createGastoProgramado","updateGastoProgramado","deleteGastoProgramado","marcarPagado","stats","calendario"]);
+  assert.deepEqual(state.desktopCalls[0].args,["pendiente",30]);assert.deepEqual(state.desktopCalls[6].args,[10,2026]);assert.equal(state.loads,0);
 });

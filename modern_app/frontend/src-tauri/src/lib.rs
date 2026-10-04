@@ -29,6 +29,8 @@ mod device_verification;
 mod local_api_token;
 mod supabase_tokens;
 mod supabase_oauth;
+#[cfg(mobile)]
+mod mobile_sql_transaction;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
@@ -1006,6 +1008,11 @@ pub fn run() {
         description: "mobile_planning",
         sql: include_str!("../migrations/0002_mobile_planning.sql"),
         kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 3,
+        description: "mobile_scheduling",
+        sql: include_str!("../migrations/0003_mobile_scheduling.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
       }])
       .build()
   );
@@ -1014,6 +1021,8 @@ pub fn run() {
     .manage(app_close_sync_signal)
     .manage(Arc::clone(&backend_child))
     .invoke_handler(tauri::generate_handler![
+      #[cfg(mobile)]
+      mobile_sql_transaction::mobile_sql_transaction,
       save_binary_file,
       get_local_api_token,
       enable_windows_data_protection,
