@@ -1,20 +1,26 @@
+#[cfg(desktop)]
 use std::io::{Read, Write};
+#[cfg(desktop)]
 use std::net::{SocketAddr, TcpStream};
 use std::hash::{Hash, Hasher};
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
-use std::sync::{
-  atomic::{AtomicBool, Ordering},
-  Arc, Condvar, Mutex,
-};
+#[cfg(desktop)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::process::CommandChild;
+#[cfg(desktop)]
+use tauri_plugin_shell::process::CommandEvent;
+#[cfg(desktop)]
 use tauri_plugin_shell::ShellExt;
+#[cfg(desktop)]
 use tauri::{Emitter, Manager};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
@@ -29,6 +35,7 @@ const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-re
 const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
 const DEVICE_IDENTITY_SERVICE_NAME: &str = "com.scisonomics.desktop.device-identity-v1";
 static DEVICE_IDENTITY_CREATE_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(desktop)]
 fn cloud_api_url() -> &'static str {
   option_env!("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL").unwrap_or("")
 }
@@ -87,6 +94,7 @@ struct AppCloseSyncState {
   timeout_ms: u64,
 }
 
+#[cfg(desktop)]
 const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
 const APP_CLOSE_SYNC_TIMEOUT_MS: u64 = 6_000;
 const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS: u64 = 10_000;
@@ -667,6 +675,7 @@ fn set_app_close_sync_timeout(signal: tauri::State<'_, AppCloseSyncSignal>, time
 
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
 
+#[cfg(desktop)]
 fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   let (lock, _) = &*signal.0;
   if let Ok(mut state) = lock.lock() {
@@ -676,6 +685,7 @@ fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   }
 }
 
+#[cfg(desktop)]
 fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> Option<bool> {
   let (lock, condition) = &*signal.0;
   let Ok(mut state) = lock.lock() else {
@@ -699,14 +709,17 @@ fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> Option<bool> {
   }
 }
 
+#[cfg(desktop)]
 fn local_backend_address() -> SocketAddr {
   "127.0.0.1:8000".parse().expect("valid local backend address")
 }
 
+#[cfg(desktop)]
 fn local_port_is_open() -> bool {
   TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(150)).is_ok()
 }
 
+#[cfg(desktop)]
 fn wait_for_local_port_release(timeout: Duration) -> bool {
   let deadline = Instant::now() + timeout;
   while local_port_is_open() {
@@ -718,6 +731,7 @@ fn wait_for_local_port_release(timeout: Duration) -> bool {
   true
 }
 
+#[cfg(desktop)]
 fn request_cooperative_backend_shutdown(local_api_token: &str) -> bool {
   let Ok(mut stream) = TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(250)) else {
     return false;
@@ -765,11 +779,12 @@ fn backend_process_is_running(pid: u32) -> bool {
   }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(desktop, not(target_os = "windows")))]
 fn backend_process_is_running(_pid: u32) -> bool {
   false
 }
 
+#[cfg(desktop)]
 fn wait_for_backend_exit(pid: u32) {
   let deadline = Instant::now() + Duration::from_secs(3);
   while backend_process_is_running(pid) {
@@ -832,11 +847,12 @@ fn terminate_stale_sidecars() -> usize {
   terminated
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(desktop, not(target_os = "windows")))]
 fn terminate_stale_sidecars() -> usize {
   0
 }
 
+#[cfg(desktop)]
 fn prepare_local_port_for_sidecar() -> bool {
   if !local_port_is_open() {
     return true;
@@ -849,6 +865,7 @@ fn prepare_local_port_for_sidecar() -> bool {
   false
 }
 
+#[cfg(desktop)]
 fn fallback_close_stale_sidecars() {
   log::warn!("Aplicando fallback seguro para cerrar sidecars locales anteriores.");
   terminate_stale_sidecars();
@@ -857,6 +874,7 @@ fn fallback_close_stale_sidecars() {
   }
 }
 
+#[cfg(desktop)]
 fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   let child = match backend_child.lock() {
     Ok(mut guard) => guard.take(),
@@ -897,6 +915,7 @@ fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn prepare_update_install(
   app: tauri::AppHandle,
@@ -924,6 +943,7 @@ async fn prepare_update_install(
   }).await.map_err(|_| "No se pudo preparar la actualizacion.".to_string())?
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn restart_after_failed_update_install(app: tauri::AppHandle) {
   app.restart();
@@ -937,15 +957,23 @@ pub fn run() {
     success: false,
     timeout_ms: APP_CLOSE_SYNC_TIMEOUT_MS,
   }), Condvar::new())));
+  #[cfg(desktop)]
   let close_in_progress = Arc::new(AtomicBool::new(false));
   let local_api_token = local_api_token::generate()
     .expect("No se pudo inicializar el servicio local con un token seguro.");
+  #[cfg(desktop)]
   let setup_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let close_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let exit_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let close_app_sync_signal = app_close_sync_signal.clone();
+  #[cfg(desktop)]
   let close_in_progress_for_window = Arc::clone(&close_in_progress);
+  #[cfg(desktop)]
   let close_local_api_token = local_api_token.clone();
+  #[cfg(desktop)]
   let exit_local_api_token = local_api_token.clone();
 
   let builder = tauri::Builder::default();
@@ -958,12 +986,14 @@ pub fn run() {
       let _ = window.set_focus();
     }
   }));
-  builder
+  let builder = builder
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_updater::Builder::new().build())
+    .plugin(tauri_plugin_opener::init());
+  #[cfg(desktop)]
+  let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+  let builder = builder
     .manage(LocalApiToken(local_api_token.clone()))
     .manage(app_close_sync_signal)
     .manage(Arc::clone(&backend_child))
@@ -991,7 +1021,9 @@ pub fn run() {
       sign_device_management_proof,
       complete_app_close_sync,
       set_app_close_sync_timeout,
+      #[cfg(desktop)]
       prepare_update_install,
+      #[cfg(desktop)]
       restart_after_failed_update_install
     ])
     .setup(move |app| {
@@ -1014,101 +1046,109 @@ pub fn run() {
         )?;
       }
 
-      if !prepare_local_port_for_sidecar() {
-        app
-          .dialog()
-          .message("El puerto local de ScisoNomics esta ocupado por otro proceso. Cerra otras instancias de ScisoNomics o el servicio que usa el puerto 8000 y volve a abrir la app.")
-          .title("No se pudo iniciar ScisoNomics")
-          .blocking_show();
-        return Ok(());
-      }
-
-      log::info!("Intentando iniciar sidecar backend: scisonomics-backend");
-      let sidecar_command = match app.shell().sidecar("scisonomics-backend") {
-        Ok(command) => command,
-        Err(error) => {
-          log::error!("No se pudo preparar el comando del sidecar: {error}");
+      #[cfg(desktop)]
+      {
+        if !prepare_local_port_for_sidecar() {
+          app
+            .dialog()
+            .message("El puerto local de ScisoNomics esta ocupado por otro proceso. Cerra otras instancias de ScisoNomics o el servicio que usa el puerto 8000 y volve a abrir la app.")
+            .title("No se pudo iniciar ScisoNomics")
+            .blocking_show();
           return Ok(());
         }
-      };
 
-      match sidecar_command
-        .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
-        .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
-        .env("SCISONOMICS_CLOUD_API_URL", cloud_api_url())
-        .spawn() {
-        Ok((mut rx, child)) => {
-          log::info!("Sidecar backend iniciado. PID: {}", child.pid());
-          match setup_backend_child.lock() {
-            Ok(mut guard) => {
-              *guard = Some(child);
-            }
-            Err(error) => {
-              log::error!("No se pudo guardar el handle del sidecar: {error}");
-            }
+        log::info!("Intentando iniciar sidecar backend: scisonomics-backend");
+        let sidecar_command = match app.shell().sidecar("scisonomics-backend") {
+          Ok(command) => command,
+          Err(error) => {
+            log::error!("No se pudo preparar el comando del sidecar: {error}");
+            return Ok(());
           }
-          tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-              match event {
-                CommandEvent::Stdout(line) => {
-                  let line = String::from_utf8_lossy(&line);
-                  log::info!("[sidecar][stdout] {}", line.trim_end());
-                }
-                CommandEvent::Stderr(line) => {
-                  let line = String::from_utf8_lossy(&line);
-                  log::error!("[sidecar][stderr] {}", line.trim_end());
-                }
-                CommandEvent::Error(error) => {
-                  log::error!("[sidecar][error] {error}");
-                }
-                CommandEvent::Terminated(payload) => {
-                  log::warn!(
-                    "[sidecar][terminated] code={:?} signal={:?}",
-                    payload.code,
-                    payload.signal
-                  );
-                }
-                _ => {}
+        };
+
+        match sidecar_command
+          .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
+          .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
+          .env("SCISONOMICS_CLOUD_API_URL", cloud_api_url())
+          .spawn() {
+          Ok((mut rx, child)) => {
+            log::info!("Sidecar backend iniciado. PID: {}", child.pid());
+            match setup_backend_child.lock() {
+              Ok(mut guard) => {
+                *guard = Some(child);
+              }
+              Err(error) => {
+                log::error!("No se pudo guardar el handle del sidecar: {error}");
               }
             }
-          });
-        }
-        Err(error) => {
-          log::error!("Fallo al arrancar el sidecar backend: {error}");
+            tauri::async_runtime::spawn(async move {
+              while let Some(event) = rx.recv().await {
+                match event {
+                  CommandEvent::Stdout(line) => {
+                    let line = String::from_utf8_lossy(&line);
+                    log::info!("[sidecar][stdout] {}", line.trim_end());
+                  }
+                  CommandEvent::Stderr(line) => {
+                    let line = String::from_utf8_lossy(&line);
+                    log::error!("[sidecar][stderr] {}", line.trim_end());
+                  }
+                  CommandEvent::Error(error) => {
+                    log::error!("[sidecar][error] {error}");
+                  }
+                  CommandEvent::Terminated(payload) => {
+                    log::warn!(
+                      "[sidecar][terminated] code={:?} signal={:?}",
+                      payload.code,
+                      payload.signal
+                    );
+                  }
+                  _ => {}
+                }
+              }
+            });
+          }
+          Err(error) => {
+            log::error!("Fallo al arrancar el sidecar backend: {error}");
+          }
         }
       }
+      #[cfg(mobile)]
+      log::info!("Mobile runtime: desktop sidecar disabled.");
 
       Ok(())
-    })
-    .on_window_event(move |window, event| {
-      if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-        if close_in_progress_for_window.swap(true, Ordering::SeqCst) {
-          return;
-        }
-        api.prevent_close();
-        reset_app_close_sync(&close_app_sync_signal);
-        let sync_signal = close_app_sync_signal.clone();
-        let backend_child = Arc::clone(&close_backend_child);
-        let local_api_token = close_local_api_token.clone();
-        let window = window.clone();
-        if let Err(error) = window.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ()) {
-          log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
-        }
-        std::thread::spawn(move || {
-          if wait_for_app_close_sync(&sync_signal).is_none() {
-            log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
-          }
-          stop_backend_sidecar(&backend_child, &local_api_token);
-          if let Err(error) = window.close() {
-            log::error!("No se pudo cerrar la ventana despues del shutdown seguro: {error}");
-          }
-        });
+    });
+  #[cfg(desktop)]
+  let builder = builder.on_window_event(move |window, event| {
+    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+      if close_in_progress_for_window.swap(true, Ordering::SeqCst) {
+        return;
       }
-    })
+      api.prevent_close();
+      reset_app_close_sync(&close_app_sync_signal);
+      let sync_signal = close_app_sync_signal.clone();
+      let backend_child = Arc::clone(&close_backend_child);
+      let local_api_token = close_local_api_token.clone();
+      let window = window.clone();
+      if let Err(error) = window.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ()) {
+        log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
+      }
+      std::thread::spawn(move || {
+        if wait_for_app_close_sync(&sync_signal).is_none() {
+          log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
+        }
+        stop_backend_sidecar(&backend_child, &local_api_token);
+        if let Err(error) = window.close() {
+          log::error!("No se pudo cerrar la ventana despues del shutdown seguro: {error}");
+        }
+      });
+    }
+  });
+  builder
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
-    .run(move |_app_handle, event| {
-      if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+    .run(move |_app_handle, _event| {
+      #[cfg(desktop)]
+      if matches!(_event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
         stop_backend_sidecar(&exit_backend_child, &exit_local_api_token);
       }
     });

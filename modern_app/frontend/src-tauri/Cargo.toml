@@ -27,7 +27,6 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
-tauri-plugin-updater = "=2.10.1"
 keyring = "3"
 base64 = "=0.22.1"
 ed25519-dalek = { version = "=2.1.1", features = ["rand_core", "zeroize"] }
@@ -37,3 +36,4 @@ zeroize = { version = "=1.8.2", features = ["derive"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-updater = "=2.10.1"

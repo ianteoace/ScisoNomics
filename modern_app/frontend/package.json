@@ -13,7 +13,8 @@
     "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",
     "tauri:build": "node ../scripts/check-installer-env.cjs && npm run prepare:sidecar && tauri build --target x86_64-pc-windows-msvc -- --locked",
     "updater:manifest": "node ../scripts/create-updater-manifest.cjs",
-    "release:windows": "npm run tauri:build && npm run updater:manifest"
+    "release:windows": "npm run tauri:build && npm run updater:manifest",
+    "tauri": "tauri"
   },
   "scisonomicsDependencyNotes": {
     "nextBundledPostcss": "next@16.3.8 incluye postcss@8.5.23 y reemplaza postcss@8.4.31 de next@16.2.6, que tenía una vulnerabilidad moderada conocida."

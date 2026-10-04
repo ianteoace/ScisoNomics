@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { API_URL } from "../../services/http";
+import { getRuntimePlatformSync } from "../../services/platform";
 import packageJson from "../../package.json";
 
 type HealthResponse = {
@@ -51,7 +52,41 @@ function isCompatibleAppVersion(frontendVersion?: string | null, backendVersion?
   return versionMajorMinor(frontendVersion) === versionMajorMinor(backendVersion);
 }
 
+export function StartupScreen({ title, description = "" }: { title: string; description?: string }) {
+  return (
+    <div className="grid min-h-screen place-items-center p-6">
+      <div className="card w-full max-w-xl p-8 text-center" role="status" aria-live="polite">
+        <h1 className="text-2xl font-bold" suppressHydrationWarning ref={(heading) => {
+          // Static HTML cannot know the native platform. Update its one title
+          // at hydration so mobile preparation is visible immediately.
+          if (heading && heading.textContent !== title) heading.textContent = title;
+        }}>{title}</h1>
+        <p className="mt-3 text-sm text-slate-300">{description}</p>
+      </div>
+    </div>
+  );
+}
+
+export function MobileStartupGate() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setReady(true), 200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  return <StartupScreen
+    title={ready ? "ScisoNomics Mobile está listo." : "Preparando ScisoNomics Mobile"}
+    description={ready ? "El almacenamiento local se configurará en el siguiente paso." : ""}
+  />;
+}
+
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {
+  const platform = getRuntimePlatformSync();
+  if (platform === "android" || platform === "ios") return <MobileStartupGate />;
+  return <DesktopBackendStartupGate>{children}</DesktopBackendStartupGate>;
+}
+
+function DesktopBackendStartupGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [ready, setReady] = useState(false);

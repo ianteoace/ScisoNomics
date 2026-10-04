@@ -73,3 +73,4 @@ tmp_localappdata_test/
 .scisonomics-secrets/
 **/.scisonomics-secrets/
 entitlements_private.pem
+modern_app/frontend/src-tauri/gen/
