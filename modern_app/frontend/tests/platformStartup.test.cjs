@@ -25,6 +25,9 @@ function stub(filename, exports) {
 stub("./services/cloudAuth.ts", { getActiveOwnerId: () => { ownerReads++; return "internal-owner"; } });
 stub("next/navigation", { useRouter: () => ({ replace: () => {} }), usePathname: () => "/dashboard" });
 stub("./components/account/SupabaseOAuthListener.tsx", { SupabaseOAuthListener: () => { throw new Error("Mobile mounted desktop OAuth"); } });
+let initializeMobile = async () => ({});
+stub("./services/data/mobileDatabase.ts", { getMobileDatabase: () => initializeMobile() });
+stub("./components/mobile/MobileFinanceDemo.tsx", { MobileFinanceDemo: () => React.createElement("p", {}, "Demo mobile: almacenamiento local listo") });
 
 const { getRuntimePlatformSync } = require("../services/platform.ts");
 const http = require("../services/http.ts");
@@ -94,6 +97,7 @@ function renderer(t, Component, props) {
   t.after(dispose);
   return {
     render: () => renderToStaticMarkup(resolve(React.createElement(Component, props), "root")),
+    tree: () => resolve(React.createElement(Component, props), "root"),
     effects: () => { const effects = pending; pending = []; for (const effect of effects) effect(); },
     dispose,
   };
@@ -166,35 +170,57 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
 }
 
 for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
-  test(`${os} startup becomes stable without health, ready or mounting financial/auth children`, (t) => {
+  test(`${os} startup opens SQLite before its demo without health, ready or desktop children`, async (t) => {
     runtime(t, os, agent);
-    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let resolveDatabase, opens = 0;
+    initializeMobile = () => { opens++; return new Promise((resolve) => { resolveDatabase = resolve; }); };
+    t.after(() => { initializeMobile = async () => ({}); });
     t.mock.method(global, "fetch", () => { throw new Error("Unexpected request"); });
     let childMounts = 0;
     const FinancialPage = () => { childMounts++; return React.createElement("p", {}, "financial page"); };
     const view = renderer(t, Providers, { children: React.createElement(BackendStartupGate, {}, React.createElement(FinancialPage)) });
-    assert.match(view.render(), /Preparando ScisoNomics Mobile/);
-    assert.doesNotMatch(view.render(), /Iniciando ScisoNomics/);
+    const initial = view.render();
+    assert.match(initial, /Preparando ScisoNomics Mobile/);
+    assert.doesNotMatch(initial, /Iniciando ScisoNomics/);
     view.effects();
-    t.mock.timers.tick(200);
+    assert.equal(opens, 1);
+    assert.match(view.render(), /Preparando ScisoNomics Mobile/);
+    resolveDatabase({}); await new Promise(setImmediate);
     const html = view.render();
-    assert.match(html, /ScisoNomics Mobile está listo\./);
-    assert.match(html, /El almacenamiento local se configurará en el siguiente paso\./);
+    assert.match(html, /Demo mobile: almacenamiento local listo/);
     assert.doesNotMatch(html, /financial page|animate-spin/);
     assert.equal(childMounts, 0);
     assert.equal(global.fetch.mock.callCount(), 0);
-    t.mock.timers.tick(60_000);
     assert.equal(view.render(), html);
   });
 }
 
-test("mobile preparation clears its timer when unmounted", (t) => {
+test("mobile initialization cannot update an unmounted gate", async (t) => {
   runtime(t, "android");
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let resolveDatabase;
+  initializeMobile = () => new Promise((resolve) => { resolveDatabase = resolve; });
+  t.after(() => { initializeMobile = async () => ({}); });
   const view = renderer(t, BackendStartupGate, { children: null });
   assert.match(view.render(), /Preparando ScisoNomics Mobile/); view.effects();
-  view.dispose(); t.mock.timers.tick(200);
+  view.dispose(); resolveDatabase({}); await new Promise(setImmediate);
   assert.match(view.render(), /Preparando ScisoNomics Mobile/);
+});
+
+test("mobile initialization failure is recoverable and hides native errors", async (t) => {
+  runtime(t, "android");
+  initializeMobile = async () => { throw new Error("private/native/path SELECT secret"); };
+  t.after(() => { initializeMobile = async () => ({}); });
+  const view = renderer(t, BackendStartupGate, { children: null });
+  view.render(); view.effects(); await new Promise(setImmediate);
+  const html = view.render();
+  assert.match(html, /No se pudo abrir el almacenamiento local/);
+  assert.match(html, /Reintentar/);
+  assert.doesNotMatch(html, /private|secret/);
+  const tree = view.tree();
+  const button = tree.props.children.props.children[2];
+  initializeMobile = async () => ({});
+  button.props.onClick(); view.render(); view.effects(); await new Promise(setImmediate);
+  assert.match(view.render(), /Demo mobile: almacenamiento local listo/);
 });
 
 test("Windows local API retains owner and token headers and request bodies", async (t) => {

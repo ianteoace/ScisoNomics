@@ -5,6 +5,8 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { API_URL } from "../../services/http";
 import { getRuntimePlatformSync } from "../../services/platform";
+import { getMobileDatabase } from "../../services/data/mobileDatabase";
+import { MobileFinanceDemo } from "../mobile/MobileFinanceDemo";
 import packageJson from "../../package.json";
 
 type HealthResponse = {
@@ -52,7 +54,7 @@ function isCompatibleAppVersion(frontendVersion?: string | null, backendVersion?
   return versionMajorMinor(frontendVersion) === versionMajorMinor(backendVersion);
 }
 
-export function StartupScreen({ title, description = "" }: { title: string; description?: string }) {
+export function StartupScreen({ title, description = "", children }: { title: string; description?: string; children?: React.ReactNode }) {
   return (
     <div className="grid min-h-screen place-items-center p-6">
       <div className="card w-full max-w-xl p-8 text-center" role="status" aria-live="polite">
@@ -62,6 +64,7 @@ export function StartupScreen({ title, description = "" }: { title: string; desc
           if (heading && heading.textContent !== title) heading.textContent = title;
         }}>{title}</h1>
         <p className="mt-3 text-sm text-slate-300">{description}</p>
+        {children}
       </div>
     </div>
   );
@@ -69,15 +72,21 @@ export function StartupScreen({ title, description = "" }: { title: string; desc
 
 export function MobileStartupGate() {
   const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    const timer = window.setTimeout(() => setReady(true), 200);
-    return () => window.clearTimeout(timer);
-  }, []);
+    let active = true;
+    setReady(false); setFailed(false);
+    getMobileDatabase().then(() => { if (active) setReady(true); })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [attempt]);
 
+  if (ready) return <MobileFinanceDemo />;
   return <StartupScreen
-    title={ready ? "ScisoNomics Mobile está listo." : "Preparando ScisoNomics Mobile"}
-    description={ready ? "El almacenamiento local se configurará en el siguiente paso." : ""}
-  />;
+    title={failed ? "No se pudo abrir ScisoNomics Mobile" : "Preparando ScisoNomics Mobile"}
+    description={failed ? "No se pudo abrir el almacenamiento local. Reintentá sin borrar los datos de la app." : ""}
+  >{failed ? <button className="btn mt-5 min-h-11" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Reintentar</button> : null}</StartupScreen>;
 }
 
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {

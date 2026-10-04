@@ -993,6 +993,17 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init());
   #[cfg(desktop)]
   let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+  #[cfg(mobile)]
+  let builder = builder.plugin(
+    tauri_plugin_sql::Builder::default()
+      .add_migrations("sqlite:scisonomics-mobile.db", vec![tauri_plugin_sql::Migration {
+        version: 1,
+        description: "mobile_finance_core",
+        sql: include_str!("../migrations/0001_mobile_finance.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }])
+      .build()
+  );
   let builder = builder
     .manage(LocalApiToken(local_api_token.clone()))
     .manage(app_close_sync_signal)
