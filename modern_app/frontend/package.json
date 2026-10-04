@@ -8,7 +8,7 @@
     "test:auth": "node --test tests/supabaseCloudAuth.test.cjs",
     "test:billing": "node --test tests/premiumBilling.test.cjs",
     "test:updater": "node --test tests/appUpdater.test.cjs",
-    "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs",
+    "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
     "prepare:sidecar": "powershell -ExecutionPolicy Bypass -File ../scripts/prepare-sidecar.ps1 -Copy",

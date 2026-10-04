@@ -27,7 +27,7 @@ stub("next/navigation", { useRouter: () => ({ replace: () => {} }), usePathname:
 stub("./components/account/SupabaseOAuthListener.tsx", { SupabaseOAuthListener: () => { throw new Error("Mobile mounted desktop OAuth"); } });
 let initializeMobile = async () => ({});
 stub("./services/data/mobileDatabase.ts", { getMobileDatabase: () => initializeMobile() });
-stub("./components/mobile/MobileFinanceDemo.tsx", { MobileFinanceDemo: () => React.createElement("p", {}, "Demo mobile: almacenamiento local listo") });
+stub("./components/mobile/MobileApp.tsx", { MobileApp: () => React.createElement("p", {}, "App mobile: almacenamiento local listo") });
 
 const { getRuntimePlatformSync } = require("../services/platform.ts");
 const http = require("../services/http.ts");
@@ -170,7 +170,7 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
 }
 
 for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
-  test(`${os} startup opens SQLite before its demo without health, ready or desktop children`, async (t) => {
+  test(`${os} startup opens SQLite before its app without health, ready or desktop children`, async (t) => {
     runtime(t, os, agent);
     let resolveDatabase, opens = 0;
     initializeMobile = () => { opens++; return new Promise((resolve) => { resolveDatabase = resolve; }); };
@@ -187,7 +187,7 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
     assert.match(view.render(), /Preparando ScisoNomics Mobile/);
     resolveDatabase({}); await new Promise(setImmediate);
     const html = view.render();
-    assert.match(html, /Demo mobile: almacenamiento local listo/);
+    assert.match(html, /App mobile: almacenamiento local listo/);
     assert.doesNotMatch(html, /financial page|animate-spin/);
     assert.equal(childMounts, 0);
     assert.equal(global.fetch.mock.callCount(), 0);
@@ -220,7 +220,7 @@ test("mobile initialization failure is recoverable and hides native errors", asy
   const button = tree.props.children.props.children[2];
   initializeMobile = async () => ({});
   button.props.onClick(); view.render(); view.effects(); await new Promise(setImmediate);
-  assert.match(view.render(), /Demo mobile: almacenamiento local listo/);
+  assert.match(view.render(), /App mobile: almacenamiento local listo/);
 });
 
 test("Windows local API retains owner and token headers and request bodies", async (t) => {

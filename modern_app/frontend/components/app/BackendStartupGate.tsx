@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { API_URL } from "../../services/http";
 import { getRuntimePlatformSync } from "../../services/platform";
 import { getMobileDatabase } from "../../services/data/mobileDatabase";
-import { MobileFinanceDemo } from "../mobile/MobileFinanceDemo";
+import { MobileApp } from "../mobile/MobileApp";
 import packageJson from "../../package.json";
 
 type HealthResponse = {
@@ -82,7 +82,7 @@ export function MobileStartupGate() {
     return () => { active = false; };
   }, [attempt]);
 
-  if (ready) return <MobileFinanceDemo />;
+  if (ready) return <MobileApp />;
   return <StartupScreen
     title={failed ? "No se pudo abrir ScisoNomics Mobile" : "Preparando ScisoNomics Mobile"}
     description={failed ? "No se pudo abrir el almacenamiento local. Reintentá sin borrar los datos de la app." : ""}
