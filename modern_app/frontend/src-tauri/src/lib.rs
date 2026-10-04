@@ -1001,6 +1001,11 @@ pub fn run() {
         description: "mobile_finance_core",
         sql: include_str!("../migrations/0001_mobile_finance.sql"),
         kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 2,
+        description: "mobile_planning",
+        sql: include_str!("../migrations/0002_mobile_planning.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
       }])
       .build()
   );

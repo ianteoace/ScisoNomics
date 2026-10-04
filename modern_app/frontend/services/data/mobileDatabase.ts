@@ -26,9 +26,9 @@ async function openDatabase(): Promise<Database> {
     // SQLx enables this on every pooled connection; fail closed if it does not.
     const foreignKeys = await database.select<{ foreign_keys: number }[]>("PRAGMA foreign_keys");
     const migrations = await database.select<{ version: number; success: number }[]>(
-      "SELECT version, success FROM _sqlx_migrations WHERE version = $1", [1],
+      "SELECT version, success FROM _sqlx_migrations WHERE version IN ($1, $2) ORDER BY version", [1, 2],
     );
-    if (foreignKeys[0]?.foreign_keys !== 1 || migrations[0]?.version !== 1 || !migrations[0]?.success) {
+    if (foreignKeys[0]?.foreign_keys !== 1 || migrations.length !== 2 || migrations[0]?.version !== 1 || !migrations[0]?.success || migrations[1]?.version !== 2 || !migrations[1]?.success) {
       throw new Error("Mobile schema was not initialized correctly.");
     }
     return database;

@@ -23,7 +23,7 @@ stub("next/link", { __esModule: true, default: ({ href, onClick, prefetch, child
   ...props, href, onClick: () => { onClick?.(); pathname = href; },
 }, children) });
 const summary = { ingresos: 10000, gastos: 2500, ahorros: 200, inversiones: 300, saldoInicial: 700, saldo: 7700, balance: 7500 };
-const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary },
+const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary, fixedExpenses: [], budgets: [], goals: [] },
   loading: false, busy: false, error: "", notice: "", setPeriod() {}, clearMessages() {}, reload() {}, mutate: async () => true };
 stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: () => finance });
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
@@ -84,6 +84,9 @@ for (const [href, title, visible, hidden] of [
   ["/dashboard", "Inicio", /Resumen financiero/, /Listado de categorías|Listado de movimientos/],
   ["/movimientos", "Movimientos", /Listado de movimientos/, /Resumen financiero|Listado de categorías/],
   ["/categorias", "Categorías", /Listado de categorías/, /Resumen financiero|Listado de movimientos/],
+  ["/gastos-fijos", "Gastos fijos", /Listado de gastos fijos/, /Listado de presupuestos|Listado de metas|Resumen financiero/],
+  ["/presupuestos", "Presupuestos", /Listado de presupuestos/, /Listado de gastos fijos|Listado de metas|Resumen financiero/],
+  ["/metas", "Metas", /Listado de metas/, /Listado de presupuestos|Listado de gastos fijos|Resumen financiero/],
 ]) test(`mobile route ${href} renders only ${title}`, (t) => {
   pathname = href; const view = renderer(t, MobileApp);
   assert.match(view.html(), visible); assert.doesNotMatch(view.html(), hidden);
@@ -97,12 +100,12 @@ test("hamburger opens drawer with desktop-consistent links; X closes it", (t) =>
   const html = view.html();
   assert.match(html, /<dialog/); assert.match(html, /aria-modal="true"/); assert.match(html, /aria-labelledby="dialog-title"/);
   assert.match(html, /aria-expanded="true"/); assert.match(html, /aria-current="page"/);
-  assert.deepEqual(view.find((node) => node.type === "a").map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias"]);
+  assert.deepEqual(view.find((node) => node.type === "a").map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/presupuestos", "/metas"]);
   view.find((node) => node.props["aria-label"] === "Cerrar")[0].props.onClick({ currentTarget: { focus() {} } });
   assert.doesNotMatch(view.html(), /<dialog/);
 });
 
-for (const href of ["/dashboard", "/movimientos", "/categorias"]) test(`drawer navigates to ${href} and closes automatically`, (t) => {
+for (const href of ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/presupuestos", "/metas"]) test(`drawer navigates to ${href} and closes automatically`, (t) => {
   pathname = "/dashboard"; const view = renderer(t, MobileApp);
   view.find((node) => node.props["aria-label"] === "Abrir menú")[0].props.onClick({ currentTarget: { focus() {} } });
   view.find((node) => node.type === "a" && node.props.href === href)[0].props.onClick({ currentTarget: { focus() {} } });
@@ -128,7 +131,7 @@ test("pending mutation prevents dialog dismissal", (t) => {
 });
 
 test("unsupported mobile routes redirect to dashboard without rendering desktop content", (t) => {
-  pathname = "/presupuestos"; const view = renderer(t, MobileApp);
+  pathname = "/configuracion"; const view = renderer(t, MobileApp);
   assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos|Listado de categorías/);
   view.effects(); assert.equal(pathname, "/dashboard"); assert.match(view.html(), /Resumen financiero/);
 });
@@ -138,7 +141,7 @@ test("movement form edits category by ID and submits validated values, note and 
   const row = { id: 7, fecha: "2026-01-01", tipo: "gasto", categoria: "Gasto Mobile", categoria_id: 2, descripcion: "Gasto", monto: 3000, nota: "Detalle", saldo_acumulado: 7000 };
   const view = renderer(t, MobileMovementForm, { categories: [{ id: 2, nombre: "Gasto Mobile", tipo: "gasto" }], movement: row, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
   await view.find((node) => node.type === "form")[0].props.onSubmit({ preventDefault() {} });
-  assert.deepEqual(saved, { fecha: "2026-01-01", tipo: "gasto", categoria_id: 2, descripcion: "Gasto", monto: 3000, nota: "Detalle" });
+  assert.deepEqual(saved, { fecha: "2026-01-01", tipo: "gasto", categoria_id: 2, descripcion: "Gasto", monto: 3000, nota: "Detalle", meta_id: null });
   assert.match(view.html(), /inputMode="decimal"/);
 });
 
@@ -177,7 +180,7 @@ function deferred() { let resolve; const promise = new Promise((done) => { resol
 
 test("mobile reload ignores stale periods and does not poll on navigation/render", async (t) => {
   const first = deferred(); let reads = 0;
-  const repository = { listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return reads === 1 ? first.promise : { ...summary, saldo: 222 }; } };
+  const repository = { listGastosFijos: async () => [], listPresupuestos: async () => [], listMetas: async () => [], listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return reads === 1 ? first.promise : { ...summary, saldo: 222 }; } };
   const view = financeHook(t, repository);
   view.html(); view.effects(); await flush();
   assert.equal(view.value().period, getLocalDateInputValue().slice(0, 7));
@@ -190,7 +193,7 @@ test("mobile reload ignores stale periods and does not poll on navigation/render
 
 test("mobile mutations prevent duplicate writes and refresh once after success", async (t) => {
   let writes = 0, reads = 0; const write = deferred();
-  const repository = { listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return summary; } };
+  const repository = { listGastosFijos: async () => [], listPresupuestos: async () => [], listMetas: async () => [], listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return summary; } };
   const view = financeHook(t, repository);
   view.html(); view.effects(); await flush(); view.html();
   const operation = async () => { writes++; await write.promise; };
@@ -200,4 +203,74 @@ test("mobile mutations prevent duplicate writes and refresh once after success",
   write.resolve(); assert.equal(await pending, true);
   view.html(); view.effects(); await flush(); view.html(); assert.equal(reads, 2);
   assert.equal(view.value().notice, "Guardado");
+});
+
+const { MobileFixedExpenseForm } = require("../components/mobile/gastos-fijos/MobileFixedExpenseForm.tsx");
+const { MobileBudgetForm } = require("../components/mobile/presupuestos/MobileBudgetForm.tsx");
+const { MobileGoalForm } = require("../components/mobile/metas/MobileGoalForm.tsx");
+const { mobileSections } = require("../components/mobile/MobileSidebar.tsx");
+const { budgetState, goalState } = require("../components/mobile/MobilePlanningUI.tsx");
+
+test("planning navigation retains desktop Premium feature metadata without enabling billing", () => {
+  assert.deepEqual(mobileSections.filter((s) => s.premium).map(({ href, feature }) => ({ href, feature })), [
+    { href: "/gastos-fijos", feature: "fixed_expenses" }, { href: "/presupuestos", feature: "budgets" }, { href: "/metas", feature: "saving_goals" },
+  ]);
+  assert.deepEqual([69, 70, 100, 101].map(budgetState), ["En control", "Cerca del límite", "Al límite", "Superado"]);
+  assert.deepEqual([74, 75, 100].map(goalState), ["En progreso", "Cerca de completar", "Cumplida"]);
+});
+
+test("fixed expense form submits edited monthly day, amount and active state", async (t) => {
+  let saved, closed = 0;
+  const row = { id: 1, categoria_id: 2, categoria: "Servicios", descripcion: "Alquiler", monto: 750, dia_vencimiento: 31, activo: 0 };
+  const view = renderer(t, MobileFixedExpenseForm, { row, categories: [{ id: 2, nombre: "Servicios", tipo: "gasto" }], busy: false, error: "", onClose: () => { closed++; }, onSave: async (input) => { saved = input; return true; } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { categoria_id: 2, descripcion: "Alquiler", monto: 750, dia_vencimiento: 31, activo: 0 }); assert.equal(closed, 1);
+  assert.match(view.html(), /Mensual/); assert.match(view.html(), /inputMode="decimal"/);
+});
+
+test("budget editing keeps category and period while changing the limit", async (t) => {
+  let saved;
+  const row = { id: 1, categoria_id: 2, categoria: "Servicios", mes: 10, anio: 2026, monto_presupuestado: 2000 };
+  const view = renderer(t, MobileBudgetForm, { row, rows: [row], categories: [{ id: 2, nombre: "Servicios", tipo: "gasto" }], period: "2026-11", busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  assert.equal(view.find((n) => n.type === "select")[0].props.disabled, true);
+  assert.equal(view.find((n) => n.props.type === "month")[0].props.disabled, true);
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { categoria_id: 2, mes: 10, anio: 2026, monto: 2000 });
+});
+
+test("goal form submits initial funds, optional date and explicit state", async (t) => {
+  let saved;
+  const row = { id: 1, nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 250, fecha_objetivo: "2028-02-29", descripcion: "Detalle", estado: "pausada" };
+  const view = renderer(t, MobileGoalForm, { row, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 250, fecha_objetivo: "2028-02-29", descripcion: "Detalle", estado: "pausada" });
+});
+
+test("planning form errors preserve entered data and do not dismiss failed writes", async (t) => {
+  let closed = 0;
+  const view = renderer(t, MobileGoalForm, { row: { nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 0, estado: "activa" }, busy: false, error: "No se pudo guardar la meta.", onClose: () => { closed++; }, onSave: async () => false });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.equal(closed, 0); assert.match(view.html(), /role="alert"/); assert.match(view.html(), /No se pudo guardar la meta/);
+  assert.equal(view.find((n) => n.type === "input")[0].props.value, "Viaje");
+});
+
+test("savings form sends an explicit goal assignment; other movement types clear it", async (t) => {
+  let saved;
+  const view = renderer(t, MobileMovementForm, { categories: [{ id: 2, nombre: "Ahorro", tipo: "ahorro" }, { id: 4, nombre: "Ingreso", tipo: "ingreso" }], goals: [{ id: 3, nombre: "Viaje" }],
+    movement: { id: 1, tipo: "ahorro", fecha: "2026-10-04", categoria_id: 2, descripcion: "Aporte", monto: 100, meta_id: 3 }, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  assert.match(view.html(), /Meta de ahorro \(opcional\)/);
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, 3);
+  view.find((n) => n.type === "select")[0].props.onChange({ target: { value: "ingreso" } });
+  view.find((n) => n.type === "select")[1].props.onChange({ target: { value: "4" } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, null);
+});
+
+test("planning views show consumed budgets and goal progress as text, with separate routes", (t) => {
+  const previous = finance.data; t.after(() => { finance.data = previous; });
+  finance.data = { ...previous, budgets: [{ id: 1, categoria: "Servicios", mes: 10, anio: 2026, monto_presupuestado: 600, monto_gastado: 700, monto_disponible: -100, porcentaje_usado: 116.7 }],
+    goals: [{ id: 1, nombre: "Viaje", estado: "pausada", monto_objetivo: 1000, monto_ahorrado: 1100, faltante: 0, porcentaje_completado: 110, fecha_objetivo: "2027-01-01" }] };
+  pathname = "/presupuestos"; const view = renderer(t, MobileApp);
+  assert.match(view.html(), /Consumido/); assert.match(view.html(), /Restante/); assert.match(view.html(), /Superado/); assert.match(view.html(), /aria-valuenow="100"/);
+  assert.doesNotMatch(view.html(), /Listado de metas/);
+  pathname = "/metas"; assert.match(view.html(), /Pausada/); assert.match(view.html(), /110.0%/); assert.match(view.html(), /1\/1\/2027/);
 });

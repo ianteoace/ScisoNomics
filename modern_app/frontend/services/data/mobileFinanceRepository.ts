@@ -3,22 +3,11 @@ import type { CreateCategoria, CreateMovimiento, FinancePeriod, FinanceRepositor
 import { getMobileDatabase } from "./mobileDatabase";
 import { calculateFinanceSummary } from "./financeSummary";
 
-const LOCAL_OWNER = "local";
+import { LOCAL_OWNER, boundedText, validateDate, validateAmount, validatePeriod, validateId, newSyncId, write, requireChanged } from "./mobileRepositorySupport";
+import { mobilePlanningRepository } from "./mobilePlanningRepository";
 const moveTypes: readonly string[] = ["ingreso", "gasto", "ahorro", "inversion"];
 function validateType(tipo: string): asserts tipo is MoveType {
   if (!moveTypes.includes(tipo)) throw new Error("Elegí un tipo de movimiento válido.");
-}
-function boundedText(value: string, maxLength: number, label: string): string {
-  if (typeof value !== "string" || value.trim().length > maxLength) {
-    throw new Error(`${label} admite hasta ${maxLength} caracteres.`);
-  }
-  return value.trim();
-}
-function validateDate(fecha: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || !Number.isFinite(Date.parse(`${fecha}T00:00:00Z`))
-    || new Date(`${fecha}T00:00:00Z`).toISOString().slice(0, 10) !== fecha || fecha.startsWith("0000")) {
-    throw new Error("Ingresá una fecha válida.");
-  }
 }
 export function validateCategoria(input: CreateCategoria): CreateCategoria {
   validateType(input.tipo);
@@ -29,19 +18,12 @@ export function validateCategoria(input: CreateCategoria): CreateCategoria {
 export function validateMovimiento(input: CreateMovimiento): CreateMovimiento {
   validateType(input.tipo);
   validateDate(input.fecha);
-  if (!Number.isFinite(input.monto) || input.monto <= 0 || !Number.isSafeInteger(Math.round(input.monto * 100))
-    || Math.abs(input.monto * 100 - Math.round(input.monto * 100)) > 0.00001) {
-    throw new Error("Ingresá un monto mayor a cero, con hasta dos decimales.");
-  }
+  validateAmount(input.monto);
+  if (input.meta_id != null) validateId(input.meta_id);
   if (!Number.isSafeInteger(input.categoria_id) || input.categoria_id <= 0) {
     throw new Error("Elegí una categoría existente.");
   }
   return { ...input, descripcion: boundedText(input.descripcion, 500, "La descripción"), nota: boundedText(input.nota ?? "", 4000, "La nota") };
-}
-function validatePeriod({ month, year }: FinancePeriod) {
-  if (!Number.isInteger(month) || month < 1 || month > 12 || !Number.isInteger(year) || year < 1 || year > 9999) {
-    throw new Error("Elegí un mes y año válidos.");
-  }
 }
 export function mapCategoria(row: Categoria): Categoria {
   return { id: Number(row.id), nombre: row.nombre, tipo: row.tipo };
@@ -51,26 +33,11 @@ export function mapMovimiento(row: MovimientoRow): FinanceMovimiento {
   return {
     id: Number(row.id), fecha: row.fecha, tipo: row.tipo, categoria: row.categoria,
     descripcion: row.descripcion ?? "", monto: Number(row.monto), saldo_acumulado: Number(row.saldo_acumulado),
-    nota: row.nota ?? "", categoria_id: Number(row.categoria_id),
+    meta_id: row.meta_id ?? null, nota: row.nota ?? "", categoria_id: Number(row.categoria_id),
   };
 }
-function newSyncId() {
-  return crypto.randomUUID();
-}
-async function write(sql: string, bindings: unknown[], message: string) {
-  const database = await getMobileDatabase();
-  try { return await database.execute(sql, bindings); }
-  catch { throw new Error(message); }
-}
-function validateId(id: number) {
-  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("Elegí un registro válido.");
-}
-async function requireChanged(sql: string, bindings: unknown[], message: string) {
-  const result = await write(sql, bindings, message);
-  if (result.rowsAffected !== 1) throw new Error(message);
-}
-
 export const mobileFinanceRepository: FinanceRepository = {
+  ...mobilePlanningRepository,
   async listCategorias(tipo) {
     if (tipo !== undefined) validateType(tipo);
     const database = await getMobileDatabase();
@@ -102,7 +69,7 @@ export const mobileFinanceRepository: FinanceRepository = {
     try {
       const rows = await database.select<MovimientoRow[]>(
         `WITH active AS (
-           SELECT m.id, m.fecha, m.tipo, m.categoria_id, c.nombre AS categoria, m.descripcion, m.monto, m.nota,
+           SELECT m.id, m.fecha, m.tipo, m.categoria_id, c.nombre AS categoria, m.descripcion, m.monto, m.nota, m.meta_id,
              SUM(CASE WHEN m.tipo = 'ingreso' THEN m.monto ELSE -m.monto END)
                OVER (ORDER BY m.fecha, m.id ROWS UNBOUNDED PRECEDING) AS saldo_acumulado
            FROM movimientos m JOIN categorias c ON c.id = m.categoria_id AND c.owner_user_id = m.owner_user_id
@@ -122,10 +89,11 @@ export const mobileFinanceRepository: FinanceRepository = {
     ).catch(() => { throw new Error("No se pudo comprobar la categoría."); });
     if (!categories.length) throw new Error("La categoría seleccionada no existe o no está disponible.");
     await requireChanged(
-      `INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto, nota, owner_user_id, sync_id)
-       SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM categorias
-       WHERE id = $3 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')`,
-      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, LOCAL_OWNER, newSyncId()],
+      `INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto, nota, owner_user_id, sync_id, meta_id)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 FROM categorias
+       WHERE id = $3 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')
+       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')))`,
+      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, LOCAL_OWNER, newSyncId(), clean.meta_id ?? null],
       "No se pudo guardar el movimiento. Revisá la categoría y reintentá.",
     );
   },
@@ -133,11 +101,12 @@ export const mobileFinanceRepository: FinanceRepository = {
     validateId(id);
     const clean = validateMovimiento(input);
     await requireChanged(
-      `UPDATE movimientos SET fecha = $1, tipo = $2, categoria_id = $3, descripcion = $4, monto = $5, nota = $6,
+      `UPDATE movimientos SET fecha = $1, tipo = $2, categoria_id = $3, descripcion = $4, monto = $5, nota = $6, meta_id = $9,
         updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
        WHERE id = $7 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')
-       AND EXISTS (SELECT 1 FROM categorias WHERE id = $3 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = ''))`,
-      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, id, LOCAL_OWNER],
+       AND EXISTS (SELECT 1 FROM categorias WHERE id = $3 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = ''))
+       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')))`,
+      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, id, LOCAL_OWNER, clean.meta_id ?? null],
       "No se pudo actualizar el movimiento. Revisá que el movimiento y la categoría sigan disponibles.",
     );
   },

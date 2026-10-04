@@ -1,7 +1,7 @@
-# ScisoNomics Mobile: interfaz local (milestone 3)
+# ScisoNomics Mobile: interfaz local (milestone 4)
 
 La versión de producto sigue siendo 3.3.1. Este milestone implementa únicamente
-categorías y movimientos locales. Android usa SQLite nativo; Windows continúa
+categorías, movimientos, gastos fijos, presupuestos y metas locales. Android usa SQLite nativo; Windows continúa
 usando FastAPI y su SQLite existente. No se cambia el modelo ni los datos desktop.
 
 ## Runtime y almacenamiento
@@ -30,6 +30,52 @@ Tauri JavaScript 2.11.0 ya instalado. Rust sólo incluye la dependencia para
 Android/iOS y registra el plugin bajo `#[cfg(mobile)]`, con feature `sqlite`.
 iOS no se compila ni se valida en este milestone.
 
+## Auditoría desktop y decisiones del milestone 4
+
+Auditados antes de implementar: `finance_app/db.py`, `finance_app/services.py`,
+schemas/endpoints del backend local, `services/api.ts`, `types/domain.ts`, las
+tres páginas desktop, `GastosFijosView` y la asignación de metas de `MovimientosView`.
+
+- **Gastos fijos**: categoría, descripción (1–500), monto positivo, día de
+  vencimiento 1–31, activo 0/1. Son plantillas **mensuales**, sin campo frecuencia
+  ni próxima fecha persistidos. Desktop tiene una operación separada de aplicación
+  mensual que limita el día al último del mes y evita duplicados por fecha/tipo/
+  categoría/descripción `[FIJO]`/monto/owner. Mobile implementa la definición CRUD;
+  no aplica ni genera movimientos automáticamente. La UI muestra día mensual y
+  activo/inactivo, sin inferir que esté pagado ni agregar otra periodicidad.
+- **Presupuestos**: categoría, mes, año, monto positivo; UNIQUE por
+  `(owner_user_id, categoria_id, mes, anio)`, incluyendo tombstones. Desktop hace
+  upsert por esa clave, conservando identidad y restaurando el registro borrado.
+  Consumo = suma de movimientos activos **tipo gasto** de la misma categoría,
+  owner y mes/año. Restante = límite − consumo (puede ser negativo), porcentaje =
+  consumo/límite × 100, excedido = consumo > límite. No se persisten derivados.
+  Crear guarda con el mismo upsert. Editar en mobile cambia el límite del registro
+  seleccionado, conservando categoría/período; para otro período se crea otro
+  presupuesto. Desktop sólo expone POST upsert, no un PUT por id: el adaptador
+  desktop delegará a ese API existente sin agregar endpoints.
+  Etiquetas visuales desktop: >100 superado, =100 al límite, >=70 cerca, <70 en control.
+- **Metas**: nombre (1–160), objetivo >0, inicial >=0, fecha objetivo opcional,
+  descripción hasta 2000, estado `activa|pausada|completada`. Progreso = inicial +
+  suma histórica de **ahorros asignados explícitamente por movimientos.meta_id**,
+  activos del mismo owner; no suma ahorros sin asignar ni depende del mes elegido.
+  Faltante = max(0, objetivo − progreso); porcentaje sin limitar a 100. Estado
+  editable, nunca se completa automáticamente por llegar al objetivo. Al borrar,
+  desktop desvincula movimientos, conserva sus montos y los marca pending; luego
+  deja tombstone de la meta. Mobile conserva esas reglas y agrega el selector
+  opcional de meta al formulario de ahorro (todas las metas no borradas, como desktop).
+- Los tres modelos llevan owner/sync_id/timestamps/deleted_at/sync_status/
+  last_synced_at. Updates conservan id/sync_id/created_at/owner y last_synced_at;
+  modifican updated_at y pending. Deletes lógicos. Eliminar una categoría sin
+  movimientos activos elimina lógicamente sus presupuestos/gastos fijos, como desktop.
+- V2 será aditiva: tres tablas nuevas, índices, y **meta_id nullable en movimientos**
+  con FK. La columna es necesaria para el progreso real; no se reconstruye ni
+  reescribe ningún movimiento/categoría. Triggers validan owner de meta y hacen
+  las desvinculaciones/cascadas de soft-delete atómicamente. V1 queda intacta.
+- Owner actual = `local`. Sidebar identifica los tres módulos como `premium`
+  con las feature keys desktop. Permanecen accesibles sólo para desarrollo:
+  el gating comercial mobile es requisito antes de cualquier release pública.
+  No se alteran entitlements ni gating desktop.
+
 ## Migración v1
 
 Fuente de verdad: `modern_app/frontend/src-tauri/migrations/0001_mobile_finance.sql`.
@@ -40,11 +86,11 @@ El SQL inicial también usa `IF NOT EXISTS`; no incluye DROP ni copia datos desk
 Una migración publicada debe conservarse y las ampliaciones usar otra versión.
 
 SQLx configura `foreign_keys=ON` por conexión, también en el pool. La migración
-declara el PRAGMA y el startup comprueba su valor y que version 1 figure exitosa
+declara el PRAGMA y el startup comprueba su valor y que las versiones 1 y 2 figuren exitosas
 en `_sqlx_migrations`. Un PRAGMA ejecutado una sola vez desde JS no garantizaría
 las restricciones en todas las conexiones del pool.
 
-Sólo hay dos tablas de dominio (además de metadatos técnicos SQLx/SQLite):
+V1 creó estas dos tablas de dominio (además de metadatos técnicos SQLx/SQLite):
 
 ### categorias
 
@@ -102,7 +148,7 @@ Se conservan nombres y tipos de las columnas de núcleo, IDs numéricos, owner,
 pero su API exige > 0: mobile adopta > 0 y valida centavos. Se normalizan textos
 opcionales a vacío, compatible con los tipos frontend.
 
-Pendientes: `meta_id` y FK a metas; tags/tabla puente; metadatos
+V2 agrega `meta_id` y FK a metas. Pendientes: tags/tabla puente; metadatos
 `last_remote_device_id`, `last_remote_device_name`, `last_remote_updated_at`;
 tablas/historial de sync y resolución de conflictos.
 Los campos sync reservados no implementan ni autorizan sincronización cloud.
@@ -129,7 +175,8 @@ Al guardar en otro mes la UI muestra ese período.
 ## Navegación y pantallas
 
 `MobileApp` es un shell: usa `usePathname()` y los enlaces Next existentes.
-Monta una sola vista según `/dashboard`, `/movimientos` o `/categorias`.
+Monta una sola vista según `/dashboard`, `/movimientos`, `/categorias`,
+`/gastos-fijos`, `/presupuestos` o `/metas`.
 No crea otro router ni monta los layouts/providers financieros desktop.
 Las rutas no implementadas en mobile vuelven a `/dashboard`.
 
@@ -144,6 +191,9 @@ La lista de secciones permite agregar módulos futuros cuando estén implementad
   del período, últimos cinco movimientos y Agregar movimiento.
 - Movimientos: cards, mes/año, filtro por tipo y crear/editar/eliminar con confirmación.
 - Categorías: filtro por tipo, crear/editar/eliminar con confirmación.
+- Gastos fijos: plantillas mensuales, categoría, monto, día y estado; CRUD.
+- Presupuestos: mes/año, límites por categoría, consumo real, restante y porcentaje; CRUD.
+- Metas: objetivo/inicial/fecha/estado, avance por ahorros asignados y CRUD.
 - Formularios: montos con teclado decimal/parser desktop, fecha local, categoría,
   descripción y nota opcional. No se crean defaults ni datos demo automáticamente.
 
@@ -165,10 +215,11 @@ y borrar. INSERT/UPDATE de movimientos también exigen categoría activa dentro
 de la escritura. Las FK siguen válidas para los movimientos borrados porque
 las categorías permanecen físicamente. La unicidad v1 incluye tombstones:
 un nombre/tipo eliminado sigue reservado, como desktop; no se resucita en silencio.
-No se modifica la migración v1 ni se agregan migraciones en este milestone.
+No se modifica la migración v1. V2 agrega los módulos descritos más abajo.
 
 Después de cada escritura hay una recarga compartida de categorías, movimientos
-y resumen. Se bloquean submits duplicados, se descartan lecturas tardías de otro
+y resumen, gastos fijos, presupuestos y metas. Las seis lecturas se hacen en paralelo
+una vez por carga/escritura/período, no por navegación. Se bloquean submits duplicados, se descartan lecturas tardías de otro
 período y no se actualiza un componente desmontado. No hay polling.
 
 ## Reglas de saldo
@@ -229,6 +280,96 @@ registró errores de página ni requests al API desktop durante la comprobación
 
 Ampliar la UX local Android de forma incremental. Auth, sync cloud, migración desde
 Windows, Premium, backups y demás módulos requieren milestones independientes.
+
+## Migración v2 y módulos de planificación
+
+`0002_mobile_planning.sql` se registra como versión 2 / `mobile_planning`, sólo
+en el plugin mobile. SQLx aplica una vez y verifica el checksum. Startup comprueba
+v1 y v2 antes de abrir el shell; un fallo permite Reintentar sin borrar almacenamiento.
+
+| Tabla | Campos propios y restricciones |
+|---|---|
+| gastos_fijos | categoria_id FK por id/owner, descripcion 1–500, monto >0, dia_vencimiento 1–31, activo 0/1 |
+| presupuestos | categoria_id FK por id/owner, mes 1–12, anio 1–9999, monto >0; UNIQUE owner/categoría/mes/año |
+| metas_ahorro | nombre 1–160, monto_objetivo >0, monto_inicial >=0, fecha_objetivo nullable YYYY-MM-DD real, descripcion hasta 2000, estado activa/pausada/completada |
+
+Cada tabla agrega `id INTEGER PRIMARY KEY AUTOINCREMENT`, owner local no vacío,
+sync_id único, created_at/updated_at CURRENT_TIMESTAMP, deleted_at nullable,
+sync_status pending y last_synced_at nullable. Índices: owner/activo/día y categoría
+para gastos fijos, owner/año/mes para presupuestos, owner/estado para metas.
+`movimientos.meta_id` nullable referencia metas; un índice y triggers impiden
+relaciones entre owners sin reconstruir movimientos. NULL no cambia filas v1.
+
+Los triggers de soft-delete desvinculan movimientos de una meta eliminada y
+borran lógicamente presupuestos/gastos fijos de una categoría eliminada, dentro
+de la misma sentencia. No eliminan movimientos ni categorías físicamente.
+`mobilePlanningRepository` concentra SQL, validaciones y derivados;
+`mobileRepositorySupport` comparte montos/fechas/IDs y escrituras sanitizadas.
+FinanceRepository agrega list/create/update/delete para los tres módulos;
+el adaptador desktop usa gastosFijos/createGastoFijo/updateGastoFijo/deleteGastoFijo,
+presupuestos/upsertPresupuesto/deletePresupuesto y metas/createMeta/updateMeta/deleteMeta
+del API existente. No se agregan llamadas HTTP ni se modifica el API desktop.
+
+Sidebar reserva metadata `premium=true`, feature keys `fixed_expenses`, `budgets`,
+`saving_goals`. No representa una autorización comercial ni llama a billing.
+El gating mobile deberá implementarse antes de distribuir una release pública.
+Siguen pendientes Planificación, Calendario, Estadísticas, Reporte y Configuración.
+
+## Prueba manual del milestone 4
+
+1. Registrar por SELECT versiones SQLx, categorías/movimientos y saldo de la
+   instalación v1 (incluidos sync_id/timestamps/tombstones).
+2. Instalar el APK con `npx tauri android run --no-watch Pixel_8` sin desinstalar
+   ni limpiar datos. Comprobar v1/v2 exitosas, FK y todos los campos anteriores;
+   sólo `meta_id=NULL` debe agregarse a movimientos. Saldo previo idéntico.
+3. Crear una categoría de gasto y un movimiento del mes para probar consumo.
+4. Gastos fijos: crear, editar monto/estado, cerrar/reabrir y confirmar. Eliminar,
+   cerrar/reabrir y comprobar tombstone y ausencia en listado. Saldo no cambia.
+5. Presupuestos: crear en la categoría anterior; comprobar consumo, restante y
+   porcentaje. Editar límite, cerrar/reabrir y comprobar persistencia. Probar
+   cambio de mes, límite excedido y delete/upsert sin cambiar identidad.
+6. Metas: crear con objetivo/inicial/fecha/estado. Crear ahorro asignado desde
+   Movimientos, editar meta y comprobar inicial + ahorros asignados; cerrar/
+   reabrir. Eliminar y comprobar que se desvinculan, pero conservan los movimientos.
+7. Navegar las seis secciones desde drawer, sin volver a Inicio entre módulos.
+   Comprobar X/overlay/Escape, foco y scroll; vistas y formularios a 320/360/390/430 px.
+
+Validación del milestone 4 realizada el 4 de octubre de 2026 en Pixel_8 / x86_64,
+package `com.scisoftware.scisonomics.debug`, mediante
+`npx tauri android run --no-watch Pixel_8`. Se instaló sobre la app existente,
+sin desinstalar ni borrar datos. Antes: SQLx v1, tres categorías y tres movimientos
+(incluidos tombstones), saldo 11234. Después: v1/v2 exitosas; todos los campos
+anteriores idénticos, movimientos con meta_id NULL y foreign_key_check sin errores.
+La migration v1 y la versión 3.3.1 quedaron intactas.
+
+Desde la UI nativa se creó Servicios M4 y un gasto de 3000. Gasto fijo Alquiler M4:
+5000 → 6000, día 31, luego inactivo. Presupuesto octubre 2026: límite 5000,
+consumo 3000, restante 2000, 60%; al editar límite a 2500, restante -500 y 120%
+Superado. Meta M4: objetivo 10000, inicial 1000 → 1500, nombre editado y fecha
+2027-01-01 elegida con el calendario Android. Un ahorro de 500 asignado explícitamente
+produjo progreso 2000 / 20% y faltante 8000. No se generaron movimientos desde
+gastos fijos, presupuestos ni iniciales de metas.
+
+Un force-stop, ausencia de PID y arranque COLD conservaron los valores editados,
+identidades y relaciones de los tres módulos. Luego se eliminaron gasto fijo y
+meta desde sus confirmaciones. Otro arranque COLD conservó ambos tombstones y
+sus listados vacíos; el ahorro conservó id/sync_id/created_at/monto y quedó sin
+meta. El presupuesto mantuvo sus valores y el saldo siguió en 7734. La comparación
+final confirmó nuevamente todos los campos de las categorías/movimientos previos.
+
+Las tres vistas y sus tres formularios se comprobaron a 320, 360, 390 y 430 px:
+24 combinaciones sin desborde horizontal, botones de al menos 44 px. En el
+formulario de meta, con teclado Android abierto, se pudo desplazar la vista y
+pulsar Guardar sin cerrar el teclado. Las seis rutas se navegaron desde el drawer;
+X, Escape y overlay cerraron y restauraron foco al menú; a 320 × 400 el drawer
+tuvo scroll interno para llegar a todas las secciones.
+
+Validaciones automáticas: test:mobile 57/57, mobileUi 28/28, platformStartup 24/24,
+auth 68/68, billing 45/45, updater 32/32, TypeScript y build frontend correctos.
+Cargo check Windows correcto. La primera ejecución Rust tuvo un fallo en el test
+existente native_pending_pkce_roundtrip_and_cleanup; repetir con
+`-- --test-threads=1` pasó 9/9 sin modificar auth. La causa de ese fallo no se
+resolvió en este milestone. No se validaron iOS ni un instalador Windows completo.
 
 ## Prueba manual del milestone 3
 

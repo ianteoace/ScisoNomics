@@ -14,6 +14,7 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const root = path.resolve(__dirname, "..");
 const schema = fs.readFileSync(path.join(root, "src-tauri/migrations/0001_mobile_finance.sql"), "utf8");
+const planningSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0002_mobile_planning.sql"), "utf8");
 const driverPath = require.resolve("@tauri-apps/plugin-sql");
 const apiPath = path.join(root, "services/api.ts");
 const movement = { fecha: "2026-10-04", tipo: "ingreso", categoria_id: 1, descripcion: "Ingreso demo", monto: 10000 };
@@ -36,10 +37,12 @@ function fixture(t, filename = ":memory:") {
       assert.equal(url, "sqlite:scisonomics-mobile.db");
       if (state.failLoads) throw new Error("private/path native load error");
       const raw = new DatabaseSync(filename);
-      raw.exec(schema);
-      raw.exec("CREATE TABLE IF NOT EXISTS _sqlx_migrations(version INTEGER PRIMARY KEY, success INTEGER); INSERT OR IGNORE INTO _sqlx_migrations VALUES(1, 1)");
+      raw.exec("CREATE TABLE IF NOT EXISTS _sqlx_migrations(version INTEGER PRIMARY KEY, success INTEGER)");
+      if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=1").get()) { raw.exec(schema); raw.exec("INSERT INTO _sqlx_migrations VALUES(1,1)"); }
+      if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=2").get()) { raw.exec(planningSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(2,1)"); }
       if (state.disableFK) raw.exec("PRAGMA foreign_keys = OFF");
       if (state.omitMigration) raw.exec("DELETE FROM _sqlx_migrations");
+      if (state.omitPlanningMigration) raw.exec("DELETE FROM _sqlx_migrations WHERE version=2");
       state.databases.push(raw);
       return {
         select: async (sql, params = []) => { state.statements.push({ sql, params }); const { statement, values } = bind(raw, sql, params); return statement.all(...values); },
@@ -55,7 +58,7 @@ function fixture(t, filename = ":memory:") {
     }
   }
   require.cache[driverPath] = { id: driverPath, filename: driverPath, loaded: true, exports: { __esModule: true, default: Driver } };
-  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento"].map((name) => [name, async (...args) => {
+  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento", "gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta"].map((name) => [name, async (...args) => {
     state.desktopCalls.push({ name, args });
     return name === "categorias" ? [{ id: 41, nombre: "Desktop", tipo: "gasto" }] : name === "movimientos" ? { rows: [{ ...movement, id: 42, categoria: "Desktop", saldo_acumulado: 10000 }], summary: { saldo_inicial: 700 } } : { ok: true };
   }]));
@@ -77,7 +80,7 @@ test("repository contract selects mobile without any desktop API calls", async (
   const state = fixture(t), m = state.modules();
   const repository = await m.getFinanceRepository();
   assert.equal(repository, m.mobileFinanceRepository);
-  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento"]);
+  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento", "listGastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "listPresupuestos", "createPresupuesto", "updatePresupuesto", "deletePresupuesto", "listMetas", "createMeta", "updateMeta", "deleteMeta"].sort());
   await repository.createCategoria({ nombre: "Prueba Mobile", tipo: "ingreso" });
   await repository.createMovimiento(movement);
   assert.equal((await repository.listCategorias())[0].id, 1);
@@ -116,14 +119,14 @@ test("SQLite is lazy, reused by concurrent callers and guarded even after cachin
 
 test("failed initialization is sanitized, retryable and checks migration and foreign keys", async (t) => {
   const state = fixture(t), m = state.modules();
-  for (const flag of ["failLoads", "disableFK", "omitMigration"]) {
+  for (const flag of ["failLoads", "disableFK", "omitMigration", "omitPlanningMigration"]) {
     state[flag] = true;
     await assert.rejects(m.getMobileDatabase(), (error) => {
       assert.match(error.message, /almacenamiento local/); assert.doesNotMatch(error.message, /private|SELECT/); return true;
     });
     state[flag] = false;
   }
-  await m.getMobileDatabase(); assert.equal(state.loads, 4);
+  await m.getMobileDatabase(); assert.equal(state.loads, 5);
 });
 
 test("new local records have independent UUIDs, timestamps, pending status and valid mapping", async (t) => {
@@ -131,7 +134,7 @@ test("new local records have independent UUIDs, timestamps, pending status and v
   await repository.createCategoria({ nombre: " Prueba Mobile ", tipo: "ingreso" });
   await repository.createMovimiento({ ...movement, descripcion: " Ingreso demo ", nota: " Nota " });
   const [row] = await repository.listMovimientos(period);
-  assert.deepEqual(row, { id: 1, fecha: "2026-10-04", tipo: "ingreso", categoria: "Prueba Mobile", descripcion: "Ingreso demo", monto: 10000, saldo_acumulado: 10000, nota: "Nota", categoria_id: 1 });
+  assert.deepEqual(row, { id: 1, fecha: "2026-10-04", tipo: "ingreso", categoria: "Prueba Mobile", descripcion: "Ingreso demo", monto: 10000, saldo_acumulado: 10000, nota: "Nota", categoria_id: 1, meta_id: null });
   const raw = state.databases[0];
   for (const table of ["categorias", "movimientos"]) {
     const stored = raw.prepare(`SELECT * FROM ${table}`).get();
@@ -213,7 +216,7 @@ test("migration v1 is idempotent and rejects invalid direct writes", async (t) =
   for (const [fecha, tipo, monto] of [["2026-02-30", "gasto", 10], ["2026-01-01", "other", 10], ["2026-01-01", "gasto", 0]]) {
     assert.throws(() => raw.prepare("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,sync_id) VALUES(?, ?, 1, ?, 'bad')").run(fecha, tipo, monto), /CHECK/);
   }
-  assert.deepEqual(raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_sqlx_%' ORDER BY name").all().map((r) => r.name), ["categorias", "movimientos"]);
+  assert.deepEqual(raw.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_sqlx_%' ORDER BY name").all().map((r) => r.name), ["categorias", "gastos_fijos", "metas_ahorro", "movimientos", "presupuestos"]);
 });
 
 test("saved demo data survives closing and reopening the database with balance 7500", async (t) => {
@@ -360,4 +363,177 @@ test("expanded desktop contract delegates update/delete without opening mobile S
   ]);
   assert.equal((await repository.getSummary(period)).saldo, 10700);
   assert.equal(state.loads, 0);
+});
+
+const fixed = { categoria_id: 1, descripcion: "Alquiler", monto: 500, dia_vencimiento: 31, activo: 1 };
+const budget = { categoria_id: 1, mes: 10, anio: 2026, monto: 1000 };
+const goal = { nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 100, fecha_objetivo: "2027-01-01", descripcion: "Ahorro asignado", estado: "activa" };
+function identity(row) { return [row.id, row.sync_id, row.created_at, row.owner_user_id, row.last_synced_at]; }
+
+test("v1 to v2 upgrade preserves every existing field, tombstones, IDs and balance across reopening", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "scisonomics-planning-upgrade-"));
+  const filename = path.join(temp, "mobile.db"), raw = new DatabaseSync(filename);
+  raw.exec(schema);
+  raw.exec("CREATE TABLE _sqlx_migrations(version INTEGER PRIMARY KEY, success INTEGER); INSERT INTO _sqlx_migrations VALUES(1,1)");
+  raw.exec("INSERT INTO categorias(nombre,tipo,sync_id) VALUES('Existente','gasto','category-v1')");
+  raw.exec("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,sync_id,nota) VALUES('2026-09-30','ingreso',1,700,'income-v1','Historial')");
+  raw.exec("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,sync_id,deleted_at) VALUES('2026-10-01','gasto',1,50,'deleted-v1','2026-10-02')");
+  const categories = raw.prepare("SELECT * FROM categorias").all(), movements = raw.prepare("SELECT * FROM movimientos ORDER BY id").all().map((r) => ({ ...r })); raw.close();
+  const state = fixture(t, filename); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  let m = state.modules(); await m.getMobileDatabase();
+  const upgraded = state.databases[0];
+  assert.deepEqual(upgraded.prepare("SELECT * FROM categorias").all(), categories);
+  assert.deepEqual(upgraded.prepare("SELECT * FROM movimientos ORDER BY id").all().map(({ meta_id, ...r }) => { assert.equal(meta_id, null); return r; }), movements);
+  assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo, 700);
+  assert.deepEqual(upgraded.prepare("PRAGMA foreign_key_check").all(), []);
+  await (await m.getMobileDatabase()).close(); m = state.modules(); await m.getMobileDatabase();
+  assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo, 700);
+  assert.deepEqual(state.databases[0].prepare("SELECT version,success FROM _sqlx_migrations ORDER BY version").all().map((r) => ({ ...r })), [{ version: 1, success: 1 }, { version: 2, success: 1 }]);
+});
+
+test("fixed expense CRUD preserves identity and persists without generating financial movements", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "scisonomics-fixed-"));
+  const state = fixture(t, path.join(temp, "mobile.db")); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  let m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Servicios", tipo: "gasto" }); await r.createGastoFijo(fixed);
+  const raw = state.databases[0]; raw.exec("UPDATE gastos_fijos SET sync_status='synced', last_synced_at='2025-01-01',updated_at='2025-01-01'");
+  const before = raw.prepare("SELECT * FROM gastos_fijos").get();
+  await r.updateGastoFijo(1, { ...fixed, monto: 750, activo: 0 });
+  const after = raw.prepare("SELECT * FROM gastos_fijos").get();
+  assert.deepEqual(identity(after), identity(before)); assert.equal(after.sync_status, "pending"); assert.notEqual(after.updated_at, before.updated_at);
+  assert.equal((await r.getSummary(period)).saldo, 0); assert.equal((await r.listMovimientos(period)).length, 0);
+  await (await m.getMobileDatabase()).close(); m = state.modules(); r = m.mobileFinanceRepository;
+  assert.equal((await r.listGastosFijos())[0].monto, 750); assert.equal((await r.listGastosFijos())[0].activo, 0);
+  await r.deleteGastoFijo(1); assert.deepEqual(await r.listGastosFijos(), []);
+  await (await m.getMobileDatabase()).close(); m = state.modules();
+  assert.deepEqual(await m.mobileFinanceRepository.listGastosFijos(), []);
+  assert.ok(state.databases[0].prepare("SELECT deleted_at FROM gastos_fijos").get().deleted_at);
+});
+
+test("planning validation rejects invalid data before SQLite is opened", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  for (const c of [{ ...fixed, monto: 0 }, { ...fixed, monto: NaN }, { ...fixed, monto: 1.001 }, { ...fixed, dia_vencimiento: 32 }, { ...fixed, dia_vencimiento: 1.5 }, { ...fixed, activo: 2 }, { ...fixed, descripcion: " " }, { ...fixed, categoria_id: -1 }]) await assert.rejects(r.createGastoFijo(c));
+  for (const c of [{ ...budget, monto: 0 }, { ...budget, mes: 0 }, { ...budget, mes: 13 }, { ...budget, anio: 0 }, { ...budget, categoria_id: 0 }]) await assert.rejects(r.createPresupuesto(c));
+  for (const c of [{ ...goal, nombre: " " }, { ...goal, nombre: "x".repeat(161) }, { ...goal, descripcion: "x".repeat(2001) }, { ...goal, monto_objetivo: 0 }, { ...goal, monto_inicial: -1 }, { ...goal, estado: "inventado" }, { ...goal, fecha_objetivo: "2026-02-30" }]) await assert.rejects(r.createMeta(c));
+  assert.equal(state.loads, 0);
+});
+
+test("budgets consume only active same-owner category expenses in their exact period", async (t) => {
+  const state = fixture(t), m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Gasto", tipo: "gasto" });
+  for (const [fecha, tipo, monto] of [["2026-10-01", "gasto", 400], ["2026-10-02", "gasto", 300], ["2027-01-01", "gasto", 125], ["2026-09-01", "gasto", 100], ["2026-10-01", "ingreso", 1000], ["2026-10-01", "ahorro", 40], ["2026-10-01", "inversion", 50], ["2026-10-03", "gasto", 60]]) await r.createMovimiento({ ...movement, fecha, tipo, monto });
+  await r.deleteMovimiento(8);
+  const raw = state.databases[0];
+  raw.exec("INSERT INTO categorias(nombre,tipo,owner_user_id,sync_id) VALUES('Ajena','gasto','other','other-cat')");
+  raw.exec("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,owner_user_id,sync_id) VALUES('2026-10-01','gasto',2,500,'other','other-move')");
+  await r.createPresupuesto(budget);
+  let row = (await r.listPresupuestos(period))[0];
+  assert.equal(row.monto_gastado, 700); assert.equal(row.monto_disponible, 300); assert.equal(row.porcentaje_usado, 70); assert.equal(row.excedido, false);
+  raw.exec("UPDATE presupuestos SET sync_status='synced',last_synced_at='2025-01-01',updated_at='2025-01-01'");
+  const before = raw.prepare("SELECT * FROM presupuestos").get();
+  await r.updatePresupuesto(1, { ...budget, monto: 600 }); row = (await r.listPresupuestos(period))[0];
+  assert.equal(row.monto_disponible, -100); assert.equal(row.excedido, true); assert.ok(row.porcentaje_usado > 100);
+  assert.deepEqual(identity(raw.prepare("SELECT * FROM presupuestos").get()), identity(before));
+  await assert.rejects(r.updatePresupuesto(1, { ...budget, mes: 11 }), /período/);
+  assert.deepEqual(await r.listPresupuestos({ month: 11, year: 2026 }), []);
+  await r.createPresupuesto({ ...budget, mes: 1, anio: 2027, monto: 200 });
+  assert.equal((await r.listPresupuestos({ month: 1, year: 2027 }))[0].monto_gastado, 125);
+  await r.deletePresupuesto(1); assert.deepEqual(await r.listPresupuestos(period), []);
+  await r.createPresupuesto({ ...budget, monto: 800 });
+  assert.equal((await r.listPresupuestos(period))[0].id, 1);
+  assert.deepEqual(identity(raw.prepare("SELECT * FROM presupuestos WHERE id=1").get()), identity(before));
+  assert.deepEqual(state.desktopCalls, []);
+});
+
+test("goal progress is initial plus explicitly assigned historical savings; state is independent", async (t) => {
+  const state = fixture(t), m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Ahorro", tipo: "ahorro" }); await r.createMeta(goal); await r.createMeta({ ...goal, nombre: "Otra" });
+  for (const [fecha, tipo, monto, meta_id] of [["2025-01-01", "ahorro", 200, 1], ["2027-01-01", "ahorro", 500, 1], ["2026-10-01", "ahorro", 900, null], ["2026-10-01", "ahorro", 900, 2], ["2026-10-01", "gasto", 500, 1], ["2026-10-02", "ahorro", 100, 1]]) await r.createMovimiento({ ...movement, fecha, tipo, monto, meta_id });
+  await r.deleteMovimiento(6);
+  let meta = (await r.listMetas()).find((g) => g.id === 1);
+  assert.equal(meta.monto_ahorrado, 800); assert.equal(meta.faltante, 200); assert.equal(meta.porcentaje_completado, 80);
+  const raw = state.databases[0]; raw.exec("UPDATE metas_ahorro SET sync_status='synced',last_synced_at='2025-01-01',updated_at='2025-01-01' WHERE id=1");
+  const before = raw.prepare("SELECT * FROM metas_ahorro WHERE id=1").get();
+  await r.updateMeta(1, { ...goal, monto_inicial: 400, estado: "pausada" });
+  meta = (await r.listMetas()).find((g) => g.id === 1);
+  assert.equal(meta.monto_ahorrado, 1100); assert.equal(meta.faltante, 0); assert.ok(Math.abs(meta.porcentaje_completado - 110) < 1e-10); assert.equal(meta.estado, "pausada");
+  assert.deepEqual(identity(raw.prepare("SELECT * FROM metas_ahorro WHERE id=1").get()), identity(before));
+  const balance = (await r.getSummary(period)).saldo, moves = raw.prepare("SELECT id,monto,sync_id,created_at FROM movimientos ORDER BY id").all();
+  await r.deleteMeta(1);
+  assert.equal((await r.listMetas()).length, 1); assert.equal((await r.getSummary(period)).saldo, balance);
+  assert.deepEqual(raw.prepare("SELECT id,monto,sync_id,created_at FROM movimientos ORDER BY id").all(), moves);
+  assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM movimientos WHERE meta_id=1").get().n, 0);
+  assert.equal(raw.prepare("SELECT meta_id FROM movimientos WHERE id=4").get().meta_id, 2);
+  await assert.rejects(r.createMovimiento({ ...movement, meta_id: 1 }), /guardar/);
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+test("budgets and goals persist after updates and soft deletion in a real SQLite file", async (t) => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "scisonomics-goals-"));
+  const state = fixture(t, path.join(temp, "mobile.db")); t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  let m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Gasto", tipo: "gasto" }); await r.createPresupuesto(budget); await r.createMeta(goal);
+  await r.updatePresupuesto(1, { ...budget, monto: 2000 }); await r.updateMeta(1, { ...goal, nombre: "Viaje editado", monto_inicial: 250, fecha_objetivo: "2028-02-29" });
+  await (await m.getMobileDatabase()).close(); m = state.modules(); r = m.mobileFinanceRepository;
+  assert.equal((await r.listPresupuestos(period))[0].monto_presupuestado, 2000);
+  const meta = (await r.listMetas())[0]; assert.equal(meta.nombre, "Viaje editado"); assert.equal(meta.fecha_objetivo, "2028-02-29"); assert.equal(meta.monto_ahorrado, 250);
+  await r.deleteMeta(1); await r.deletePresupuesto(1);
+  await (await m.getMobileDatabase()).close(); m = state.modules();
+  assert.deepEqual(await m.mobileFinanceRepository.listMetas(), []); assert.deepEqual(await m.mobileFinanceRepository.listPresupuestos(period), []);
+});
+
+test("planning refuses foreign owners, deleted categories and metas; direct FK guards remain active", async (t) => {
+  const state = fixture(t), m = state.modules(), r = m.mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Local", tipo: "gasto" }); await r.createMeta(goal);
+  const raw = state.databases[0];
+  raw.exec("INSERT INTO categorias(nombre,tipo,owner_user_id,sync_id) VALUES('Ajena','gasto','other','foreign-cat')");
+  raw.exec("INSERT INTO metas_ahorro(nombre,monto_objetivo,owner_user_id,sync_id) VALUES('Ajena',100,'other','foreign-goal')");
+  raw.exec("INSERT INTO gastos_fijos(categoria_id,descripcion,monto,dia_vencimiento,owner_user_id,sync_id) VALUES(2,'Ajeno',10,1,'other','foreign-fixed')");
+  raw.exec("INSERT INTO presupuestos(categoria_id,mes,anio,monto,owner_user_id,sync_id) VALUES(2,10,2026,10,'other','foreign-budget')");
+  await assert.rejects(r.createGastoFijo({ ...fixed, categoria_id: 2 })); await assert.rejects(r.createPresupuesto({ ...budget, categoria_id: 2 }));
+  await assert.rejects(r.createMovimiento({ ...movement, meta_id: 2 }));
+  for (const action of [() => r.updateGastoFijo(1, fixed), () => r.deleteGastoFijo(1), () => r.updatePresupuesto(1, budget), () => r.deletePresupuesto(1), () => r.updateMeta(2, goal), () => r.deleteMeta(2)]) await assert.rejects(action());
+  assert.deepEqual(await r.listGastosFijos(), []); assert.deepEqual(await r.listPresupuestos(period), []); assert.equal((await r.listMetas()).length, 1);
+  assert.throws(() => raw.exec("INSERT INTO gastos_fijos(categoria_id,descripcion,monto,dia_vencimiento,sync_id) VALUES(2,'Cross owner',10,1,'bad-fixed')"), /FOREIGN KEY/);
+  assert.throws(() => raw.exec("INSERT INTO movimientos(fecha,tipo,categoria_id,monto,meta_id,sync_id) VALUES('2026-10-01','ahorro',1,1,2,'bad-meta')"), /invalid meta owner/);
+  await r.deleteCategoria(1);
+  await assert.rejects(r.createGastoFijo(fixed)); await assert.rejects(r.createPresupuesto(budget));
+});
+
+test("deleting an unused category atomically tombstones its planning references without financial deletion", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Servicios", tipo: "gasto" }); await r.createGastoFijo(fixed); await r.createPresupuesto(budget);
+  await r.createMovimiento({ ...movement, tipo: "gasto", monto: 10 });
+  await assert.rejects(r.deleteCategoria(1), /movimientos/);
+  assert.equal((await r.listGastosFijos()).length, 1); assert.equal((await r.listPresupuestos(period)).length, 1);
+  await r.deleteMovimiento(1); await r.deleteCategoria(1);
+  assert.deepEqual(await r.listGastosFijos(), []); assert.deepEqual(await r.listPresupuestos(period), []);
+  const raw = state.databases[0];
+  assert.ok(raw.prepare("SELECT deleted_at FROM gastos_fijos").get().deleted_at); assert.ok(raw.prepare("SELECT deleted_at FROM presupuestos").get().deleted_at);
+  assert.equal(raw.prepare("SELECT count(*) AS n FROM movimientos").get().n, 1);
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+test("planning schema constraints and SQL bindings preserve text without executing it", async (t) => {
+  const state = fixture(t), r = state.modules().mobileFinanceRepository;
+  await r.createCategoria({ nombre: "Servicios", tipo: "gasto" });
+  const text = "Viaje'); DROP TABLE movimientos;--";
+  await r.createMeta({ ...goal, nombre: text }); await r.createGastoFijo({ ...fixed, descripcion: text });
+  assert.equal((await r.listMetas())[0].nombre, text); assert.equal((await r.listGastosFijos())[0].descripcion, text);
+  const raw = state.databases[0];
+  for (const sql of ["INSERT INTO gastos_fijos(categoria_id,descripcion,monto,dia_vencimiento,sync_id) VALUES(1,'Test',10,32,'bad-day')",
+    "INSERT INTO presupuestos(categoria_id,mes,anio,monto,sync_id) VALUES(1,13,2026,10,'bad-month')",
+    "INSERT INTO metas_ahorro(nombre,monto_objetivo,estado,sync_id) VALUES('Test',10,'inventado','bad-state')",
+    "INSERT INTO metas_ahorro(nombre,monto_objetivo,fecha_objetivo,sync_id) VALUES('Test',10,'2026-02-30','bad-date')"] ) assert.throws(() => raw.exec(sql), /CHECK/);
+  assert.deepEqual(state.desktopCalls, []);
+});
+
+test("desktop planning adapter delegates to existing API and never opens SQLite", async (t) => {
+  const state = fixture(t), m = state.modules(); global.window.navigator.userAgent = "Windows NT";
+  const r = await m.getFinanceRepository();
+  await r.listGastosFijos(); await r.createGastoFijo(fixed); await r.updateGastoFijo(1, fixed); await r.deleteGastoFijo(1);
+  await r.listPresupuestos(period); await r.createPresupuesto(budget); await r.updatePresupuesto(1, budget); await r.deletePresupuesto(1);
+  await r.listMetas(); await r.createMeta(goal); await r.updateMeta(1, goal); await r.deleteMeta(1);
+  assert.deepEqual(state.desktopCalls.map((r) => r.name), ["gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta"]);
+  assert.deepEqual(state.desktopCalls[4].args, [10, 2026]); assert.deepEqual(state.desktopCalls[6].args, [budget]); assert.equal(state.loads, 0);
 });
