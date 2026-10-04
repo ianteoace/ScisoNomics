@@ -1,5 +1,9 @@
 {
+  "identifier": "com.scisoftware.scisonomics",
   "bundle": {
-    "externalBin": []
+    "externalBin": [],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
   }
 }
