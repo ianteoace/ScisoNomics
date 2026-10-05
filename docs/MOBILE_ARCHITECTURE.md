@@ -1,10 +1,51 @@
-# ScisoNomics Mobile: interfaz local (milestone 5)
+# ScisoNomics Mobile: interfaz local (milestone 7)
 
-La versión de producto sigue siendo 3.3.1. Este milestone implementa únicamente
-categorías, movimientos, gastos fijos, planificación, calendario, presupuestos y metas locales. Android usa SQLite nativo; Windows continúa
+La versión de producto sigue siendo 3.3.1. Mobile incluye Inicio, categorías,
+movimientos, gastos fijos, planificación, calendario, presupuestos, metas,
+estadísticas, reportes y Configuración locales. Android usa SQLite nativo; Windows continúa
 usando FastAPI y su SQLite existente. No se cambia el modelo ni los datos desktop.
 
+## Auditoría de Configuración Desktop (milestone 7, previa a implementación)
+
+Fuentes revisadas: `/configuracion/page.tsx`, `AccountPanel`, providers de
+actualizaciones y Premium, `api.ts`, `backupDownload.ts`, `cloudSync.ts`,
+`entitlements.ts`, `finance_app/services.py`, `finance_app/db.py`, el backend
+local y `src-tauri/LICENSE.txt`. A = portable ahora; B = Mobile pendiente;
+C = implementación exclusivamente Desktop.
+
+| Función existente | Clase | Decisión Mobile |
+| --- | --- | --- |
+| Estado local y accesos rápidos | A | Datos locales, navegación existente |
+| Saldo inicial mensual | A | Es un cálculo, no una configuración editable |
+| Apariencia | A | Tema oscuro fijo; Providers elimina preferencias de tema antiguas, no existe selector |
+| Guías de secciones | B | Onboarding Desktop en layout; handler de reapertura sin botón visible actual |
+| Cuenta, multicuentas, Google, recuperación | B | Informativo; siguiente milestone con almacenamiento seguro |
+| Sync manual, al abrir/cerrar, automático, intervalo y pendientes | B | Informativo, ninguna llamada cloud |
+| Premium y suscripción | B | Información usando metadata del drawer; contratación y permisos pendientes |
+| Backups sin cifrar/cifrados y restore con copia previa | B | No habilitar acciones hasta diseñar backup Mobile |
+| Protección EFS Windows, carpetas de datos/backups/logs | C | No portar ni mostrar botones |
+| Integridad, reparación y diagnóstico FastAPI | C | No ejecutar backend local; futura recuperación SQLite Mobile independiente |
+| Exportación Excel / OpenPyXL | C | API disponible, sin acción en Configuración actual; exportación Mobile pendiente |
+| Frecuencia de backup | B | API y app_config existentes, sin control visible en Configuración actual |
+| Updater firmado, instaladores y Releases GitHub | C | Android informa futuras actualizaciones por tienda, sin botón |
+| Acerca de / versión / novedades | A | Versión desde package.json; solo novedades aplicables a Mobile |
+| Términos, privacidad y aceptación/licencia | A | Fuente única LICENSE.txt del instalador; no había rutas legales web |
+| Soporte | A | Email seleccionable; mailto no está autorizado por capability actual, sin ampliar permisos |
+
+### Semántica de saldo auditada
+
+Desktop **no permite editar saldo inicial**: no hay input, endpoint de escritura
+ni clave de configuración para ello. `get_saldo_inicial(month, year)` suma
+movimientos activos del owner anteriores al primer día del mes, ingreso positivo
+y todos los otros tipos negativos. `get_resumen_mensual_con_saldo` obtiene saldo
+actual usando el mismo corte al mes siguiente (también diciembre/enero).
+Mobile ya usa esta misma fórmula. `app_config(key,value,updated_at)` Desktop
+guarda otras opciones, no un saldo base. No se debe introducir un offset financiero
+como supuesto comportamiento Desktop. La edición solicitada requiere decidir
+explícitamente si se incorpora una funcionalidad nueva.
+
 ## Runtime y almacenamiento
+
 
 - `getRuntimePlatformSync()` identifica el runtime antes de montar providers.
 - Mobile monta `MobileStartupGate`, sin auth, updater, sync ni páginas desktop.
@@ -217,7 +258,8 @@ No hay users/auth mobile ni traducción de IDs Windows/Android.
 
 Contrato en `services/data/financeRepositoryTypes.ts`: list/create/update/delete
 para categorías, movimientos, gastos fijos, presupuestos, metas y gastos programados;
-`getSummary`, `getSchedulingSummary`, `getCalendar` y `markGastoProgramadoPaid`.
+`getSummary`, `getSchedulingSummary`, `getCalendar`, `markGastoProgramadoPaid`,
+`getStatistics`, `getMonthlyReport` y `getAnnualStatistics`.
 Devuelve los tipos existentes `Categoria` y `Movimiento`; las creaciones devuelven
 void como las operaciones desktop. El nombre evita la colisión Windows entre
 `FinanceRepository.ts` y `financeRepository.ts`.
@@ -236,7 +278,9 @@ Al guardar en otro mes la UI muestra ese período.
 
 `MobileApp` es un shell: usa `usePathname()` y los enlaces Next existentes.
 Monta una sola vista según `/dashboard`, `/movimientos`, `/categorias`,
-`/gastos-fijos`, `/planificacion`, `/calendario`, `/presupuestos` o `/metas`.
+`/gastos-fijos`, `/planificacion`, `/calendario`, `/presupuestos`, `/metas`,
+`/estadisticas` o `/reporte`. El alias desktop `/reporte-mensual` también resuelve
+a la misma vista mobile, conservando la redirección Next existente.
 No crea otro router ni monta los layouts/providers financieros desktop.
 Las rutas no implementadas en mobile vuelven a `/dashboard`.
 
@@ -258,6 +302,9 @@ La lista de secciones permite agregar módulos futuros cuando estén implementad
   movimientos reales al tocar un día. Sin fuentes planificadas ni tabla calendario.
 - Presupuestos: mes/año, límites por categoría, consumo real, restante y porcentaje; CRUD.
 - Metas: objetivo/inicial/fecha/estado, avance por ahorros asignados y CRUD.
+- Estadísticas: totales del mes, tipos, gastos por categoría y detalle táctil,
+  evolución anual y proyección identificada por separado.
+- Reporte: lectura mensual y anual con los períodos y fórmulas desktop.
 - Formularios: montos con teclado decimal/parser desktop, fecha local, categoría,
   descripción y nota opcional. No se crean defaults ni datos demo automáticamente.
 
@@ -287,6 +334,11 @@ Las ocho lecturas se hacen en paralelo; el calendario deriva de los movimientos
 ya cargados sin otra consulta. Se ejecutan
 una vez por carga/escritura/período, no por navegación. Se bloquean submits duplicados, se descartan lecturas tardías de otro
 período y no se actualiza un componente desmontado. No hay polling.
+
+En Estadísticas/Reporte se suspenden esas ocho lecturas generales. El hook
+`useMobileAnalytics` carga sólo el análisis elegido y, para el detalle de
+Estadísticas, los movimientos del mes. Descarta respuestas tardías al cambiar
+mes/año/vista o desmontar, ofrece reintento explícito y no hace polling.
 
 ## Reglas de saldo
 
@@ -425,6 +477,205 @@ Diferencias UX: cards en lugar de tablas y confirmación explícita antes de
 registrar un pago. El Dashboard real conserva su fórmula; proyección se muestra
 por separado en Planificación. El calendario no anticipa gastos fijos día 31 ni
 vencimientos programados: sólo muestra movimientos reales, como desktop.
+
+## Auditoría Desktop del milestone 6 (antes de implementar)
+
+Fuentes revisadas: finance_app/db.py, services.py, exporter.py, endpoints
+/estadisticas, /estadisticas/anual y /reporte-mensual del backend local,
+services/api.ts, types/domain.ts, páginas estadisticas/reporte/reporte-mensual,
+EstadisticasView.tsx, Sidebar.tsx y entitlements.ts. No existen entidades
+persistentes de estadísticas/reporte: son lecturas de las tablas financieras.
+
+Estadísticas Desktop selecciona mes y año; por defecto el actual, años actual
+±3 y botón Mes actual. No hay rangos ni filtro por tipo. /estadisticas devuelve:
+summary (saldo inicial, saldo actual y balance final), month_totals, categorías
+de gasto, tendencia de los 12 meses del año y resumen de planificación.
+Ingresos/gastos/ahorros/inversiones son SUM por tipo real. Balance operativo =
+ingresos - gastos; disponible luego de ahorro = balance - ahorro. Saldo actual
+es acumulado histórico descontando los cuatro tipos, mientras balance_final
+legacy = saldo inicial + ingresos - gastos. No intercambiar estas métricas.
+
+Categorías: sólo tipo gasto, agrupadas por id/nombre, owner coincidente, tanto
+movimiento como categoría activos, total positivo, orden descendente por total.
+Porcentaje = total categoría / suma de categorías * 100; base cero produce 0.
+Tocar categoría abre sus movimientos del mes (Desktop muestra hasta 40), con
+fecha, descripción, importe y nota. Las barras muestran cuatro tipos; la línea,
+ingresos y gastos de todo el año, con meses vacíos en cero. No hay comparación
+porcentual con mes anterior en esa UI. Mes vacío mantiene evolución anual si
+existe; año sin datos tiene estado vacío. Se excluyen tombstones y otros owners.
+Recharts 2.12.7 ya está instalado: Desktop usa LineChart fijo de 640 px y barras
+CSS. Mobile adaptará el ancho disponible y tendrá detalle textual táctil, sin nueva librería.
+Planificación sólo aparece identificada aparte: vencidos, próximos 30 días,
+pagados por vencimiento del mes actual y proyección del mes seleccionado,
+reutilizando las reglas del milestone 5; no altera estadísticas reales.
+
+Reporte: /reporte es un alias que redirige a /reporte-mensual en Desktop. Esa
+pantalla tiene pestañas Mensual y Anual. Mensual selecciona mes/año (yearOptions:
+actual -5 hasta +2, incluyendo año seleccionado). API expone ingresos, gastos,
+ahorro, inversiones, balance operativo, disponible luego de ahorro, top 5
+categorías y top 5 gastos (importe DESC, fecha DESC), evolución de los últimos
+6 meses inclusive, presupuestos estrictamente excedidos y metas activas.
+La pantalla actual sólo muestra seis métricas y los dos tops; Mobile también
+puede presentar las secciones ya existentes en esa misma respuesta. El servicio
+calcula comparaciones/deltas/porcentajes respecto al mes anterior, pero el
+endpoint los descarta: no inventar ni exponer ese contrato desde Mobile.
+El reporte mensual NO expone saldo acumulado ni planificación/proyección;
+balance operativo no hereda historial ni descuenta ahorros/inversiones.
+Inversiones del reporte mensual usa la regla legacy categoría cuyo nombre
+contiene `invers`, independientemente de tipo (y categoría activa); conservarla,
+sin reemplazarla por la suma por tipo de Estadísticas/Anual. Metas activas usan
+inicial + ahorros reales asignados históricos; presupuestos usan sólo gastos
+reales del mes/categoría. No sumar iniciales de metas ni planes al balance.
+
+Anual: 12 meses, cuatro tipos, cantidad de movimientos y balance = ingresos -
+gastos - ahorros - inversiones. Promedios dividen por 12 incluso con meses
+vacíos. Mes máximo usa el primer mes en caso de empate; categorías anuales
+agrupan por nombre, sólo gastos y referencias activas. Año vacío muestra estado
+vacío. No hay rango de fechas en estos módulos. Estadísticas y Reporte son free
+en la Sidebar/API actuales; planificación/presupuestos/metas conservan su propia
+metadata Premium, sin gating mobile durante desarrollo.
+
+Exportación Desktop es XLSX/OpenPyXL (mensual/anual/rango y movimientos),
+administrada desde Configuración/API, no un botón funcional en estos reportes.
+Incluye resumen, movimientos/tipos, categorías, fijos, presupuestos, metas y
+planificación pendiente. No hay PDF en estos módulos. No se portará exportación.
+
+Decisión: tres lecturas getStatistics/getMonthlyReport/getAnnualStatistics;
+Desktop delega a las tres APIs existentes y Mobile agrega por SQL, reutilizando
+getSummary, listPresupuestos, listMetas y getSchedulingSummary. Helpers puros
+para porcentajes/meses vacíos/anual; ninguna fórmula financiera en componentes.
+Queries por rango YYYY-MM-DD usan idx_movimientos_owner_fecha y los índices de
+categoría/owner existentes. No se justifica v4: cero tablas, columnas o índices
+nuevos. Las lecturas mobile no escriben. Diferencia heredada del milestone 4:
+get_month_summary Desktop aplica fijos antes de leer; Mobile no aplica plantillas
+automáticamente. Si existe un movimiento real generado desde fijo/pago, se
+incluye normalmente. Este milestone no cambia ese comportamiento de escritura.
+
+## Implementación del milestone 6
+
+Los tres métodos nuevos del contrato son lecturas:
+
+| Método | Desktop | Mobile |
+|---|---|---|
+| getStatistics({ month, year }) | api.stats(month, year) | resumen compartido, categorías, 12 meses y planificación |
+| getMonthlyReport({ month, year }) | api.reporteMensual(month, year) | seis métricas, tops, seis meses, presupuestos y metas |
+| getAnnualStatistics(year) | api.statsAnual(year) | agregados anuales, 12 meses, promedios y máximos |
+
+`mobileAnalyticsRepository.ts` concentra SQL con parámetros y filtros por owner
+local/tombstones. `financeAnalytics.ts` concentra fórmulas, porcentajes, períodos
+y relleno de meses vacíos; React sólo presenta resultados. Se reutilizan las
+lecturas existentes de saldo, presupuestos, metas y planificación. Los agregados
+anuales y de seis meses devuelven filas por mes, sin cargar todo el historial
+de movimientos en JavaScript. El detalle de categorías carga sólo el mes elegido.
+Las pruebas EXPLAIN comprueban el índice existente `idx_movimientos_owner_fecha`.
+
+Fórmulas conservadas:
+
+- Balance operativo mensual = ingresos - gastos.
+- Disponible luego de ahorro = balance operativo - ahorro.
+- Saldo real de Inicio = saldo inicial + ingresos - gastos - ahorros - inversiones.
+- Balance anual y mensual dentro del reporte anual = ingresos - gastos - ahorros - inversiones.
+- Participación por categoría = total / suma de categorías * 100; base cero = 0.
+- Promedios anuales = total / 12. Se incluyen meses vacíos; máximos empatados
+  conservan el primer mes, igual que Desktop.
+- Reporte mensual conserva la clasificación legacy por nombre de categoría
+  `invers`; Estadísticas y Anual suman por tipo real. No se unifican esas reglas.
+
+Fechas de dominio YYYY-MM-DD y límites exclusivos del mes siguiente se construyen
+sin conversión UTC. Las ventanas manejan diciembre/enero. La evolución mensual
+incluye exactamente seis meses consecutivos hasta el seleccionado; la anual,
+doce meses del año seleccionado. Cada módulo inicia en el período local actual,
+igual que Desktop. No se agregó rango libre ni comparación descartada por el API.
+
+`MobileStatistics` muestra cinco métricas, barras por tipo, participación y
+detalle de hasta 40 gastos por categoría, evolución anual y las cuatro métricas
+de planificación separadas. `MobileReport` ofrece Mensual/Anual: mensual muestra
+las seis métricas y secciones que ya entrega el API; anual presenta totales,
+promedios, máximos, cantidad de movimientos y doce resúmenes mensuales. No se
+mezclan iniciales de metas, plantillas ni pendientes en estadísticas reales.
+Los movimientos generados por el pago explícito de planificación sí se cuentan.
+
+Recharts existente usa LineChart, líneas continua/punteada, leyenda textual y un
+desplegable táctil con todos los valores. El ancho se mide con ResizeObserver y
+se pasa explícitamente a LineChart, con altura 240 px y cleanup al desmontar.
+La prueba real detectó que ResponsiveContainer de Recharts 2 usa react-is antiguo
+que rechaza los elementos react.transitional.element del runtime Next actual:
+el contenedor tenía ancho correcto pero descartaba sus hijos, sin gráfico. Se
+usa el mismo API de dimensiones explícitas de Desktop, adaptado al contenedor,
+sin parchear dependencias ni cambiar versiones. Los ejes también declaran sus
+opciones explícitamente: categoría/abajo para meses, número/izquierda para importes,
+IDs compartidos 0 y dominio [0, auto]. React actual no aplica los defaultProps de
+esas funciones antiguas; omitirlos alteraba la escala y orientación del gráfico.
+Se verifica que ambas curvas comparten escala. Los nombres de categoría largos
+usan una columna minmax(0, 1fr) para envolver texto sin desborde. Mes vacío conserva la
+evolución del año; año vacío informa el estado sin inventar datos. Cards y
+selectores usan ancho flexible y targets de 48 px, sin tablas desktop.
+
+Ambos módulos son `premium: false, feature: null`, según la Sidebar Desktop.
+Se conserva la metadata Premium de otros módulos; no se agrega gating/billing
+mobile. Configuración sigue preparada para un milestone posterior y no aparece
+como enlace a una página desktop. Excel/PDF/CSV mobile siguen sin implementarse:
+no se ofrecen botones de exportación ni se introduce Python en Android.
+
+No hay tablas, columnas, índices ni migración v4; v1/v2/v3 permanecen intactas.
+No se modifican APIs desktop, versión, identifiers, dependencias, auth, sync,
+billing, updater, sidecar ni fuentes Rust.
+
+## Validación del milestone 6
+
+Ejecutada el 4 de octubre de 2026, sobre la DB real de prueba de milestones 1–5
+en Pixel_8 / x86_64, package com.scisoftware.scisonomics.debug, versión 3.3.1.
+`npx tauri android run --no-watch Pixel_8` compiló Rust y generó APK/AAB; el CLI
+quedó esperando después de empaquetar. Se completó la instalación con adb
+install -r y am start, sin desinstalar, wipe-data, reset de DB ni snapshot nuevo.
+Un primer proceso de la última instalación no quedó disponible para CDP; reabrir
+la app permitió la validación estable. No se cambió el runtime nativo para ello.
+
+Antes de instalar se registraron mediante SELECT todos los campos de categorías,
+movimientos, gastos fijos, presupuestos, metas_ahorro y gastos_programados,
+incluidos tombstones/identidades/timestamps. Después de instalar, navegar todos
+los módulos y forzar cierre/reabrir COLD (PID 17465 → 19242), las seis tablas
+seguían idénticas. SQLx sólo tiene v1/v2/v3 exitosas; foreign_key_check vacío.
+
+Resultados contrastados con la DB:
+
+- Octubre 2026: ingresos 11234, gastos 3150, ahorro 500, inversión 0;
+  balance operativo 8084, disponible luego de ahorro 7584, saldo real Inicio 7584.
+- Servicios M4: total 3150, 100%, dos gastos; detalle muestra 3000 y el pago real
+  Seguro M5 de 150. El movimiento borrado no aparece.
+- Reporte mensual: los mismos seis totales, top de gastos correcto, seis meses,
+  presupuesto límite 2500 / gasto 3150 / restante -650 / 126%; sin metas activas
+  porque la meta existente tiene tombstone.
+- Reporte anual 2026: cinco movimientos activos, balance 7584; promedios ingresos
+  936.17 y gastos 262.50; máximos octubre, doce meses con ceros donde corresponde.
+- Septiembre/diciembre vacíos, enero 2027 y año 2027 vacío correctos. Noviembre
+  conserva balance operativo real 0 y muestra proyección -150 por separado.
+- Estadísticas, Reporte Mensual y Reporte Anual conservaron estos resultados tras
+  el cierre y reapertura. No se creó ni modificó ningún registro para esta prueba.
+
+Las tres vistas y el detalle de categoría pasaron 16 combinaciones a
+320/360/390/430 px, sin overflow horizontal; botones de al menos 44 px. Se
+inspeccionó captura nativa del gráfico a 320 px, con ambos ejes y curvas en la
+misma escala numérica (relación ingresos/gastos correcta). Nombres de categoría
+de 120 caracteres sin espacios y descripciones de 500 se probaron temporalmente
+en el DOM, sin guardarlos, y envolvieron correctamente. Un adb input tap real
+abrió el detalle textual del gráfico tras la reapertura.
+
+Navegación continua de los diez módulos desde drawer, cierre automático al
+elegir, X/Escape/overlay y foco comprobados. A 320 × 400 el drawer tiene 398 px
+visibles y 763 px de contenido con scroll para los diez enlaces. No hubo errores
+JavaScript en la WebView final/reabierta.
+
+Pruebas automáticas: test:mobile 97/97 (repository 48 + UI 49), test:auth 68/68,
+test:billing 45/45, test:updater 32/32, platformStartup 24/24 y ejecución explícita
+mobileUi 49/49. TypeScript/build correctos, cargo check Windows correcto y cargo
+test Windows 9/9, también con assets finales. Sin fallo PKCE en este milestone.
+Git diff --check correcto. Se agregaron 21 casos respecto al milestone 5.
+
+Persisten avisos existentes de import Zeroize sin uso en Android, deprecaciones
+Gradle y mensaje del linker Windows; no se cambiaron dependencias ni Rust para
+silenciarlos. No se validó dispositivo físico, iOS ni instalador Windows completo.
+Exportaciones, auth/sync/Premium real y Configuración mobile siguen pendientes.
 
 ## Prueba manual del milestone 5
 
@@ -584,3 +835,76 @@ dentro del diálogo y restauración al botón de menú al cerrar. El APK final,
 recompilado tras ajustar esa restauración, conservó los datos y las tres rutas.
 No se validó un dispositivo iOS ni un instalador Windows completo en este milestone;
 Windows se validó con cargo check, tests Rust y las suites/build frontend.
+
+
+## Configuración Mobile: implementación del milestone 7
+
+- `/configuracion` renderiza `MobileSettings` dentro del shell Mobile, con
+  once enlaces en el drawer. No monta el componente Configuración Desktop.
+- Cards: Finanzas, Apariencia, Cuenta, Sincronización, Premium, Backups y
+  restauración, Actualizaciones, Acerca de, Legal y Soporte.
+- Finanzas explica el saldo acumulado y ofrece acceso a Movimientos. No añade
+  un saldo editable que Desktop no tiene. Saldo anterior y saldo actual siguen
+  siendo los derivados del historial; las fórmulas y reportes no cambian.
+- No hay preferencias persistentes nuevas: **no se necesita v4 ni una tabla de
+  settings**. Tampoco se crea un repository vacío. Las migraciones v1/v2/v3
+  permanecen byte por byte y el esquema continúa en v3. No hay upgrade v3→v4
+  que probar; sí se verifica la actualización del APK preservando el archivo v3.
+- Premium utiliza `mobileSections.filter(section => section.premium)` como
+  fuente única. Coincide con las cuatro features Desktop de entitlements:
+  fixed_expenses, planning, budgets y saving_goals. No concede permisos ni
+  habilita contratación; las funciones locales continúan accesibles en desarrollo.
+- Cuenta, sync, backup/restore, contratación y actualizaciones de tienda son
+  exclusivamente informativos. No hay botones ficticios ni providers cloud.
+- Acerca de obtiene la versión de package.json y reutiliza la novedad del saldo
+  mensual. No anuncia backup cifrado, Mercado Pago, sync o updater como funciones
+  Mobile disponibles. Tema oscuro conserva el comportamiento actual.
+- Soporte ofrece el email seleccionable. El opener instalado no autoriza mailto;
+  no se amplían capabilities ni se solicita acceso adicional al sistema.
+- `/legal` es una ruta Next nueva fuera del layout financiero Desktop. Lee
+  `src-tauri/LICENSE.txt` durante el build y exporta las secciones sin modificar
+  su contenido. Términos, privacidad y aceptación son anclas del mismo documento.
+  No existe una licencia separada que deba inventarse. El documento vigente
+  todavía describe funcionalidades Desktop: se conserva íntegro por instrucción.
+- Providers pasa el contenido estático de la ruta al gate Mobile; MobileApp
+  solo lo monta en `/legal`. En las rutas financieras continúa seleccionando
+  sus componentes Mobile, sin montar children Desktop. Configuración y Legal
+  deshabilitan las ocho lecturas financieras base. No hay polling nuevo.
+- Próximo milestone: cuenta/auth + almacenamiento seguro + sync. Sigue pendiente
+  diseñar backups y recuperación Mobile, contratación/entitlements y distribución
+  por tienda. No se implementa iOS en este milestone.
+
+
+### Validación milestone 7
+
+- Auditoría y decisiones documentadas antes de modificar la UI.
+- test:mobile: 102 (48 repository + 54 UI), auth: 68, billing: 45,
+  updater: 32, platformStartup: 24, UI explícito: 54; todos pasan.
+- npm run build: TypeScript y static export pasan, incluyendo /legal.
+- Windows cargo check --locked y cargo test --locked para
+  x86_64-pc-windows-msvc: pasan; 9 tests Rust existentes.
+- v1/v2/v3 comparadas byte por byte con HEAD: idénticas. Versión,
+  identifiers, Rust y el documento legal original no cambiaron.
+- Android: se ejecutó npx tauri android run --no-watch Pixel_8. Compilación
+  Rust y empaquetado Gradle finalizaron; CLI quedó esperando sin instalar.
+  Se registró el problema antes del fallback adb install -r del APK generado,
+  sin wipe-data ni desinstalación. Persisten warnings anteriores de Zeroize
+  y deprecaciones Gradle, sin modificaciones para silenciarlos.
+- Las pruebas de editar saldo inicial y upgrade v3→v4 no corresponden a la
+  implementación conservadora: Desktop no tiene saldo editable y no se
+  introduce persistencia nueva. Una preferencia financiera de ese tipo deberá
+  aprobarse como funcionalidad nueva, con contrato/calculadora definido.
+
+- Android manual en WebView real: once módulos navegan, drawer cierra al elegir
+  ruta, Configuración y Legal sin overflow en 320/360/390/430 px. Cards revisadas
+  visualmente en capturas 320/430. Cuenta/Sync/Premium/Backups/Updates sin acciones
+  falsas; versión real 3.3.1. Se comprobaron tres anclas legales y vuelta a Configuración.
+- Texto legal completo del DOM coincide con LICENSE.txt, incluyendo aceptación.
+- Antes y después de instalar el APK: categorías 5, movimientos 6, gastos fijos 1,
+  presupuestos 1, metas 1, gastos programados 2; todos los campos y tombstones
+  idénticos. Migraciones 1/2/3 exitosas y foreign_key_check vacío.
+- Cierre real mediante am force-stop (PID 18732) y reapertura COLD (PID 20455):
+  mismo saldo 7584, Configuración/versión disponibles, base íntegramente idéntica.
+  No hubo solicitudes al API local Desktop. No se borró el almacenamiento.
+- Se preservaron cambios sin commit del milestone 6. El diff acumulado del working
+  tree incluye esa implementación previa; archivos nuevos no aparecen en diff --stat.

@@ -7,6 +7,7 @@ import { LOCAL_OWNER, boundedText, validateDate, validateAmount, validatePeriod,
 import { mobilePlanningRepository } from "./mobilePlanningRepository";
 import { mobileSchedulingRepository } from "./mobileSchedulingRepository";
 import { groupCalendarMovements } from "./financeCalendar";
+import { mobileAnalyticsRepository } from "./mobileAnalyticsRepository";
 const moveTypes: readonly string[] = ["ingreso", "gasto", "ahorro", "inversion"];
 function validateType(tipo: string): asserts tipo is MoveType {
   if (!moveTypes.includes(tipo)) throw new Error("Elegí un tipo de movimiento válido.");
@@ -39,6 +40,7 @@ export function mapMovimiento(row: MovimientoRow): FinanceMovimiento {
   };
 }
 export const mobileFinanceRepository: FinanceRepository = {
+  ...mobileAnalyticsRepository,
   ...mobilePlanningRepository,
   ...mobileSchedulingRepository,
   async getCalendar(period) { return groupCalendarMovements(await this.listMovimientos(period)); },

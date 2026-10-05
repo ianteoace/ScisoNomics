@@ -22,10 +22,18 @@ stub("next/navigation", { usePathname: () => pathname, useRouter: () => router }
 stub("next/link", { __esModule: true, default: ({ href, onClick, prefetch, children, ...props }) => React.createElement("a", {
   ...props, href, onClick: () => { onClick?.(); pathname = href; },
 }, children) });
+const rechartsProps={};
+stub("recharts", Object.fromEntries(["LineChart","Line","XAxis","YAxis","Tooltip","CartesianGrid"].map(name=>[name,(props)=>{rechartsProps[name]=props;return React.createElement('div',{'data-chart':name,'data-width':props.width,'data-height':props.height},props.children);}] )));
+const emptyStatistics={summary:{saldo_inicial:0,ingreso:0,gasto:0,balance_final:0},month_totals:{ingreso:0,gasto:0,ahorro:0,inversion:0,balance:0},expenses_by_category:[],trend:Array.from({length:12},(_,i)=>({mes:i+1,ingresos:0,gastos:0})),planificacion:{total_vencido:0,total_pendiente_30_dias:0,total_pagado_mes:0,balance_proyectado_mes:0}};
+const emptyReport={month:10,year:2026,ingresos:0,gastos:0,ahorro:0,inversiones:0,balance_operativo:0,disponible_luego_ahorro:0,top_categorias:[],top_movimientos:[],evolucion_ultimos_6_meses:[],presupuestos_excedidos:[],metas:[]};
+const emptyAnnual=require('../services/data/financeAnalytics.ts').buildAnnualStatistics(2026,[],[]);
+let analytics={data:{statistics:emptyStatistics,rows:[],monthly:emptyReport},loading:false,error:'',reload(){}};
+stub('./components/mobile/useMobileAnalytics.ts',{useMobileAnalytics:kind=>({...analytics,data:kind==='statistics'?{statistics:analytics.data?.statistics,rows:analytics.data?.rows}:kind==='monthly'?{monthly:analytics.data?.monthly}:{annual:analytics.data?.annual}})});
 const summary = { ingresos: 10000, gastos: 2500, ahorros: 200, inversiones: 300, saldoInicial: 700, saldo: 7700, balance: 7500 };
 const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary, fixedExpenses: [], budgets: [], goals: [], scheduled: [], projection: { total_vencido: 0, total_pendiente_30_dias: 0, total_pagado_mes: 0, balance_proyectado_mes: 0 }, calendar: [] },
   loading: false, busy: false, error: "", notice: "", setPeriod() {}, clearMessages() {}, reload() {}, mutate: async () => true };
-stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: () => finance });
+let financeEnabled;
+stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
 const { MobileDialog } = require("../components/mobile/MobileDialog.tsx");
 const { MobileMovementForm } = require("../components/mobile/movimientos/MobileMovementForm.tsx");
@@ -89,6 +97,10 @@ for (const [href, title, visible, hidden] of [
   ["/planificacion", "Planificación", /Listado de planificación/, /Calendario financiero|Resumen financiero/],
   ["/calendario", "Calendario", /Calendario financiero/, /Listado de planificación|Resumen financiero/],
   ["/metas", "Metas", /Listado de metas/, /Listado de presupuestos|Listado de gastos fijos|Resumen financiero/],
+  ["/estadisticas", "Estadísticas", /Estadísticas financieras/, /Reporte financiero|Resumen financiero/],
+  ["/reporte", "Reporte", /Reporte financiero/, /Estadísticas financieras|Resumen financiero/],
+  ["/reporte-mensual", "Reporte", /Reporte financiero/, /Estadísticas financieras|Resumen financiero/],
+  ["/configuracion", "Configuración", /Configuración local/, /Reporte financiero|Resumen financiero/],
 ]) test(`mobile route ${href} renders only ${title}`, (t) => {
   pathname = href; const view = renderer(t, MobileApp);
   assert.match(view.html(), visible); assert.doesNotMatch(view.html(), hidden);
@@ -102,12 +114,12 @@ test("hamburger opens drawer with desktop-consistent links; X closes it", (t) =>
   const html = view.html();
   assert.match(html, /<dialog/); assert.match(html, /aria-modal="true"/); assert.match(html, /aria-labelledby="dialog-title"/);
   assert.match(html, /aria-expanded="true"/); assert.match(html, /aria-current="page"/);
-  assert.deepEqual(view.find((node) => node.type === "a").map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas"]);
+  assert.deepEqual(view.find((node) => node.type === "a").map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]);
   view.find((node) => node.props["aria-label"] === "Cerrar")[0].props.onClick({ currentTarget: { focus() {} } });
   assert.doesNotMatch(view.html(), /<dialog/);
 });
 
-for (const href of ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas"]) test(`drawer navigates to ${href} and closes automatically`, (t) => {
+for (const href of ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]) test(`drawer navigates to ${href} and closes automatically`, (t) => {
   pathname = "/dashboard"; const view = renderer(t, MobileApp);
   view.find((node) => node.props["aria-label"] === "Abrir menú")[0].props.onClick({ currentTarget: { focus() {} } });
   view.find((node) => node.type === "a" && node.props.href === href)[0].props.onClick({ currentTarget: { focus() {} } });
@@ -133,7 +145,7 @@ test("pending mutation prevents dialog dismissal", (t) => {
 });
 
 test("unsupported mobile routes redirect to dashboard without rendering desktop content", (t) => {
-  pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  pathname = "/no-implementado"; const view = renderer(t, MobileApp);
   assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos|Listado de categorías/);
   view.effects(); assert.equal(pathname, "/dashboard"); assert.match(view.html(), /Resumen financiero/);
 });
@@ -165,7 +177,7 @@ test("first installation shows empty dashboard and category guidance without cre
   assert.match(view.html(), /Creá una categoría para empezar/);
 });
 
-function financeHook(t, repository) {
+function financeHook(t, repository, enabled = true) {
   const hookPath = path.join(root, "components/mobile/useMobileFinance.ts"), repoPath = path.join(root, "services/data/financeRepository.ts");
   const oldHook = require.cache[hookPath], oldRepo = require.cache[repoPath];
   stub("./services/data/financeRepository.ts", { getFinanceRepository: async () => repository });
@@ -173,7 +185,7 @@ function financeHook(t, repository) {
   const { useMobileFinance } = require(hookPath);
   t.after(() => { require.cache[hookPath] = oldHook; if (oldRepo) require.cache[repoPath] = oldRepo; else delete require.cache[repoPath]; });
   let value;
-  function Probe() { value = useMobileFinance(); return React.createElement("div"); }
+  function Probe() { value = useMobileFinance(enabled); return React.createElement("div"); }
   const view = renderer(t, Probe, {}, false);
   return { ...view, value: () => value };
 }
@@ -332,4 +344,104 @@ test("payment confirmation is separate from editing and mutations refresh shared
   view.find(n=>n.props["aria-label"]==="Marcar pagado Seguro")[0].props.onClick();assert.match(view.html(),/Registrar pago/);assert.match(view.html(),/gasto real con fecha de hoy/);assert.equal(paid,0);
   view.find(n=>n.type==="button"&&n.props.children==="Confirmar pago")[0].props.onClick();await flush();assert.equal(paid,1);assert.doesNotMatch(view.html(),/<dialog/);
   assert.equal(mobileSections.find(s=>s.href==="/calendario").premium,false);assert.equal(mobileSections.find(s=>s.href==="/planificacion").premium,true);
+});
+
+const {MobileStatistics}=require('../components/mobile/estadisticas/MobileStatistics.tsx');
+const {MobileReport,MonthlyReportContent,AnnualReportContent}=require('../components/mobile/reporte/MobileReport.tsx');
+test('statistics show actual totals, safe category percentages and touch detail separately from projection',(t)=>{
+  const old=analytics;t.after(()=>{analytics=old;});
+  analytics={...old,data:{statistics:{...emptyStatistics,month_totals:{ingreso:1000,gasto:200,ahorro:50,inversion:25,balance:800},expenses_by_category:[{categoria_id:1,categoria:'Servicios',total:200,movimientos:1}],trend:emptyStatistics.trend.map(r=>({...r,ingresos:1000})),planificacion:{...emptyStatistics.planificacion,balance_proyectado_mes:-5000}},rows:[{id:1,fecha:'2026-10-04',tipo:'gasto',categoria:'Servicios',descripcion:'Real',monto:200,nota:'Detalle'}]}};
+  const view=renderer(t,MobileStatistics);assert.match(view.html(),/100.0%/);assert.match(view.html(),/Balance proyectado/);assert.match(view.html(),/\$\s800,00/);
+  assert.match(view.html(),/datos completos debajo/);assert.match(view.html(),/línea continua/);assert.match(view.html(),/línea punteada/);assert.match(view.html(),/Ver datos de la evolución/);
+  view.find(n=>n.type==='button'&&n.props.children?.some?.(x=>x?.props?.children==='Servicios'))[0].props.onClick();
+  assert.match(view.html(),/Movimientos: Servicios/);assert.match(view.html(),/Gasto · /);assert.match(view.html(),/Nota: Detalle/);
+  view.find(n=>n.type==='select')[0].props.onChange({target:{value:'1'}});assert.doesNotMatch(view.html(),/<dialog/);
+});
+test('responsive chart measures actual width, handles resizing and disconnects on unmount',(t)=>{
+  const {ResponsiveTrendLines}=require('../components/mobile/analytics/MobileAnalyticsUI.tsx');
+  let width=254.9, callback, observed, disconnected=0;
+  const previous=global.ResizeObserver;
+  global.ResizeObserver=class {constructor(cb){callback=cb;}observe(element){observed=element;}disconnect(){disconnected++;}};
+  t.after(()=>{global.ResizeObserver=previous;});
+  const view=renderer(t,ResponsiveTrendLines,{title:'Evolución',rows:[{label:'Octubre',ingresos:100,gastos:50}]},false);
+  const container=view.find(n=>n.props.role==='img')[0];
+  const element={getBoundingClientRect:()=>({width})};container.ref.current=element;
+  view.effects();assert.equal(observed,element);
+  assert.match(view.html(),/data-chart="LineChart"/);
+  assert.equal(rechartsProps.XAxis.type,'category');assert.equal(rechartsProps.XAxis.orientation,'bottom');
+  assert.equal(rechartsProps.YAxis.type,'number');assert.equal(rechartsProps.YAxis.orientation,'left');
+  assert.equal(rechartsProps.XAxis.xAxisId,0);assert.equal(rechartsProps.YAxis.yAxisId,0);
+  assert.equal(rechartsProps.Line.yAxisId,0);assert.deepEqual(rechartsProps.YAxis.domain,[0,'auto']);
+  const chartProps=()=>view.find(n=>n.props['data-chart']==='LineChart')[0].props;
+  assert.equal(chartProps()['data-width'],254);assert.equal(chartProps()['data-height'],240);
+  width=320;callback();assert.equal(chartProps()['data-width'],320);
+  width=0;callback();assert.doesNotMatch(view.html(),/data-chart="LineChart"/);
+  view.dispose();assert.equal(disconnected,1);
+});
+
+test('reports keep monthly operational balance and annual net balance distinct without tables or exports',(t)=>{
+  const monthly=renderer(t,MonthlyReportContent,{report:{...emptyReport,ingresos:1000,gastos:100,ahorro:50,inversiones:20,balance_operativo:900,disponible_luego_ahorro:850}});
+  assert.match(monthly.html(),/saldo acumulado se consulta en Inicio/);assert.match(monthly.html(),/\$\s900,00/);assert.match(monthly.html(),/\$\s850,00/);
+  assert.match(monthly.html(),/No hay metas activas/);assert.doesNotMatch(monthly.html(),/<table|Exportar|Balance proyectado/);
+  const annual=require('../services/data/financeAnalytics.ts').buildAnnualStatistics(2026,[{mes:10,ingresos:1000,gastos:100,ahorros:50,inversiones:20,movimientos:4}],[]);
+  const view=renderer(t,AnnualReportContent,{report:annual});assert.match(view.html(),/Balance anual/);assert.match(view.html(),/\$\s830,00/);assert.doesNotMatch(view.html(),/<table/);
+});
+test('report tabs fetch monthly and annual separately, with empty/error states and free metadata',(t)=>{
+  const old=analytics;t.after(()=>{analytics=old;});analytics={...old,data:{monthly:emptyReport,annual:emptyAnnual}};
+  const view=renderer(t,MobileReport);assert.match(view.html(),/Reporte mensual/);
+  view.find(n=>n.type==='button'&&n.props.children==='Anual')[0].props.onClick();assert.match(view.html(),/Año del reporte anual/);assert.match(view.html(),/No hay datos suficientes/);assert.doesNotMatch(view.html(),/Top categorías/);
+  analytics={...analytics,error:'Falló la lectura',loading:false,data:null};assert.match(view.html(),/role="alert"/);assert.match(view.html(),/Reintentar/);
+  for(const href of ['/estadisticas','/reporte'])assert.equal(mobileSections.find(s=>s.href===href).premium,false);
+});
+test('analytics routes disable unrelated base reads instead of mounting all financial modules',async(t)=>{
+  let reads=0;const view=financeHook(t,{listCategorias:async()=>{reads++;}},false);view.html();view.effects();await flush();view.html();assert.equal(reads,0);assert.equal(view.value().loading,false);
+});
+function analyticsHook(t,repository,input){
+  const p=path.join(root,'components/mobile/useMobileAnalytics.ts'),rp=path.join(root,'services/data/financeRepository.ts'),old=require.cache[p],oldRepo=require.cache[rp];
+  stub('./services/data/financeRepository.ts',{getFinanceRepository:async()=>repository});delete require.cache[p];const {useMobileAnalytics}=require(p);
+  t.after(()=>{require.cache[p]=old;if(oldRepo)require.cache[rp]=oldRepo;else delete require.cache[rp];});let value;
+  function Probe(){value=useMobileAnalytics(input.kind,input.period);return React.createElement('div');}
+  return {...renderer(t,Probe,{},false),value:()=>value};
+}
+test('analytics ignore stale periods, load only selected report and refetch once on explicit retry',async(t)=>{
+  const first=deferred(),input={kind:'monthly',period:{year:2026,month:12}};let monthly=0,annual=0,stats=0;
+  const view=analyticsHook(t,{getMonthlyReport:async p=>{monthly++;return monthly===1?first.promise:{...emptyReport,month:p.month};},getAnnualStatistics:async()=>{annual++;return emptyAnnual;},getStatistics:async()=>{stats++;return emptyStatistics;}},input);
+  view.html();view.effects();await flush();input.period={year:2027,month:1};view.html();view.effects();await flush();view.html();assert.equal(view.value().data.monthly.month,1);
+  first.resolve({...emptyReport,month:12});await flush();view.html();assert.equal(view.value().data.monthly.month,1);view.html();view.effects();await flush();assert.equal(monthly,2);
+  input.kind='annual';view.html();view.effects();await flush();view.html();assert.equal(annual,1);assert.equal(stats,0);assert.equal(monthly,2);
+  view.value().reload();view.html();view.effects();await flush();view.html();assert.equal(annual,2);
+});
+
+
+test("settings show real version and Premium features from the drawer metadata", (t) => {
+  pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  assert.match(view.html(), new RegExp(`Versión ${require("../package.json").version}`));
+  const { mobileSections } = require("../components/mobile/MobileSidebar.tsx");
+  const expected = mobileSections.filter(section => section.premium).map(section => section.label);
+  assert.deepEqual(view.find(node => node.type === "li").map(node => node.props.children), expected);
+  assert.deepEqual(mobileSections.filter(section => section.premium).map(section => section.feature).sort(), ["budgets", "fixed_expenses", "planning", "saving_goals"]);
+});
+
+test("pending settings have no fake actions, checkout, sync or Windows updater", (t) => {
+  pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  view.html(); assert.equal(financeEnabled, false);
+  assert.equal(view.find(node => node.type === "button").length, 1); // Only the shell hamburger.
+  assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
+  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Sincronizar ahora|Crear backup|Iniciar sesión|localhost/);
+  assert.match(view.html(), /scisoftwareco@gmail.com/);
+  assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/movimientos", "/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
+});
+
+test("legal route keeps mobile shell and renders the existing single legal source verbatim", (t) => {
+  const LegalPage = require("../app/legal/page.tsx").default;
+  const legal = renderer(t, LegalPage);
+  const content = legal.find(node => node.type === "pre").map(node => node.props.children).join("");
+  assert.equal(content, fs.readFileSync(path.join(root, "src-tauri/LICENSE.txt"), "utf8"));
+  assert.deepEqual(legal.find(node => node.type === "pre").map(node => node.props.id), ["introduccion", "terminos", "privacidad", "aceptacion"]);
+  pathname = "/legal"; const view = renderer(t, MobileApp, { legalContent: React.createElement(LegalPage) });
+  assert.match(view.html(), /Documento legal de ScisoNomics/);
+  assert.equal(financeEnabled, false);
+  assert.match(view.html(), /<h1[^>]*>Legal<\/h1>/);
+  view.effects(); assert.equal(pathname, "/legal");
+  assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos/);
 });

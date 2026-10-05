@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { LayoutDashboard, List, Tags, CreditCard, Wallet, Flag, CalendarClock } from "lucide-react";
+import { LayoutDashboard, List, Tags, CreditCard, Wallet, Flag, CalendarClock, BarChart3, Settings } from "lucide-react";
 import { MobileDialog } from "./MobileDialog";
 
 // Add future implemented modules here; never link to desktop-only pages.
@@ -14,6 +14,9 @@ export const mobileSections = [
   { href: "/calendario", label: "Calendario", icon: CalendarClock, premium: false, feature: null },
   { href: "/presupuestos", label: "Presupuestos", icon: Wallet, premium: true, feature: "budgets" },
   { href: "/metas", label: "Metas", icon: Flag, premium: true, feature: "saving_goals" },
+  { href: "/estadisticas", label: "Estadísticas", icon: BarChart3, premium: false, feature: null },
+  { href: "/reporte", label: "Reporte", icon: BarChart3, premium: false, feature: null },
+  { href: "/configuracion", label: "Configuración", icon: Settings, premium: false, feature: null },
 ] as const;
 
 export function MobileSidebar({ pathname, onClose }: { pathname: string; onClose: () => void }) {

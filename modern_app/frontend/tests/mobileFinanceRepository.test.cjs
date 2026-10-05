@@ -50,7 +50,7 @@ function fixture(t, filename = ":memory:") {
       if (state.omitPlanningMigration) raw.exec("DELETE FROM _sqlx_migrations WHERE version=2");
       state.databases.push(raw);
       return {
-        select: async (sql, params = []) => { state.statements.push({ sql, params }); const { statement, values } = bind(raw, sql, params); return statement.all(...values); },
+        select: async (sql, params = []) => { state.statements.push({ sql, params }); if(state.failReads) throw new Error("SELECT private/path account-secret"); const { statement, values } = bind(raw, sql, params); return statement.all(...values); },
         execute: async (sql, params = []) => {
           state.statements.push({ sql, params });
           if (state.failWrites) throw new Error("INSERT private financial body");
@@ -75,7 +75,7 @@ function fixture(t, filename = ":memory:") {
       raw.exec("COMMIT"); return changes;
     } catch (error) { raw.exec("ROLLBACK"); throw error; }
   } } };
-  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento", "gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta", "gastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "marcarPagado", "stats", "calendario"].map((name) => [name, async (...args) => {
+  const api = Object.fromEntries(["categorias", "createCategoria", "updateCategoria", "deleteCategoria", "movimientos", "createMovimiento", "updateMovimiento", "deleteMovimiento", "gastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "presupuestos", "upsertPresupuesto", "deletePresupuesto", "metas", "createMeta", "updateMeta", "deleteMeta", "gastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "marcarPagado", "stats", "calendario", "statsAnual", "reporteMensual"].map((name) => [name, async (...args) => {
     state.desktopCalls.push({ name, args });
     return name === "categorias" ? [{ id: 41, nombre: "Desktop", tipo: "gasto" }] : name === "movimientos" ? { rows: [{ ...movement, id: 42, categoria: "Desktop", saldo_acumulado: 10000 }], summary: { saldo_inicial: 700 } } : name === "stats" ? { planificacion: { balance_proyectado_mes: 0 } } : { ok: true };
   }]));
@@ -98,7 +98,7 @@ test("repository contract selects mobile without any desktop API calls", async (
   const state = fixture(t), m = state.modules();
   const repository = await m.getFinanceRepository();
   assert.equal(repository, m.mobileFinanceRepository);
-  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento", "listGastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "listPresupuestos", "createPresupuesto", "updatePresupuesto", "deletePresupuesto", "listMetas", "createMeta", "updateMeta", "deleteMeta", "listGastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "markGastoProgramadoPaid", "getSchedulingSummary", "getCalendar"].sort());
+  assert.deepEqual(Object.keys(repository).sort(), ["createCategoria", "createMovimiento", "deleteCategoria", "deleteMovimiento", "getSummary", "listCategorias", "listMovimientos", "updateCategoria", "updateMovimiento", "listGastosFijos", "createGastoFijo", "updateGastoFijo", "deleteGastoFijo", "listPresupuestos", "createPresupuesto", "updatePresupuesto", "deletePresupuesto", "listMetas", "createMeta", "updateMeta", "deleteMeta", "listGastosProgramados", "createGastoProgramado", "updateGastoProgramado", "deleteGastoProgramado", "markGastoProgramadoPaid", "getSchedulingSummary", "getCalendar", "getStatistics", "getMonthlyReport", "getAnnualStatistics"].sort());
   await repository.createCategoria({ nombre: "Prueba Mobile", tipo: "ingreso" });
   await repository.createMovimiento(movement);
   assert.equal((await repository.listCategorias())[0].id, 1);
@@ -695,4 +695,115 @@ test("desktop scheduling and calendar adapters preserve the existing HTTP API", 
   await r.listGastosProgramados("pendiente",30);await r.createGastoProgramado(scheduled);await r.updateGastoProgramado(1,scheduled);await r.deleteGastoProgramado(1);await r.markGastoProgramadoPaid(1);await r.getSchedulingSummary(period);await r.getCalendar(period);
   assert.deepEqual(state.desktopCalls.map(c=>c.name),["gastosProgramados","createGastoProgramado","updateGastoProgramado","deleteGastoProgramado","marcarPagado","stats","calendario"]);
   assert.deepEqual(state.desktopCalls[0].args,["pendiente",30]);assert.deepEqual(state.desktopCalls[6].args,[10,2026]);assert.equal(state.loads,0);
+});
+
+const { categoryShares, sixMonthPeriods, periodStart, periodEnd } = require("../services/data/financeAnalytics.ts");
+
+test("statistics aggregate actual types and twelve months without mixing opening balance or plans", async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;
+  await r.createCategoria({nombre:"General",tipo:"gasto"});
+  for(const [tipo,monto] of [["ingreso",1000.15],["gasto",300.05],["ahorro",50.10],["inversion",20]])await r.createMovimiento({...movement,tipo,monto});
+  await r.createMovimiento({...movement,fecha:"2025-12-31",monto:700});
+  await r.createMovimiento({...movement,fecha:"2027-01-01",monto:999});
+  await r.createGastoProgramado({...scheduled,monto_estimado:100});
+  const stats=await r.getStatistics(period);
+  assert.deepEqual(stats.month_totals,{ingreso:1000.15,gasto:300.05,ahorro:50.10,inversion:20,balance:700.10,disponible_luego_ahorro:650});
+  assert.equal(stats.summary.saldo_inicial,700);assert.equal(stats.summary.balance_final,1400.10);
+  assert.equal((await r.getSummary(period)).saldo,1330);
+  assert.equal(stats.planificacion.balance_proyectado_mes,600.10);
+  assert.equal(stats.trend.length,12);assert.deepEqual(stats.trend[9],{mes:10,ingresos:1000.15,gastos:300.05});
+  assert.deepEqual(stats.trend[0],{mes:1,ingresos:0,gastos:0});assert.equal(state.desktopCalls.length,0);
+});
+
+test("expense categories use active same-owner references, counts, order and safe percentages",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;
+  for(const nombre of ['Mayor','Menor','Eliminada'])await r.createCategoria({nombre,tipo:'gasto'});
+  for(const [categoria_id,monto] of [[1,100],[1,25],[2,75],[3,500],[2,999]])await r.createMovimiento({...movement,tipo:'gasto',categoria_id,monto});
+  await r.deleteMovimiento(5);const db=state.databases[0];
+  db.exec("UPDATE categorias SET deleted_at='2026-10-03' WHERE id=3; INSERT INTO categorias(nombre,tipo,owner_user_id,sync_id) VALUES('Otro','gasto','otro','otro-cat'); INSERT INTO movimientos(fecha,tipo,categoria_id,monto,owner_user_id,sync_id) VALUES('2026-10-04','gasto',4,10000,'otro','otro-mov')");
+  const stats=await r.getStatistics(period);assert.deepEqual(stats.expenses_by_category.map(c=>[c.categoria,c.total,c.movimientos]),[['Mayor',125,2],['Menor',75,1]]);
+  assert.deepEqual(categoryShares(stats.expenses_by_category).map(c=>c.percent),[62.5,37.5]);
+  assert.deepEqual(categoryShares([{categoria:'Cero',total:0}]).map(c=>c.percent),[0]);assert.deepEqual(categoryShares([]),[]);
+  assert.equal((await r.getAnnualStatistics(2026)).gastos_por_categoria.length,2);
+});
+
+test("monthly report retains desktop investment category rule while statistics/annual use type",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;
+  await r.createCategoria({nombre:'General',tipo:'inversion'});await r.createCategoria({nombre:'Inversiones',tipo:'gasto'});
+  await r.createMovimiento({...movement,tipo:'inversion',monto:100});
+  await r.createMovimiento({...movement,tipo:'gasto',categoria_id:2,monto:30});
+  await r.createMovimiento({...movement,tipo:'ingreso',categoria_id:2,monto:20});
+  assert.equal((await r.getStatistics(period)).month_totals.inversion,100);
+  const report=await r.getMonthlyReport(period);assert.equal(report.inversiones,50);assert.equal(report.balance_operativo,-10);assert.equal(report.disponible_luego_ahorro,-10);
+  assert.equal((await r.getAnnualStatistics(2026)).totals.balance,-110);
+});
+
+test("monthly report has six consecutive real periods across December/January and deterministic top five",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;await r.createCategoria({nombre:'General',tipo:'gasto'});
+  await r.createMovimiento({...movement,fecha:'2026-07-01',monto:999});await r.createMovimiento({...movement,fecha:'2026-12-31',monto:700});
+  await r.createMovimiento({...movement,fecha:'2027-01-01',monto:100});
+  for(let i=1;i<=7;i++)await r.createMovimiento({...movement,fecha:`2027-01-${String(i).padStart(2,'0')}`,tipo:'gasto',monto:i*10,descripcion:`Gasto ${i}`});
+  const report=await r.getMonthlyReport({year:2027,month:1});
+  assert.deepEqual(report.evolucion_ultimos_6_meses.map(r=>[r.anio,r.mes]),[[2026,8],[2026,9],[2026,10],[2026,11],[2026,12],[2027,1]]);
+  assert.equal(report.evolucion_ultimos_6_meses[0].ingreso,0);assert.equal(report.evolucion_ultimos_6_meses[4].ingreso,700);
+  assert.equal(report.ingresos,100);assert.equal(report.gastos,280);assert.equal(report.balance_operativo,-180);
+  assert.deepEqual(report.top_movimientos.map(r=>r.monto),[70,60,50,40,30]);assert.equal(report.top_categorias[0].total,280);
+  assert.equal((await r.getSummary({year:2027,month:1})).saldo,1519);
+  assert.equal(periodEnd({year:2026,month:12}),'2027-01-01');assert.equal(periodStart({year:2028,month:2}),'2028-02-01');
+  assert.deepEqual(sixMonthPeriods({year:2027,month:1}),report.evolucion_ultimos_6_meses.map(r=>({year:r.anio,month:r.mes})));
+});
+
+test("report includes only exceeded budgets and active goals; initial goals/plans/fixed templates never become real totals",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;await r.createCategoria({nombre:'Servicios',tipo:'gasto'});
+  await r.createPresupuesto({categoria_id:1,mes:10,anio:2026,monto:100});await r.createMeta({...goal,monto_inicial:500});await r.createMeta({...goal,nombre:'Pausada',estado:'pausada'});
+  await r.createGastoFijo(fixed);await r.createGastoProgramado({...scheduled,monto_estimado:50});
+  await r.createMovimiento({...movement,monto:1000});await r.createMovimiento({...movement,tipo:'gasto',monto:100});await r.createMovimiento({...movement,tipo:'ahorro',meta_id:1,monto:50});
+  let report=await r.getMonthlyReport(period);assert.equal(report.balance_operativo,900);assert.equal(report.disponible_luego_ahorro,850);
+  assert.equal(report.presupuestos_excedidos.length,0);assert.equal(report.metas.length,1);assert.equal(report.metas[0].monto_ahorrado,550);
+  await r.markGastoProgramadoPaid(1);report=await r.getMonthlyReport(period);
+  assert.equal(report.gastos,150);assert.equal(report.presupuestos_excedidos[0].monto_gastado,150);assert.equal(report.balance_operativo,850);
+  assert.equal((await r.getAnnualStatistics(2026)).totals.balance,800);
+  await r.deleteMeta(1);assert.equal((await r.getMonthlyReport(period)).metas.length,0);assert.equal((await r.getStatistics(period)).month_totals.ahorro,50);
+});
+
+test("empty and single-type years stay finite, average over twelve months and tie maxima use first month",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;await r.createCategoria({nombre:'Sólo ahorro',tipo:'ahorro'});
+  const empty=await r.getAnnualStatistics(2026);assert.equal(empty.monthly.length,12);assert.equal(empty.totals.movimientos,0);assert.equal(empty.mes_mayor_gasto.mes,1);
+  assert.equal((await r.getMonthlyReport(period)).evolucion_ultimos_6_meses.length,6);
+  await r.createMovimiento({...movement,tipo:'ahorro',monto:12});let annual=await r.getAnnualStatistics(2026);assert.equal(annual.totals.balance,-12);assert.equal(annual.promedios_mensuales.balance,-1);
+  const stats=await r.getStatistics(period);assert.equal(stats.month_totals.balance,0);assert.equal(stats.month_totals.disponible_luego_ahorro,-12);assert.equal(stats.expenses_by_category.length,0);
+  await r.createMovimiento({...movement,fecha:'2026-01-01',monto:120});await r.createMovimiento({...movement,fecha:'2026-12-01',monto:120});
+  annual=await r.getAnnualStatistics(2026);assert.equal(annual.mes_mayor_ingreso.mes,1);assert.equal(annual.promedios_mensuales.ingresos,20);
+  assert(Object.values(annual.promedios_mensuales).every(Number.isFinite));assert.equal(annual.categoria_mayor_gasto,null);
+});
+
+test("analytics are read-only and reuse existing owner/date index instead of loading the whole ledger",async(t)=>{
+  const state=fixture(t),m=state.modules(),r=m.mobileFinanceRepository;await r.createCategoria({nombre:'Local',tipo:'ingreso'});await r.createMovimiento(movement);
+  const db=state.databases[0],before=JSON.stringify(db.prepare('SELECT * FROM movimientos').all()),start=state.statements.length;
+  await r.getStatistics(period);await r.getMonthlyReport(period);await r.getAnnualStatistics(2026);
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM movimientos').all()),before);
+  assert(state.statements.slice(start).every(s=>!/^\s*(INSERT|UPDATE|DELETE|ALTER|CREATE)\b/i.test(s.sql)));
+  const queries=state.statements.slice(start).filter(s=>s.sql.includes('GROUP BY substr(m.fecha,1,7)'));assert(queries.length>=3);
+  const plan=db.prepare('EXPLAIN QUERY PLAN '+queries[0].sql.replace(/\$\d+/g,'?')).all('local','2026-01-01','2027-01-01');assert(plan.some(p=>p.detail.includes('idx_movimientos_owner_fecha')));
+});
+
+test("analytics reject invalid periods before database access and sanitize native read failures",async(t)=>{
+  const state=fixture(t),r=state.modules().mobileFinanceRepository;
+  await assert.rejects(r.getStatistics({year:2026,month:13}),/mes y año/);await assert.rejects(r.getMonthlyReport({year:0,month:1}),/mes y año/);await assert.rejects(r.getAnnualStatistics(NaN),/mes y año/);assert.equal(state.loads,0);
+  await r.listCategorias();state.failReads=true;
+  for(const read of [()=>r.getStatistics(period),()=>r.getMonthlyReport(period),()=>r.getAnnualStatistics(2026)])await assert.rejects(read(),e=>!e.message.includes('private')&&!e.message.includes('SELECT')&&!e.message.includes('secret'));
+});
+
+test("derived statistics and reports remain identical after reopening persisted SQLite",async(t)=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'scisonomics-analytics-')),state=fixture(t,path.join(dir,'mobile.db'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  let m=state.modules(),r=m.mobileFinanceRepository;await r.createCategoria({nombre:'Local',tipo:'ingreso'});await r.createMovimiento(movement);
+  const before=[await r.getStatistics(period),await r.getMonthlyReport(period),await r.getAnnualStatistics(2026)];await (await m.getMobileDatabase()).close();m=state.modules();r=m.mobileFinanceRepository;
+  assert.deepEqual([await r.getStatistics(period),await r.getMonthlyReport(period),await r.getAnnualStatistics(2026)],before);
+  assert.deepEqual(state.databases[0].prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(state.databases[0].prepare('SELECT COUNT(*) AS n FROM _sqlx_migrations').get().n,3);
+});
+
+test("desktop analytics delegate exact existing API periods and never open mobile SQLite",async(t)=>{
+  const state=fixture(t),m=state.modules();global.window.navigator.userAgent='Windows NT';const r=await m.getFinanceRepository();
+  await r.getStatistics(period);await r.getMonthlyReport(period);await r.getAnnualStatistics(2026);
+  assert.deepEqual(state.desktopCalls,[{name:'stats',args:[10,2026]},{name:'reporteMensual',args:[10,2026]},{name:'statsAnual',args:[2026]}]);assert.equal(state.loads,0);
 });

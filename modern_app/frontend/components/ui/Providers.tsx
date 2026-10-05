@@ -26,7 +26,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  if (platform === "android" || platform === "ios") return <MobileStartupGate />;
+  if (platform === "android" || platform === "ios") return <MobileStartupGate>{children}</MobileStartupGate>;
   if (!hydrated) return <StartupScreen title="Iniciando ScisoNomics" />;
   return <><SupabaseOAuthListener />{children}</>;
 }

@@ -70,7 +70,7 @@ export function StartupScreen({ title, description = "", children }: { title: st
   );
 }
 
-export function MobileStartupGate() {
+export function MobileStartupGate({ children }: { children?: React.ReactNode } = {}) {
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -82,7 +82,7 @@ export function MobileStartupGate() {
     return () => { active = false; };
   }, [attempt]);
 
-  if (ready) return <MobileApp />;
+  if (ready) return <MobileApp legalContent={children} />;
   return <StartupScreen
     title={failed ? "No se pudo abrir ScisoNomics Mobile" : "Preparando ScisoNomics Mobile"}
     description={failed ? "No se pudo abrir el almacenamiento local. Reintentá sin borrar los datos de la app." : ""}

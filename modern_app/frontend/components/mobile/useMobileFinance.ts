@@ -8,11 +8,11 @@ import type { FinanceRepository, FinanceMovimiento, FinanceCalendarDay, Scheduli
 import { groupCalendarMovements } from "../../services/data/financeCalendar";
 import type { FinanceSummary } from "../../services/data/financeSummary";
 
-export function useMobileFinance() {
+export function useMobileFinance(enabled = true) {
   const [period, setPeriod] = useState(() => getLocalDateInputValue().slice(0, 7));
   const [revision, setRevision] = useState(0);
   const [data, setData] = useState<{ categories: Categoria[]; movements: FinanceMovimiento[]; summary: FinanceSummary; fixedExpenses: GastoFijo[]; budgets: Presupuesto[]; goals: MetaAhorro[]; scheduled: GastoProgramado[]; projection: SchedulingSummary; calendar: FinanceCalendarDay[] } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -20,6 +20,7 @@ export function useMobileFinance() {
   const saving = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
+    if (!enabled) { setLoading(false); setData(null); return; }
     let active = true;
     setLoading(true); setError(""); setData(null);
     const [year, month] = period.split("-").map(Number);
@@ -33,7 +34,7 @@ export function useMobileFinance() {
     }).catch(() => { if (active) setError("No se pudieron cargar tus datos. Podés reintentar sin borrarlos."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [period, revision]);
+  }, [enabled, period, revision]);
 
   async function mutate(action: (repository: FinanceRepository) => Promise<void>, message: string, nextPeriod?: string) {
     if (saving.current) return false;

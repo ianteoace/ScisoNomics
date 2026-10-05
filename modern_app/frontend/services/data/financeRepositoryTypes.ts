@@ -1,4 +1,4 @@
-import type { Categoria, Movimiento, MoveType, GastoFijo, Presupuesto, MetaAhorro, GastoProgramado, StatsResponse } from "../../types/domain";
+import type { Categoria, Movimiento, MoveType, GastoFijo, Presupuesto, MetaAhorro, GastoProgramado, StatsResponse, AnnualStatsResponse } from "../../types/domain";
 import type { FinanceSummary } from "./financeSummary";
 
 export type FinancePeriod = { month: number; year: number };
@@ -22,8 +22,20 @@ export type CreateGastoProgramado = Omit<GastoProgramado, "id" | "categoria">;
 export type SchedulingSummary = StatsResponse["planificacion"];
 export type FinanceCalendarDay = { fecha: string; movimientos: Pick<FinanceMovimiento, "id" | "fecha" | "tipo" | "categoria" | "descripcion" | "monto" | "nota">[]; totales: Record<MoveType, number> };
 export type MarkScheduledPaidResult = { changed: boolean; generated_next?: boolean; is_recurrent?: boolean };
+export type FinanceMonthTotals = Required<StatsResponse["month_totals"]>;
+export type FinanceMonthlyReport = {
+  month: number; year: number; ingresos: number; gastos: number; ahorro: number; inversiones: number;
+  balance_operativo: number; disponible_luego_ahorro: number;
+  top_categorias: StatsResponse["expenses_by_category"];
+  top_movimientos: Pick<FinanceMovimiento, "id" | "fecha" | "descripcion" | "monto" | "categoria">[];
+  evolucion_ultimos_6_meses: (FinanceMonthTotals & { mes: number; anio: number })[];
+  presupuestos_excedidos: Presupuesto[]; metas: MetaAhorro[];
+};
 
 export interface FinanceRepository {
+  getStatistics(period: FinancePeriod): Promise<StatsResponse>;
+  getMonthlyReport(period: FinancePeriod): Promise<FinanceMonthlyReport>;
+  getAnnualStatistics(year: number): Promise<AnnualStatsResponse>;
   listGastosProgramados(state?: GastoProgramado["estado"] | "todos", days?: number): Promise<GastoProgramado[]>;
   createGastoProgramado(input: CreateGastoProgramado): Promise<void>;
   updateGastoProgramado(id: number, input: CreateGastoProgramado): Promise<void>;

@@ -24,21 +24,26 @@ import { MobileGoalForm } from "./metas/MobileGoalForm";
 import { MobileScheduling } from "./planificacion/MobileScheduling";
 import { MobileSchedulingForm } from "./planificacion/MobileSchedulingForm";
 import { MobileCalendar } from "./calendario/MobileCalendar";
+import { MobileStatistics } from "./estadisticas/MobileStatistics";
+import { MobileReport } from "./reporte/MobileReport";
+import { MobileSettings } from "./configuracion/MobileSettings";
 
 type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
 type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement"; row: FinanceMovimiento } | { kind: "category"; row: Categoria } | { kind: "fixed"; row: GastoFijo } | { kind: "budget"; row: Presupuesto } | { kind: "goal"; row: MetaAhorro };
 const removalTitles = { scheduled: "planificación", movement: "movimiento", category: "categoría", fixed: "gasto fijo", budget: "presupuesto", goal: "meta" };
 
-export function MobileApp() {
-  const pathname = (usePathname() || "/").replace(/\/$/, "");
+export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
+  const rawPathname = (usePathname() || "/").replace(/\/$/, "");
+  const pathname = rawPathname === "/reporte-mensual" ? "/reporte" : rawPathname;
   const router = useRouter();
   const section = mobileSections.find((item) => item.href === pathname);
-  const finance = useMobileFinance();
+  const legal = pathname === "/legal";
+  const finance = useMobileFinance(!["/estadisticas", "/reporte", "/configuracion", "/legal"].includes(pathname));
   const [menuOpen, setMenuOpen] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [removal, setRemoval] = useState<Removal | null>(null);
   const [payment, setPayment] = useState<GastoProgramado | null>(null);
-  useEffect(() => { setMenuOpen(false); if (!section) router.replace("/dashboard"); }, [pathname, section, router]);
+  useEffect(() => { setMenuOpen(false); if (!section && !legal) router.replace("/dashboard"); }, [pathname, section, legal, router]);
   function edit(value: Editor) { finance.clearMessages(); setEditor(value); }
   function remove(value: Removal) { finance.clearMessages(); setRemoval(value); }
   async function confirmRemoval() {
@@ -51,9 +56,13 @@ export function MobileApp() {
   }
   const { data, busy, error, loading } = finance;
   return <div className="min-h-screen bg-slate-950 text-slate-100">
-    <MobileHeader title={section?.label ?? "Inicio"} menuOpen={menuOpen} onOpenMenu={() => setMenuOpen(true)} />
+    <MobileHeader title={legal ? "Legal" : section?.label ?? "Inicio"} menuOpen={menuOpen} onOpenMenu={() => setMenuOpen(true)} />
     {menuOpen ? <MobileSidebar pathname={pathname} onClose={() => setMenuOpen(false)} /> : null}
     <main className="mx-auto grid w-full max-w-2xl gap-5 px-4 pt-5" style={{ paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))" }}>
+      {pathname === "/estadisticas" ? <MobileStatistics /> : null}
+      {pathname === "/reporte" ? <MobileReport /> : null}
+      {pathname === "/configuracion" ? <MobileSettings /> : null}
+      {legal ? legalContent : null}
       {["/dashboard", "/movimientos", "/presupuestos", "/planificacion"].includes(pathname) ? <label className="grid gap-2 text-sm">{pathname === "/presupuestos" ? "Mes del presupuesto" : pathname === "/planificacion" ? "Mes de la proyección" : "Mes de los movimientos"}<input className="input min-h-12" type="month" value={finance.period} disabled={busy} onChange={(event) => { if (event.target.value) finance.setPeriod(event.target.value); }} /></label> : null}
       {finance.notice ? <p role="status" className="break-words text-sm text-emerald-300">{finance.notice}</p> : null}
       {error && !editor && !removal && !payment ? <div className="card p-4"><p role="alert" className="break-words text-red-300">{error}</p><button className="btn-secondary mt-3 min-h-11" disabled={loading} onClick={finance.reload}>Reintentar</button></div> : null}
