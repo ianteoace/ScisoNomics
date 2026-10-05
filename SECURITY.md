@@ -81,7 +81,8 @@ schedule semanal existente; no se activa por tags. Conserva solo
   secretos configurados de ScisoNomics/Tauri, admin JSON y URLs PostgreSQL.
   Las excepciones cubren solo fixtures ficticios concretos; no se excluyen
   directorios de codigo, tests ni commits completos.
-- `application-security`: tests de seguridad Python, smoke imports del backend
+- `application-security`: tests de seguridad Python y autorizacion de dispositivos,
+  smoke imports del backend
   local (`finance_app.services` y `modern_app.backend.app.main`) desde el
   checkout limpio, y `finance_app.test_restore_validation` para backup/restore.
   El smoke no inicia el servidor ni necesita secretos; los logs de importacion
@@ -130,6 +131,34 @@ Al no usar `--deny warnings`, tanto `unmaintained` como `unsound` se reportan si
 bloquear CI. Esto no elimina los warnings ni resuelve el problema de `glib`.
 
 ## Respuesta a incidentes
+
+### Dispositivos cloud — Milestone 8
+
+Windows y Android usan el mismo protocolo Ed25519 por cuenta para enrollment,
+login conocido, refresh, rename y revoke. La clave privada permanece en WinCred
+o cifrada con Android Keystore, fuera de JavaScript y SQLite financiera.
+El nuevo dispositivo requiere OTP backend de seis digitos, TTL 10 minutos,
+cinco intentos, reenvio con cooldown de 60 segundos y cuotas por cuenta.
+Solo se guardan hashes/HMAC del codigo, continuacion y nonce; no se loggean.
+Se reutiliza Resend/SMTP y el email confirmado por Supabase.
+
+La proteccion aplica al backend: grants cortos ligados a dispositivo/familia,
+comprobacion de revocacion por request y proofs consumidos atomicamente.
+Refresh Supabase solo no restaura la sesion. Revocar exige nueva verificacion
+y elimina la sesion persistida al fallar refresh, sin borrar datos locales.
+Renombrar y revocar firman proposito, familia y target; revocar el actual exige
+confirmacion. No se usan fingerprints ni la telemetria `cloud_devices` como trust.
+
+El modo predeterminado ahora es `enforce`. `off` solo es rollback explicito sin
+esta proteccion; clientes nuevos lo rechazan. Las sesiones antiguas sin familia
+requieren re-login y OTP. iOS/Keychain y login cloud browser quedan pendientes y
+fallan cerrados. Un dispositivo/WebView comprometido y el robo simultaneo de
+grant/clave/email no estan resueltos por esta capa. Logout local no equivale a
+revocacion remota; usar Dispositivos si se sospecha robo.
+
+Ver [flujo, recuperacion, amenazas, rollout y evidencia](docs/device-verification/DEVICE_AUTHORIZATION.md).
+El milestone sigue abierto hasta verificar correo real, restauracion y revocacion
+entre PC/Android reales y un segundo perfil Windows. No se modifico produccion.
 
 Si se sospecha el robo de un secreto o una sesion:
 

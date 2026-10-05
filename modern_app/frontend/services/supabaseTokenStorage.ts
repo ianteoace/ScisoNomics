@@ -1,9 +1,12 @@
 import { getSupabaseProjectUrl } from "../lib/supabase";
 import { CloudAuthRequestError } from "./cloudAuth";
+import { getSecureTokenStorage } from "./secureTokenStorage";
+import { getRuntimePlatformSync } from "./platform";
 const operations = new Map<string, Promise<unknown>>();
 
 export function isSupabaseSecureStorageAvailable() {
   if (typeof window === "undefined") return false;
+  if (getRuntimePlatformSync() === "ios") return false;
   const runtime = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown; isTauri?: boolean };
   return Boolean(runtime.__TAURI_INTERNALS__ || runtime.__TAURI__ || runtime.isTauri);
 }
@@ -19,11 +22,13 @@ async function storageKey(ownerId: string) {
 
 async function invokeCommand<T>(name: string, ownerId: string, extra = {}): Promise<T> {
   if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError(
-    "El almacenamiento seguro requiere la app de escritorio. Usá una sesión temporal.", { code: "supabase_secure_unavailable" });
+    "El almacenamiento seguro no está disponible en este entorno. Podés seguir en modo local.", { code: "supabase_secure_unavailable" });
   try {
     const accountId = await storageKey(ownerId);
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<T>(name, { accountId, ...extra });
+    const storage = getSecureTokenStorage();
+    const token = (extra as { token?: string }).token;
+    return await (name.startsWith("save_") ? storage.save(accountId, token!)
+      : name.startsWith("load_") ? storage.load(accountId) : storage.delete(accountId)) as T;
   } catch (error) {
     if (error instanceof CloudAuthRequestError) throw error;
     throw new CloudAuthRequestError("No pudimos acceder al almacenamiento seguro. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });

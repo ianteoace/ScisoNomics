@@ -20,6 +20,8 @@ OTHER_SUB = "22222222-2222-4222-8222-222222222222"
 INTERNAL_ID = "sciso-internal-42"
 STAMP = "2026-01-01T00:00:00+00:00"
 AUTH_ENV = {
+    # These suites exercise legacy compatibility; enforcement has its own suite.
+    "SCISONOMICS_DEVICE_VERIFICATION_MODE": "off",
     "SCISONOMICS_ENV": "development",
     "SCISONOMICS_JWT_SECRET": "isolated-dual-auth-test-secret",
     "SCISONOMICS_ALLOWED_ORIGINS": "http://127.0.0.1:3000",

@@ -734,6 +734,8 @@ def _ensure_device_verification_schema(conn: CloudConnection) -> None:
         )
         """
     )
+    _ensure_column(conn, "trusted_devices", "platform", "TEXT")
+    _ensure_column(conn, "device_verification_challenges", "platform", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_device_proof_user ON device_proof_challenges(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_device_proof_expires ON device_proof_challenges(expires_at)")
     _ensure_postgres_foreign_key(

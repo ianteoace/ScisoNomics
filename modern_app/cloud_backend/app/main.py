@@ -66,6 +66,7 @@ from .schemas import (
 from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, reset_rate_limit, sync_max_records
 from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supabase_access_token
 from .supabase_bootstrap import audit_link, bootstrap_user
+from . import device_sessions
 from . import billing_subscriptions as subscriptions
 from . import mercadopago_billing as mp_billing
 
@@ -141,7 +142,7 @@ AUTH_NO_STORE_PATHS = {
 @app.middleware("http")
 async def auth_no_store_middleware(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith("/auth/google/status/"):
+    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith(("/auth/google/status/", "/auth/devices")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -152,6 +153,8 @@ async def safe_auth_validation_error(request: Request, exc: RequestValidationErr
     # Pydantic's default error includes the rejected input; never echo a login ID.
     if request.url.path == "/auth/google/status":
         return JSONResponse(status_code=422, content={"detail": "Solicitud de Google invalida."})
+    if request.url.path.startswith("/auth/devices"):
+        return JSONResponse(status_code=422, content={"detail": {"code": "invalid_device_request", "message": "Solicitud de verificación de dispositivo inválida."}})
     if request.url.path in AUTH_NO_STORE_PATHS:
         errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error} for error in exc.errors()]
         return JSONResponse(status_code=422, content={"detail": errors})
@@ -401,6 +404,7 @@ def _send_resend_email(
     text_body: str,
     html_body: str,
     idempotency_key: str | None,
+    subject: str = "Tu codigo de verificacion de ScisoNomics",
 ) -> tuple[int, str]:
     api_key = os.getenv("SCISONOMICS_RESEND_API_KEY", "").strip()
     api_url = os.getenv("SCISONOMICS_RESEND_API_URL", "https://api.resend.com/emails").strip()
@@ -409,7 +413,7 @@ def _send_resend_email(
     payload: dict[str, Any] = {
         "from": sender,
         "to": [email],
-        "subject": "Tu codigo de verificacion de ScisoNomics",
+        "subject": subject,
         "html": html_body,
         "text": text_body,
     }
@@ -457,12 +461,18 @@ def send_verification_email(
     code: str,
     *,
     idempotency_key: str | None = None,
+    purpose: str = "signup",
 ) -> tuple[int | None, str | None]:
     provider = _email_provider()
     sender = os.getenv("SCISONOMICS_EMAIL_FROM", "").strip()
     reply_to = os.getenv("SCISONOMICS_EMAIL_REPLY_TO", "").strip()
     ttl_minutes = _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1)
     body, html_body = _verification_email_content(code, ttl_minutes)
+    subject = "Tu codigo de verificacion de ScisoNomics"
+    if purpose == "new_device":
+        subject = "Código de verificación de ScisoNomics"
+        body = f"Tu código de verificación es {code}. Vence en 10 minutos. Fue solicitado desde un dispositivo nuevo. Si no reconocés este intento, ignorá este email."
+        html_body = f"<html><body><h2>{subject}</h2><p>{html.escape(body)}</p></body></html>"
 
     if provider in {"console", "memory", "fake"}:
         if os.getenv("SCISONOMICS_ENV", "development").strip().lower() == "production":
@@ -478,6 +488,7 @@ def send_verification_email(
             text_body=body,
             html_body=html_body,
             idempotency_key=idempotency_key,
+            subject=subject,
         )
 
     if provider == "smtp":
@@ -493,7 +504,7 @@ def send_verification_email(
         total_timeout = _smtp_timeout("SCISONOMICS_SMTP_TOTAL_TIMEOUT_SECONDS", 20)
         deadline = time.monotonic() + total_timeout
         message = EmailMessage()
-        message["Subject"] = "Tu codigo de verificacion de ScisoNomics"
+        message["Subject"] = subject
         message["From"] = sender
         message["To"] = email
         message.set_content(body)
@@ -1542,9 +1553,9 @@ def _auth_provider_conflict() -> HTTPException:
     )
 
 
-def _get_supabase_user(token: str) -> UserOut:
+def _get_supabase_user(token: str, identity=None) -> UserOut:
     try:
-        identity = verify_supabase_access_token(token)
+        identity = identity or verify_supabase_access_token(token)
     except SupabaseAuthError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
 
@@ -1603,7 +1614,7 @@ def _get_supabase_user(token: str) -> UserOut:
         raise
 
 
-def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
+def get_identity_user(authorization: str | None = Header(default=None)) -> UserOut:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Sesion no valida.")
     token = authorization.split(" ", 1)[1].strip()
@@ -1626,9 +1637,33 @@ def get_current_user(authorization: str | None = Header(default=None)) -> UserOu
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=401, detail="Usuario no encontrado.")
-    if not _email_is_verified(row):
+    if not payload.get("device_authorized") and not _email_is_verified(row):
         raise HTTPException(status_code=403, detail={"code": "email_verification_required", "message": "Confirma tu email para continuar."})
     return row_to_user(row)
+
+
+def get_current_user(authorization: str | None = Header(default=None)) -> UserOut:
+    if device_sessions.enforced():
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise device_sessions.error("device_verification_required", "Verificá este dispositivo antes de usar tu cuenta.")
+        device_sessions.authorize_access(authorization.split(" ", 1)[1].strip())
+    return get_identity_user(authorization)
+
+
+def get_device_identity_user(authorization: str | None = Header(default=None)) -> UserOut:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise device_sessions.error("invalid_supabase_token", "Iniciá sesión para verificar este dispositivo.")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        identity = verify_supabase_access_token(token)
+    except SupabaseAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from None
+    user = _get_supabase_user(token, identity=identity)
+    # Send the OTP only to the provider-confirmed email, never stale legacy metadata.
+    return user.model_copy(update={"email": identity["email"]})
+
+
+device_sessions.register_routes(app, get_device_identity_user, get_current_user, send_verification_email)
 
 
 @app.get("/health")
@@ -2123,6 +2158,8 @@ async def mercadopago_webhook(request: Request):
 
 @app.post("/auth/refresh", response_model=AuthResponse)
 def refresh_session(payload: RefreshRequest, request: Request):
+    if device_sessions.enforced():
+        raise device_sessions.error("device_verification_required", "Volvé a iniciar sesión y verificá este dispositivo.")
     refresh_token = str(payload.refresh_token or "").strip()
     if not refresh_token:
         raise HTTPException(status_code=422, detail="Refresh token requerido.")

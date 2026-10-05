@@ -4,7 +4,9 @@ import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } fro
 import {
   completePasswordRecovery, isSupabaseCloudAuthConfigured, requestPasswordReset,
   resendSignupVerification, signInWithPassword, signUpWithPassword, verifyEmailCode,
+  getPendingDeviceState, getPendingDeviceServerState, subscribePendingDevice,
 } from "../../services/supabaseCloudAuth";
+import { DeviceVerificationRequiredError } from "../../services/deviceAuthorization";
 import { PasswordInput } from "../ui/PasswordInput";
 import { isSupabaseSecureStorageAvailable } from "../../services/supabaseTokenStorage";
 import { CloudAuthRequestError } from "../../services/cloudAuth";
@@ -17,9 +19,10 @@ type Mode = "login" | "register" | "account_exists" | "verification_required" | 
 const RESEND_COOLDOWN_SECONDS = 60;
 const inputClass = "mt-1 w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-400";
 
-export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
+export function SupabaseAccountForm({ onAuthenticated, onBusyChange, allowGoogle = true }: {
   onAuthenticated: () => void;
   onBusyChange: (busy: boolean) => void;
+  allowGoogle?: boolean;
 }) {
   const configured = isSupabaseCloudAuthConfigured();
   const secureStorageAvailable = isSupabaseSecureStorageAvailable();
@@ -38,6 +41,13 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const google = useSyncExternalStore(subscribeGoogleOAuth, getGoogleOAuthState, getGoogleOAuthServerState);
+  const device = useSyncExternalStore(subscribePendingDevice, getPendingDeviceState, getPendingDeviceServerState);
+  const completedDeviceVersion = useRef(device.completionVersion);
+  useEffect(() => {
+    if (device.completionVersion <= completedDeviceVersion.current) return;
+    completedDeviceVersion.current = device.completionVersion;
+    if (device.completedOwnerId) onAuthenticated();
+  }, [device.completionVersion, device.completedOwnerId, onAuthenticated]);
   const startedGoogleHere = useRef(false);
   const googleBusy = ["opening", "waiting", "processing"].includes(google.status);
   const formBusy = busy || googleBusy;
@@ -123,6 +133,11 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
     try {
       await action();
     } catch (failure) {
+      if (failure instanceof DeviceVerificationRequiredError) {
+        setPassword(""); setRepeatPassword(""); setCode("");
+        setNotice("Verificá tu correo para autorizar este dispositivo y completar el acceso.");
+        return;
+      }
       setError(failure instanceof Error ? failure.message : "No se pudo completar la acción. Intentá nuevamente.");
     } finally {
       setBusy(false);
@@ -227,7 +242,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange }: {
       <button className="btn w-full justify-center" type="submit" disabled={formBusy || !configured}>
         {busy ? "Procesando..." : mode === "register" ? "Crear cuenta" : verifyingSignup ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar código" : "Iniciar sesión"}
       </button>
-      {mode === "login" || mode === "register" ? <>
+      {allowGoogle && (mode === "login" || mode === "register") ? <>
         <div className="my-4 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-slate-400" aria-hidden="true">
           <span className="h-px flex-1 bg-slate-700" />o<span className="h-px flex-1 bg-slate-700" />
         </div>

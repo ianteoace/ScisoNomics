@@ -32,8 +32,33 @@ class MemoryStorage {
   dump() { return JSON.stringify(Object.fromEntries(this.data)); }
 }
 
+let deviceTestContext;
 function loadServices() {
   for (const file of ["services/cloudAuth.ts", "services/supabaseCloudAuth.ts", "services/supabaseTokenStorage.ts", "services/supabaseGoogleAuth.ts", "services/supabaseOAuthStorage.ts", "services/supabaseOAuthCallback.ts", "lib/supabase.ts"]) delete require.cache[path.join(root, file)];
+  const cloud = require("../services/cloudAuth.ts");
+  const filename = path.join(root, "services/deviceAuthorization.ts");
+  class DeviceVerificationRequiredError extends cloud.CloudAuthRequestError {
+    constructor() { super("Device verification required", { kind: "auth", code: "device_verification_required" }); }
+  }
+  const grant = (token,user) => ({ user, access_token: token, expires_in: 3600, familyId: "fixture-family", deviceId: "fixture-device", accountBinding: "fixture-binding" });
+  require.cache[filename] = { id: filename, filename, loaded: true, exports: {
+    DeviceVerificationRequiredError,
+    beginDeviceLogin: async (token,user) => deviceTestContext.devicePending
+      ? { context: { userId:user.id }, enrollment: { status:"pending_verification", verificationId:"fixture", verificationToken:"fixture-continuation", expiresIn:600, resendAvailableIn:60 } }
+      : { grant: grant(token,user) },
+    completeDeviceEnrollment: async (token,context,_enrollment,code) => {
+      if (code !== "444444") throw new cloud.CloudAuthRequestError("Código incorrecto", { code:"device_otp_invalid", kind:"auth" });
+      return grant(token,await cloud.cloudAuth.me(token));
+    },
+    resendDeviceEnrollment: async (_token,enrollment) => ({...enrollment,verificationToken:"replacement-continuation"}),
+    restoreDeviceGrant: async (token,owner) => {
+      if (deviceTestContext.deviceRevoked) throw new cloud.CloudAuthRequestError("Device revoked", { code:"device_revoked", kind:"auth" });
+      const user=await cloud.cloudAuth.me(token);
+      if (user.id !== owner) throw new cloud.CloudAuthRequestError("Wrong owner", { code:"internal_identity_mismatch", kind:"auth" });
+      return grant(token,user);
+    },
+    rememberDeviceGrant() {}, forgetDeviceGrant() {}, listAccountDevices: async () => [],
+  } };
   return {
     cloud: require("../services/cloudAuth.ts"),
     external: require("../services/supabaseCloudAuth.ts"),
@@ -43,7 +68,7 @@ function loadServices() {
   };
 }
 
-function setup(t, { configured = true, tauri = false } = {}) {
+function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
   t.mock.method(console, "info", () => {});
   t.mock.method(console, "warn", () => {});
   process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL = "https://cloud.test";
@@ -51,6 +76,7 @@ function setup(t, { configured = true, tauri = false } = {}) {
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = configured ? "sb_publishable_test_only" : "";
   const credentials = new Map();
   const browser = new EventTarget();
+  browser.navigator = { userAgent: mobile ? "Android" : "Windows NT" };
   browser.localStorage = new MemoryStorage();
   browser.sessionStorage = new MemoryStorage();
   if (tauri) browser.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
@@ -67,17 +93,18 @@ function setup(t, { configured = true, tauri = false } = {}) {
       if (command === "load_pending_supabase_oauth") return credentials.get(key) || null;
       if (command === "delete_pending_supabase_oauth") { credentials.delete(key); return; }
     }
-    if (command.includes("supabase")) {
+    if (command.includes("supabase") || command.startsWith("plugin:mobile-secure-storage|")) {
       ctx.nativeCalls.push({ command, accountId: args.accountId });
       if (ctx.nativeError) throw new Error("Native failure with secret details");
       const key = `supabase:${args.accountId}`;
-      if (command === "save_persistent_supabase_refresh_token") {
+      const operation = command.startsWith("plugin:mobile-secure-storage|") ? `${command.split("|")[1]}_persistent_supabase_refresh_token` : command;
+      if (operation === "save_persistent_supabase_refresh_token") {
         if (ctx.pauseSave) await ctx.pauseSave;
         credentials.set(key, args.token);
         return { ok: true, roundtrip: true };
       }
-      if (command === "load_persistent_supabase_refresh_token") return { found: credentials.has(key), token: credentials.get(key) || null };
-      if (command === "delete_persistent_supabase_refresh_token") { credentials.delete(key); return { ok: true }; }
+      if (operation === "load_persistent_supabase_refresh_token") return { found: credentials.has(key), token: credentials.get(key) || null };
+      if (operation === "delete_persistent_supabase_refresh_token") { credentials.delete(key); return { ok: true }; }
     }
     if (command === "save_persistent_cloud_refresh_token") {
       if (ctx.pauseLegacySave) await ctx.pauseLegacySave;
@@ -170,7 +197,10 @@ function setup(t, { configured = true, tauri = false } = {}) {
     if (url.pathname === "/auth/logout") return json({ ok: true });
     throw new Error(`Unexpected cloud API: ${url.pathname}`);
   });
-  return Object.assign(ctx, loadServices());
+  deviceTestContext = ctx;
+  Object.assign(ctx, loadServices());
+  t.after(() => ctx.external.cancelDeviceVerification());
+  return ctx;
 }
 
 function setupGoogle(t, options = {}) {
@@ -658,8 +688,8 @@ test("refresh rejects a changed internal owner", async (t) => {
   const me = ctx.cloud.cloudAuth.me;
   t.mock.method(ctx.cloud.cloudAuth, "me", async (token) => ({ ...(await me(token)), id: "wrong-internal-owner" }));
   assert.equal(await ctx.cloud.forceRefreshActiveCloudSession(), null);
-  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
-  assert.equal((await ctx.cloud.getActiveCloudAuthState()).availability, "session_expired");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
 });
 
 test("reload cannot send a Supabase refresh token to legacy or restore it from storage", async (t) => {
@@ -836,7 +866,7 @@ test("restoration never publishes a token for a different internal owner", async
   const me = reloaded.cloud.cloudAuth.me;
   t.mock.method(reloaded.cloud.cloudAuth, "me", async (token) => ({ ...(await me(token)), id: "wrong-owner" }));
   assert.equal(await reloaded.cloud.getValidAccessToken(), null);
-  assert.equal(reloaded.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(reloaded.cloud.getActiveOwnerId(), "local");
   assert.equal(ctx.credentials.size, 0);
 });
 
@@ -887,14 +917,16 @@ test("native save failure is explicit and never publishes a remembered account",
   assert.equal(ctx.credentials.size, 0);
 });
 
-test("rotation survives backend failure and another boot", async (t) => {
+test("unverified rotation stays in memory until device authorization succeeds", async (t) => {
   const ctx = setup(t, { tauri: true });
   await ctx.external.signInWithPassword("alice@example.com", "correct");
   const [key, old] = [...ctx.credentials][0];
   ctx.backendError = { status: 503, detail: { code: "backend_offline", message: "Try again" } };
   await assert.rejects(ctx.external.refreshSession("sciso-A"), (error) => error.statusCode === 503);
-  assert.notEqual(ctx.credentials.get(key), old);
+  assert.equal(ctx.credentials.get(key), old, "No persistent rotation before device authorization");
   ctx.backendError = null;
+  await ctx.external.refreshSession("sciso-A");
+  assert.notEqual(ctx.credentials.get(key), old);
   ctx.browser.sessionStorage.data.clear();
   const reloaded = loadServices();
   assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id, "sciso-A");
@@ -950,4 +982,155 @@ test("a native delete waits for an in-flight rotation and cannot leave a resurre
   assert.equal((await deletion).ok, true);
   assert.equal(ctx.credentials.size, 0);
   assert.equal(ctx.cloud.getStoredAccounts().length, 0);
+});
+
+
+test("Android storage selects Keystore while Windows retains existing WinCred commands", async t => {
+  const ctx=setup(t,{tauri:true,mobile:true});
+  const storage=require("../services/secureTokenStorage.ts").getSecureTokenStorage();
+  assert.equal(storage.backend,"android-keystore");
+  await ctx.external.signInWithPassword("alice@example.com","correct");
+  assert(ctx.nativeCalls.some(c=>c.command==="plugin:mobile-secure-storage|save"));
+  assert(ctx.nativeCalls.every(c=>c.command.startsWith("plugin:mobile-secure-storage|")));
+  ctx.browser.navigator.userAgent="Windows NT";
+  assert.equal(require("../services/secureTokenStorage.ts").getSecureTokenStorage().backend,"desktop");
+  await require("../services/supabaseTokenStorage.ts").saveSupabaseRefreshToken("sciso-B","dummy-refresh");
+  assert.equal(ctx.nativeCalls.at(-1).command,"save_persistent_supabase_refresh_token");
+});
+
+test("Android login bootstraps internal users.id and never persists any token in browser storage", async t => {
+  const ctx=setup(t,{tauri:true,mobile:true});
+  await ctx.external.signInWithPassword("alice@example.com","correct");
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
+  assert.equal((await ctx.external.getSession()).user.id,"sciso-A");
+  assert(ctx.nativeCalls.every(c=>c.accountId.endsWith("::sciso-A")));
+  assert.doesNotMatch(ctx.browser.localStorage.dump()+ctx.browser.sessionStorage.dump(),/supabase-access|supabase-refresh|refresh_token|accessToken/);
+  assert(ctx.calls.some(c=>c.url.pathname==="/auth/supabase/bootstrap"));
+  assert(!ctx.calls.some(c=>c.url.pathname.startsWith("/sync")||c.url.host.includes("localhost")));
+});
+
+test("Android persistent sessions survive a cold service reload, rotate and are removed on logout", async t => {
+  const ctx=setup(t,{tauri:true,mobile:true});
+  await ctx.external.signInWithPassword("alice@example.com","correct");
+  const previous=new Map(ctx.credentials);
+  ctx.browser.sessionStorage.setItem("scisonomics_cloud_access_tokens_session_v1",JSON.stringify({"sciso-A":{accessToken:"stale-access",expiresAt:"2999-01-01T00:00:00Z",tokenType:"bearer"}}));
+  let reloaded=loadServices();
+  const restored=await reloaded.external.refreshSession("sciso-A");
+  assert.equal(restored.user.id,"sciso-A");
+  assert.notEqual(restored.token,"stale-access");
+  assert([...ctx.credentials].every(([key,token])=>previous.get(key)!==token));
+  assert.equal(ctx.browser.sessionStorage.getItem("scisonomics_cloud_access_tokens_session_v1"),null);
+  assert((await reloaded.external.signOut()).ok);
+  assert.equal(ctx.credentials.size,0);
+  reloaded=loadServices();
+  assert.equal(reloaded.cloud.getActiveOwnerId(),"local");
+  assert.equal(await reloaded.external.getSession(),null);
+});
+
+test("Android multiple accounts retain internal IDs and use independent encrypted storage keys",async t=>{
+  const ctx=setup(t,{tauri:true,mobile:true});
+  for(const email of ["alice@example.com","bob@example.com"])await ctx.external.signInWithPassword(email,"correct");
+  assert.deepEqual(ctx.cloud.getStoredAccounts().map(a=>a.user.id).sort(),["sciso-A","sciso-B"]);
+  assert.equal(ctx.credentials.size,2);
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-B");
+  await ctx.external.signOut("sciso-A");
+  assert.equal(ctx.credentials.size,1);
+  assert.equal((await ctx.external.getSession()).user.id,"sciso-B");
+});
+
+test("Android secure-storage failure cannot activate a remembered account or fall back to plaintext",async t=>{
+  const ctx=setup(t,{tauri:true,mobile:true});ctx.nativeError=true;
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com","correct"),e=>e.code==="supabase_secure_storage_failed"&&!e.message.includes("secret"));
+  assert.equal(ctx.cloud.getActiveOwnerId(),"local");assert.equal(ctx.credentials.size,0);
+  assert.doesNotMatch(ctx.browser.localStorage.dump()+ctx.browser.sessionStorage.dump(),/supabase-refresh|supabase-access/);
+});
+
+test("Android signup OTP reuses the shared provider and Google cannot start a partial mobile flow",async t=>{
+  const ctx=setup(t,{tauri:true,mobile:true});
+  assert.equal((await ctx.external.signUpWithPassword("alice@example.com","correct")).status,"verification_required");
+  await ctx.external.verifyEmailCode("alice@example.com","123456");
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
+  const count=ctx.calls.length;
+  await assert.rejects(ctx.google.signInWithGoogleSupabase(),e=>e.code==="supabase_oauth_mobile_pending");
+  assert.equal(ctx.calls.length,count);assert.equal(ctx.openedUrls.length,0);
+});
+
+test("unsupported storage does not invoke native or provide an insecure fallback",t=>{
+  const ctx=setup(t,{tauri:true});ctx.browser.navigator.userAgent="iPhone";
+  assert.throws(()=>require("../services/secureTokenStorage.ts").getSecureTokenStorage(),/not_supported/);
+  assert.equal(require("../services/supabaseTokenStorage.ts").isSupabaseSecureStorageAvailable(),false);
+  delete ctx.browser.__TAURI_INTERNALS__;
+  assert.throws(()=>require("../services/secureTokenStorage.ts").getSecureTokenStorage(),/not_available/);
+  assert.equal(ctx.nativeCalls.length,0);
+});
+
+test("Android password recovery uses OTP without persisting credentials or activating a financial owner", async t => {
+  const ctx = setup(t, { tauri: true, mobile: true });
+  await ctx.external.requestPasswordReset("alice@example.com");
+  await ctx.external.completePasswordRecovery("alice@example.com", "123456", "new long password");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.equal(ctx.cloud.getStoredAccounts().length, 0);
+  assert.equal(ctx.credentials.size, 0);
+  assert(ctx.calls.some(call => call.method === "PUT" && call.url.pathname.endsWith("/user")));
+  assert.doesNotMatch(ctx.browser.localStorage.dump() + ctx.browser.sessionStorage.dump(), /supabase-access|supabase-refresh|new long password/);
+});
+
+
+for (const mobile of [false, true]) test(`${mobile ? "Android" : "Windows"} new device requires OTP before any saved session, then restores`, async (t) => {
+  const ctx=setup(t,{tauri:true,mobile});ctx.devicePending=true;
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com","correct"),e=>e.code==="device_verification_required");
+  assert.equal(ctx.cloud.getActiveOwnerId(),"local");
+  assert.equal(ctx.credentials.size,0);
+  assert.equal(ctx.cloud.getStoredAccounts().length,0);
+  assert.equal(ctx.external.getPendingDeviceState().required,true);
+  assert.doesNotMatch(JSON.stringify(ctx.external.getPendingDeviceState()),/continuation|supabase-access|supabase-refresh|444444/);
+  await assert.rejects(ctx.external.verifyNewDeviceCode("111111"),e=>e.code==="device_otp_invalid");
+  assert.equal(ctx.credentials.size,0);
+  await ctx.external.resendDeviceVerification();
+  assert.equal(ctx.credentials.size,0);
+  assert.equal((await ctx.external.verifyNewDeviceCode("444444")).id,"sciso-A");
+  assert.equal(ctx.external.getPendingDeviceState().required,false);
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
+  assert.equal(ctx.credentials.size,1);
+  ctx.browser.sessionStorage.data.clear();ctx.devicePending=false;
+  const reloaded=loadServices();
+  assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id,"sciso-A");
+});
+
+test("Google new device preserves pending client after consuming PKCE, without persisting refresh", async t=>{
+  const ctx=setupGoogle(t);ctx.devicePending=true;
+  await ctx.google.signInWithGoogleSupabase({remember:true});
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  assert.equal(ctx.google.getGoogleOAuthState().status,"idle");
+  assert.equal(ctx.external.getPendingDeviceState().required,true);
+  assert.equal(ctx.credentials.size,0);
+  assert.equal(ctx.cloud.getActiveOwnerId(),"local");
+  await ctx.external.verifyNewDeviceCode("444444");
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
+  assert.equal(ctx.credentials.size,1);
+});
+
+test("revoked device clears refresh and account; fresh login requires verification again",async t=>{
+  const ctx=setup(t,{tauri:true,mobile:true});
+  await ctx.external.signInWithPassword("alice@example.com","correct");
+  ctx.deviceRevoked=true;
+  await assert.rejects(ctx.external.refreshSession("sciso-A"),e=>e.code==="device_revoked");
+  assert.equal(ctx.credentials.size,0);
+  assert.equal(ctx.cloud.getActiveOwnerId(),"local");
+  assert.equal(ctx.cloud.getStoredAccounts().length,0);
+  ctx.devicePending=true;
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com","correct"),e=>e.code==="device_verification_required");
+  assert.equal(ctx.credentials.size,0);
+});
+
+test("canceling device verification discards the pending login and preserves another account",async t=>{
+  const ctx=setup(t,{tauri:true});
+  await ctx.external.signInWithPassword("bob@example.com","correct");
+  ctx.devicePending=true;
+  await assert.rejects(ctx.external.signInWithPassword("alice@example.com","correct"));
+  await ctx.external.cancelDeviceVerification();
+  assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-B");
+  assert.equal(ctx.cloud.getStoredAccounts().length,1);
+  assert.equal(ctx.credentials.size,1);
+  await assert.rejects(ctx.external.verifyNewDeviceCode("444444"));
 });

@@ -1,4 +1,6 @@
+import { DeviceVerificationRequiredError } from "./deviceAuthorization";
 import { createSupabaseAuthClient, getSupabaseProjectUrl } from "../lib/supabase";
+import { getRuntimePlatformSync } from "./platform";
 import { CloudAuthRequestError } from "./cloudAuth";
 import { completeGoogleSupabaseSignIn, disposeUnusedSupabaseClient, isSupabaseCloudAuthConfigured } from "./supabaseCloudAuth";
 import { isSupabaseSecureStorageAvailable } from "./supabaseTokenStorage";
@@ -55,6 +57,8 @@ export async function cancelGoogleSupabaseSignIn(message?: string) {
 }
 
 export async function signInWithGoogleSupabase(options: { remember?: boolean } = {}) {
+  if (["android", "ios"].includes(getRuntimePlatformSync())) throw new CloudAuthRequestError(
+    "Google estará disponible próximamente en Mobile.", { code: "supabase_oauth_mobile_pending" });
   if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError("El acceso con Google está disponible en la app de escritorio.", { code: "supabase_oauth_desktop_required" });
   if (!isSupabaseCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado. Podés seguir en modo local.", { code: "supabase_not_configured" });
   if (!globalThis.crypto?.subtle || !globalThis.crypto?.randomUUID) throw new CloudAuthRequestError("Este entorno no permite iniciar Google con PKCE seguro. Usá la app de escritorio actualizada.", { code: "supabase_pkce_unavailable" });
@@ -130,6 +134,7 @@ export async function handleSupabaseGoogleCallback(raw: string): Promise<boolean
   } catch (failure) {
     attempt = null;
     try { await release(current); } catch { /* Cleanup never falls back to browser storage. */ }
+    if (failure instanceof DeviceVerificationRequiredError) { publish(IDLE); return true; }
     publish({ status: "error", message: failure instanceof CloudAuthRequestError ? failure.message
       : "No pudimos completar Google. El acceso se canceló, venció o no tiene un intento PKCE pendiente. Volvé a iniciar sesión." });
   } finally {

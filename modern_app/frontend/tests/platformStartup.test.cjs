@@ -25,9 +25,11 @@ function stub(filename, exports) {
 stub("./services/cloudAuth.ts", { getActiveOwnerId: () => { ownerReads++; return "internal-owner"; } });
 stub("next/navigation", { useRouter: () => ({ replace: () => {} }), usePathname: () => "/dashboard" });
 stub("./components/account/SupabaseOAuthListener.tsx", { SupabaseOAuthListener: () => { throw new Error("Mobile mounted desktop OAuth"); } });
+stub("./components/account/DeviceVerificationDialog.tsx", { DeviceVerificationDialog: () => null });
 let initializeMobile = async () => ({});
 stub("./services/data/mobileDatabase.ts", { getMobileDatabase: () => initializeMobile() });
 stub("./components/mobile/MobileApp.tsx", { MobileApp: () => React.createElement("p", {}, "App mobile: almacenamiento local listo") });
+stub("./components/mobile/account/MobileAccountProvider.tsx", { MobileAccountProvider: ({ children }) => children });
 
 const { getRuntimePlatformSync } = require("../services/platform.ts");
 const http = require("../services/http.ts");

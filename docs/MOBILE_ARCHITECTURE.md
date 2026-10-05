@@ -1,4 +1,4 @@
-# ScisoNomics Mobile: interfaz local (milestone 7)
+# ScisoNomics Mobile: cuenta Android (milestone 8)
 
 La versión de producto sigue siendo 3.3.1. Mobile incluye Inicio, categorías,
 movimientos, gastos fijos, planificación, calendario, presupuestos, metas,
@@ -908,3 +908,191 @@ Windows se validó con cargo check, tests Rust y las suites/build frontend.
   No hubo solicitudes al API local Desktop. No se borró el almacenamiento.
 - Se preservaron cambios sin commit del milestone 6. El diff acumulado del working
   tree incluye esa implementación previa; archivos nuevos no aparecen en diff --stat.
+
+
+## Auditoría auth Desktop, previa al milestone 8
+
+Fuentes: cloudAuth.ts, supabaseCloudAuth.ts, supabaseTokenStorage.ts,
+supabaseOAuthCallback.ts, supabaseOAuthStorage.ts, supabaseGoogleAuth.ts,
+cloudSync.ts, lib/supabase.ts, AccountPanel, AddAccountModal,
+SupabaseAccountForm, SupabaseOAuthListener, supabase_tokens.rs,
+supabase_oauth.rs y los comandos registrados en lib.rs.
+
+| Área | Comportamiento actual y decisión Android |
+| --- | --- |
+| Login | SDK Supabase email/password; backend bootstrap devuelve usuario interno |
+| Signup | signUp; error estructurado de cuenta existente o mensaje neutro; confirmación OTP dentro de la app |
+| Confirmación | verifyOtp email; resend con cooldown; email/código solo estado en memoria |
+| Recovery | OTP recovery y updateUser; reutilizable sin callback web |
+| Bootstrap | POST /auth/supabase/bootstrap; token Bearer en memoria; users.id interno, nunca Supabase sub como owner |
+| Sesiones | SDK aislado por intento/cuenta; persistSession=false; autoRefreshToken=false; el servicio controla refresh |
+| Multicuenta | StoredCloudAccount + activeOwnerId por users.id, sin fusionar Supabase por email; conservar modelo |
+| Metadata | email, display_name, ID interno, proveedor, storage, timestamps y selección de cuenta en localStorage; metadata temporal en sessionStorage |
+| Access token | Cache en memoria y sessionStorage existentes; nunca localStorage; Android usará memoria y descartará access de un arranque anterior |
+| Refresh token | Solo memoria y servicio seguro; jamás localStorage/sessionStorage/SQLite financiera/plaintext |
+| Remember | Guardado y roundtrip seguro antes de activar la cuenta; sin fallback automático a sesión temporal |
+| Refresh/rotation | Promise compartida por cuenta; probar Refresh de dispositivo antes de persistir rotación; impedir respuesta tardía después de logout y validar ID interno |
+| Logout | signOut local de Supabase, borrar servicio seguro y metadata; offline puede revocar solo localmente; reportar borrado parcial sin anunciar éxito completo |
+| Errores | Códigos y mensajes seguros; errores nativos/proveedor sin cuerpos ni tokens; modo local sigue usable |
+| WinCred | Servicio scisonomics-supabase-refresh-token, project hash + users.id; no tocar implementación Windows |
+| OAuth | Google PKCE, verifier seguro con TTL, consume antes de exchange, replay protection; scheme scisonomics://auth/callback configurado solo desktop |
+| Deep links | Android identifier permanece com.scisoftware.scisonomics (+.debug). No hay configuración mobile de scheme/PKCE seguro; Google queda pendiente, no registrar retorno parcial |
+| AccountPanel | Incluye listeners/lecturas de sync y entitlements incluso con hideSyncCenter; no montar en Mobile |
+| cloudSync | AutoSyncProvider maneja arranque/cierre/owner; no montarlo ni invocar sus funciones desde cuenta Mobile |
+| HTTP auth | cloudRequest usa solo backend cloud; bootstrap usa identidad primaria y me exige grant de dispositivo; no depende de localhost |
+
+### Decisión de almacenamiento seguro
+
+Stronghold oficial fue evaluado: su carga requiere password y derivación, pero
+no ofrece por sí sola custodia Android Keystore de esa password para restaurar
+sin intervención. No se añade una contraseña fija ni se guarda una clave en
+archivos. Para Android se implementa un plugin Tauri local con las APIs oficiales
+AndroidKeyStore y Cipher AES/GCM/NoPadding: clave AES-256 generada por Keystore,
+no exportable, IV generado por el proveedor y AAD ligada a project+users.id.
+Solo ciphertext versionado vive en noBackupFilesDir, mediante AtomicFile.
+No se exporta material de clave a Rust/JS; no se requiere password de vault.
+Windows conserva sus comandos y WinCred; iOS falla cerrado, pendiente de Keychain.
+
+El plugin tiene únicamente save/load/delete para refresh Supabase, con capability
+Android específica. No hay permiso de archivos genérico, HTTP, Stronghold ni
+acceso arbitrario a Keystore. Rotación reemplaza un único registro atómicamente;
+la cola serializada evita que un guardado tardío sobreviva a un borrado.
+
+Fuentes oficiales: [Stronghold](https://v2.tauri.app/plugin/stronghold/),
+[plugins Tauri mobile](https://v2.tauri.app/develop/plugins/develop-mobile/),
+[Android Keystore](https://developer.android.com/privacy-and-security/keystore),
+[criptografía Android](https://developer.android.com/privacy-and-security/cryptography).
+
+### Separación cuenta / datos
+
+Mobile conserva owner_user_id="local" en sus seis entidades y LOCAL_OWNER en
+repositorios. activeOwnerId identifica la cuenta conectada futura; no reasigna
+registros existentes ni habilita sync. UI explica que los datos de este
+dispositivo todavía están en modo local. No se necesita migración financiera v4.
+Cuenta se restaura sin bloquear la experiencia financiera; no montar updater,
+backend Desktop, listeners OAuth Desktop ni cloud sync. Siguiente milestone: sync,
+con contrato explícito para migración local y aislamiento de owners.
+
+### Implementación inicial del milestone 8
+
+- SecureTokenStorage selecciona comandos WinCred existentes en Windows y el
+  plugin local mobile-secure-storage en Android. El único package nuevo de
+  Cargo.lock es ese plugin local, limitado al target Android; no se actualizan
+  dependencias existentes. Su Kotlin usa Android Keystore y las primitivas del
+  sistema, sin clave/password exportada ni fallback a plaintext.
+- mobile-auth concede solo save/load/delete a la ventana main en Android.
+  El plugin valida namespace project-hash::users.id, limita tamaño de archivo,
+  autentica ciphertext con GCM/AAD y devuelve errores estáticos. No imprime
+  excepciones ni argumentos. Archivos cifrados excluidos del backup automático.
+- MobileAccountProvider se monta después de inicializar SQLite. Restablece la
+  cuenta activa en segundo plano, escucha los eventos existentes de cuenta/owner,
+  cancela resultados al desmontar y permite reintento explícito. No hace polling
+  ni inicia cloud sync, OAuth Desktop, entitlements o API localhost.
+- Configuración reutiliza SupabaseAccountForm para email/password, signup/OTP,
+  reenvío y recovery/OTP. Recordar sesión requiere save+roundtrip nativo; si falla,
+  no se publica una cuenta persistente ni se cae a storage inseguro. El usuario
+  puede elegir voluntariamente sesión temporal en memoria.
+- Access token Android solo en memoria; se ignora/elimina el cache anterior de
+  sessionStorage. La metadata compartida mantiene users.id interno, email/nombre,
+  proveedor y flags de persistencia. SQLite sigue con owner local y v1/v2/v3.
+- Refresh carga por project+owner, comparte request por cuenta, mantiene la
+  rotación en memoria hasta validar el proof Refresh y la familia trusted, y
+  valida que el ID interno no cambió.
+  Logout usa el servicio compartido, borra credencial+metadata y ofrece reintentar
+  un borrado parcial. Las colas JS/nativa impiden resucitar el token tras logout.
+  En una reapertura Android puede recuperar metadata WebView previa al logout.
+  Si la restauración no devuelve sesión, el provider confirma ausencia del refresh
+  en Keystore antes de eliminar esa metadata huérfana. Un error de lectura o red
+  conserva la cuenta para reintentar; no se interpreta como logout.
+- Se conserva el modelo multicuenta Desktop; la UI Android inicial gestiona una
+  cuenta activa. Google Mobile está explícitamente pendiente: el scheme Desktop
+  y su storage PKCE no se habilitan parcialmente en Android. iOS/Keychain también
+  pendiente. Windows no cambia registro OAuth ni WinCred.
+- Keystore puede tener respaldo software en emulador; no se promete StrongBox
+  ni resistencia a un dispositivo comprometido. Tokens siguen siendo secretos
+  de sesión en memoria mientras la aplicación está abierta.
+
+### Validación inicial del milestone 8 (antes de Device Authorization)
+
+- test:mobile: 111 pruebas; test:auth: 76; billing/updater y platformStartup:
+  pasan. Se agregaron casos Android de bootstrap/ID interno, OTP/recovery,
+  restore frío, rotation, logout, multicuenta, error sin plaintext y Google
+  pendiente; UI/provider cubren restauración no bloqueante, cleanup, retry y
+  formulario compartido sin entrada Google parcial. Se cubre metadata antigua
+  tras logout y se evita borrarla cuando secure storage no puede leerse.
+- npm run build: export estático y TypeScript pasan, sin cambiar versión 3.3.1.
+- Android: npx tauri android run --no-watch Pixel_8 compiló Rust y Kotlin y
+  completó empaquetado. CLI volvió a esperar sin instalar; se registró antes
+  del fallback adb install -r, sin wipe-data/desinstalación ni edición de gen.
+- Windows cargo check y cargo test, --locked --target x86_64-pc-windows-msvc:
+  pasan, 9 pruebas Rust; PKCE no necesitó repetición serial. Continúan warnings
+  anteriores de Zeroize Android, linker Windows y deprecaciones Gradle.
+- Android Keystore real: save/load/rotation/delete de credenciales ficticias
+  pasan. Archivo privado contiene ciphertext; namespace inválido y ciphertext
+  copiado entre cuentas se rechazan con error estático GCM/AAD, sin fallback.
+- Cuenta real iniciada directamente por el usuario en el emulador: login y
+  reapertura COLD restauraron el mismo users.id interno. El archivo cifrado se
+  reemplazó tras refresh; access cache en sessionStorage ausente. Logout borró
+  credencial y metadata. La primera reapertura recuperó metadata WebView antigua,
+  sin sesión válida; ese caso motivó el cleanup confirmado contra Keystore.
+- Antes y después de instalación/login/reinicio/logout: SQLite idéntica al
+  baseline en todos los campos/tombstones de sus seis entidades. Owners local,
+  migrations 1/2/3 exitosas, foreign_key_check vacío y saldo Home 7584 intactos.
+- APK corregido instalado con -r: el caso real de metadata huérfana quedó en modo
+  local sin error ni credencial. Otra reapertura COLD confirmó que logout persiste
+  y que la sesión no se restaura. No se borró ni se reasignó ningún dato financiero.
+- WebView real, formulario vacío en 320/430 px: sin overflow, login/registro,
+  confirmación OTP y recuperación navegables; no hay botón Google parcial.
+  Las capturas se tomaron sin credenciales en campos; app quedó en Inicio/local.
+- Logcat de procesos login/restore/logout y APK final se escaneó sin imprimir
+  logs crudos: no se detectaron patrones JWT, Bearer, refresh/access o verifier
+  expuestos, ni las credenciales ficticias usadas por el test nativo.
+- git diff --check y UTF-8 sin BOM pasan. Se conserva CRLF en archivos que lo
+  tenían; fuentes nuevas usan UTF-8. No se hizo commit ni se publicó APK.
+
+
+### Verificación de dispositivo compartida — requisito adicional de M8
+
+Windows y Android usan la misma identidad Ed25519 por cuenta y el contrato
+Device Proof V1 ya existente. No se usa fingerprint de hardware. Después de
+Supabase + bootstrap, un dispositivo nuevo/revocado necesita OTP backend y
+firma de enrollment. Antes de esa autorización no se activa la cuenta nueva
+ni se persiste su refresh. Una clave trusted firma login sin repetir OTP.
+
+OTP: seis dígitos, 10 minutos, cinco intentos, un uso, cooldown 60 segundos y
+cuota de envío por cuenta. Resend/SMTP existente, email confirmado por Supabase;
+DB con HMAC/hash, nunca plaintext. Continuaciones y código solo en memoria.
+La UI global de verificación se comparte entre Desktop y Mobile, incluido
+Google Desktop; Google Android sigue pendiente.
+
+WinCred guarda la clave privada Windows. Android usa el plugin nativo con
+ciphertext separado en noBackupFilesDir/device_identities y AES-GCM/Keystore;
+solo Rust accede al blob privado y JS recibe identidad pública/firmas.
+El plugin bloquea también el fallback a comandos Kotlin privados. El seed se
+descifra solo en runtime nativo para firmar; no sale hacia JS o el servidor.
+iOS necesita Keychain y falla cerrado mientras tanto.
+
+Restauración exige refresh Supabase válido + familia trusted + proof Refresh.
+El backend entrega un grant corto ligado al dispositivo y comprueba estado
+en cada endpoint protegido. Un token primario/legacy no puede omitir el control.
+Si se revoca, el cliente borra sesión persistida y necesita login + OTP otra vez.
+Cuenta → Dispositivos permite listar, renombrar y revocar, con confirmación
+explícita para este dispositivo. No borra datos financieros ni cambia owners.
+
+El default de servidor es enforce; off solo sirve como rollback explícito sin
+protección y lo rechazan los nuevos clientes. Requiere despliegue coordinado
+separado y correo operativo; esta tarea no cambia Railway.
+
+Validación adicional: 15 tests backend SQLite y 15 PostgreSQL 18 temporal,
+protocolos frontend/UI compartidos y roundtrip WinCred sintético. APK real
+verificado contra backend aislado: enrollment, login conocido, identidad
+persistente tras COLD reopen, Refresh firmado, rename y revocación por actor
+Windows simulado. Acceso JS al blob privado rechazado y Logcat sin secretos
+ficticios. SQLite financiera permanece idéntica al baseline en sus seis
+entidades, owners local y migrations 1/2/3.
+
+**M8 no está cerrado todavía.** La prueba con cuenta real descrita arriba fue
+anterior a esta capa. Falta correo real, persistencia/restauración con este
+protocolo, revocación PC A real → Android B real, nuevo login B y un segundo
+perfil Windows real. No se solicita iniciar sesión contra producción sin
+el backend compatible. Ver [flujo, recuperación, amenazas y límites](device-verification/DEVICE_AUTHORIZATION.md).

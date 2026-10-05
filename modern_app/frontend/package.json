@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev --webpack -p 3000",
     "build": "next build",
-    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs",
+    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs tests/deviceAuthorization.test.cjs",
     "test:billing": "node --test tests/premiumBilling.test.cjs",
     "test:updater": "node --test tests/appUpdater.test.cjs",
     "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs",

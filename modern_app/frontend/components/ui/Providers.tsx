@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useSyncExternalStore } from "react";
+import { DeviceVerificationDialog } from "../account/DeviceVerificationDialog";
 import { SupabaseOAuthListener } from "../account/SupabaseOAuthListener";
 import { MobileStartupGate, StartupScreen } from "../app/BackendStartupGate";
 import { getRuntimePlatformSync } from "../../services/platform";
@@ -28,5 +29,5 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   if (platform === "android" || platform === "ios") return <MobileStartupGate>{children}</MobileStartupGate>;
   if (!hydrated) return <StartupScreen title="Iniciando ScisoNomics" />;
-  return <><SupabaseOAuthListener />{children}</>;
+  return <><SupabaseOAuthListener /><DeviceVerificationDialog />{children}</>;
 }

@@ -580,7 +580,8 @@ test("scheduling CRUD persists identity and tombstones without changing real bal
 });
 
 test("explicit payment is atomic, idempotent and creates exactly one real expense plus next recurrence", async (t) => {
-  t.mock.method(require("../lib/date.ts"), "getLocalDateInputValue", () => "2026-10-04");
+  const paymentDate = "2026-10-04";
+  t.mock.method(require("../lib/date.ts"), "getLocalDateInputValue", () => paymentDate);
   const state = fixture(t), r = state.modules().mobileFinanceRepository;
   await r.createCategoria({ nombre: "Seguro", tipo: "gasto" }); await r.createPresupuesto(budget); await r.createGastoProgramado(scheduled);
   state.failTransactionAt = 1;
@@ -589,7 +590,7 @@ test("explicit payment is atomic, idempotent and creates exactly one real expens
   delete state.failTransactionAt;
   const results = await Promise.all([r.markGastoProgramadoPaid(1), r.markGastoProgramadoPaid(1)]);
   assert.equal(results.filter((r) => r.changed).length, 1);
-  const moves = await r.listMovimientos(period); assert.equal(moves.length, 1); assert.equal(moves[0].fecha, getLocalDateInputValue()); assert.equal(moves[0].tipo, "gasto");
+  const moves = await r.listMovimientos(period); assert.equal(moves.length, 1); assert.equal(moves[0].fecha, paymentDate); assert.equal(moves[0].tipo, "gasto");
   assert.equal(moves[0].monto, 100); assert.equal((await r.listPresupuestos(period))[0].monto_gastado, 100);
   const next = (await r.listGastosProgramados("pendiente"))[0]; assert.equal(next.fecha_vencimiento, "2026-11-30");
   assert.equal((await r.getSummary(period)).saldo, -100);

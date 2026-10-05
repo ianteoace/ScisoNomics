@@ -536,11 +536,13 @@ fn debug_refresh_keyring_status(account_id: String) -> Result<RefreshKeyringDebu
   })
 }
 
-fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredIdentity>, String> {
+fn load_account_device_identity(app: &tauri::AppHandle, account_binding: &str) -> Result<Option<StoredIdentity>, String> {
   let storage_key = device_verification::storage_account_key(account_binding)?;
   #[cfg(target_os = "windows")]
   let loaded = wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key);
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "android")]
+  let loaded = tauri_plugin_mobile_secure_storage::identity_load(app, &storage_key);
+  #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
   let loaded = {
     let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
     match entry.get_password() {
@@ -549,6 +551,9 @@ fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredId
       Err(_) => Err("device_identity_storage_failed".to_string()),
     }
   };
+  #[cfg(target_os = "ios")]
+  let loaded: Result<Option<String>, String> = Err("device_identity_storage_unavailable".into());
+  let _ = app;
   match loaded.map_err(|_| "device_identity_storage_failed".to_string())? {
     None => Ok(None),
     Some(value) => {
@@ -558,7 +563,8 @@ fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredId
   }
 }
 
-fn persist_account_device_identity(account_binding: &str, identity: &StoredIdentity) -> Result<(), String> {
+fn persist_account_device_identity(app: &tauri::AppHandle, account_binding: &str, identity: &StoredIdentity) -> Result<(), String> {
+  let _ = app;
   let storage_key = device_verification::storage_account_key(account_binding)?;
   let encoded = device_verification::encode_identity(identity)?;
   #[cfg(target_os = "windows")]
@@ -571,89 +577,119 @@ fn persist_account_device_identity(account_binding: &str, identity: &StoredIdent
     )
     .map_err(|_| "device_identity_storage_failed".to_string())
   }
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "android")]
+  { tauri_plugin_mobile_secure_storage::identity_save(app, &storage_key, encoded.as_str()) }
+  #[cfg(target_os = "ios")]
+  { Err("device_identity_storage_unavailable".into()) }
+  #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
   {
     let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
     entry.set_password(encoded.as_str()).map_err(|_| "device_identity_storage_failed".to_string())
   }
 }
 
-fn require_account_device_identity(account_binding: &str) -> Result<StoredIdentity, String> {
-  load_account_device_identity(account_binding)?.ok_or_else(|| "device_identity_missing".to_string())
+fn require_account_device_identity(app: &tauri::AppHandle, account_binding: &str) -> Result<StoredIdentity, String> {
+  load_account_device_identity(app, account_binding)?.ok_or_else(|| "device_identity_missing".to_string())
 }
 
 fn sign_account_device_proof(
+  app: &tauri::AppHandle,
   account_binding: &str,
   purpose: Purpose,
   challenge: &ProofChallengeInput,
 ) -> Result<SignedProof, String> {
-  let identity = require_account_device_identity(account_binding)?;
+  let identity = require_account_device_identity(app, account_binding)?;
   device_verification::sign_proof(&identity, account_binding, purpose, challenge)
 }
 
 #[tauri::command]
-fn get_or_create_account_device_identity(account_binding: String) -> Result<DeviceIdentityResult, String> {
-  device_verification::validate_account_binding(&account_binding)?;
-  let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
-    .lock()
-    .map_err(|_| "device_identity_lock_failed".to_string())?;
-  if let Some(identity) = load_account_device_identity(&account_binding)? {
-    return Ok(DeviceIdentityResult {
-      created: false,
+async fn get_or_create_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<DeviceIdentityResult, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    device_verification::validate_account_binding(&account_binding)?;
+    let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
+      .lock()
+      .map_err(|_| "device_identity_lock_failed".to_string())?;
+    if let Some(identity) = load_account_device_identity(&app, &account_binding)? {
+      return Ok(DeviceIdentityResult {
+        created: false,
+        identity: device_verification::public_identity(&identity)?,
+      });
+    }
+    let identity = device_verification::generate_identity();
+    persist_account_device_identity(&app, &account_binding, &identity)?;
+    Ok(DeviceIdentityResult {
+      created: true,
       identity: device_verification::public_identity(&identity)?,
-    });
-  }
-  let identity = device_verification::generate_identity();
-  persist_account_device_identity(&account_binding, &identity)?;
-  Ok(DeviceIdentityResult {
-    created: true,
-    identity: device_verification::public_identity(&identity)?,
-  })
+    })
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_enrollment_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::DeviceEnrollment, &challenge)
+async fn sign_device_enrollment_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::DeviceEnrollment, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_authentication_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::DeviceAuthentication, &challenge)
+async fn sign_device_authentication_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::DeviceAuthentication, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_refresh_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::Refresh, &challenge)
+async fn sign_refresh_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::Refresh, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_management_proof(
+async fn sign_device_management_proof(
+  app: tauri::AppHandle,
   account_binding: String,
   purpose: String,
   challenge: ProofChallengeInput,
 ) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::management(&purpose)?, &challenge)
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::management(&purpose)?, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[allow(dead_code)]
 #[tauri::command]
-fn delete_account_device_identity(account_binding: String) -> Result<bool, String> {
-  let storage_key = device_verification::storage_account_key(&account_binding)?;
-  #[cfg(target_os = "windows")]
-  {
-    wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)
-      .map_err(|_| "device_identity_storage_failed".to_string())?;
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
-    match entry.delete_credential() {
-      Ok(()) | Err(keyring::Error::NoEntry) => {}
-      Err(_) => return Err("device_identity_storage_failed".to_string()),
+async fn delete_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<bool, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let _ = &app;
+    let storage_key = device_verification::storage_account_key(&account_binding)?;
+    #[cfg(target_os = "windows")]
+    {
+      wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)
+        .map_err(|_| "device_identity_storage_failed".to_string())?;
     }
-  }
-  Ok(true)
+    #[cfg(target_os = "android")]
+    { tauri_plugin_mobile_secure_storage::identity_delete(&app, &storage_key)?; }
+    #[cfg(target_os = "ios")]
+    { return Err("device_identity_storage_unavailable".into()); }
+    #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
+    {
+      let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
+      match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(_) => return Err("device_identity_storage_failed".to_string()),
+      }
+    }
+    Ok(true)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
+
 
 #[tauri::command]
 fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>, success: Option<bool>) {
@@ -995,6 +1031,8 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init());
   #[cfg(desktop)]
   let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_mobile_secure_storage::init());
   #[cfg(mobile)]
   let builder = builder.plugin(
     tauri_plugin_sql::Builder::default()
@@ -1182,6 +1220,33 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn device_identity_wincred_roundtrip_and_account_isolation() {
+    let identity = device_verification::generate_identity();
+    let public = device_verification::public_identity(&identity).unwrap();
+    let storage_key = device_verification::storage_account_key(&public.public_key_hash).unwrap();
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+      fn drop(&mut self) {
+        let _ = wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &self.0);
+      }
+    }
+    let _cleanup = Cleanup(storage_key.clone());
+    let encoded = device_verification::encode_identity(&identity).unwrap();
+    wincred_write_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key, encoded.as_str(), "Synthetic device test").unwrap();
+    let loaded = Zeroizing::new(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap().unwrap());
+    let restored = device_verification::decode_identity(loaded.as_str()).unwrap();
+    let restored_public = device_verification::public_identity(&restored).unwrap();
+    assert_eq!(public.device_id, restored_public.device_id);
+    assert_eq!(public.public_key, restored_public.public_key);
+    let other = device_verification::public_identity(&device_verification::generate_identity()).unwrap();
+    let other_key = device_verification::storage_account_key(&other.public_key_hash).unwrap();
+    assert!(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &other_key).unwrap().is_none());
+    wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap();
+    assert!(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap().is_none());
+  }
 
   #[test]
   fn keyring_refresh_token_roundtrip_dummy() {

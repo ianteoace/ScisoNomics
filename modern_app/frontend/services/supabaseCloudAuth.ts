@@ -1,3 +1,8 @@
+import {
+  beginDeviceLogin, completeDeviceEnrollment, resendDeviceEnrollment, restoreDeviceGrant,
+  rememberDeviceGrant, forgetDeviceGrant, DeviceVerificationRequiredError,
+  type DeviceContext, type DeviceGrant, type Enrollment,
+} from "./deviceAuthorization";
 import type { AuthError, Session } from "@supabase/supabase-js";
 import { createSupabaseAuthClient, isSupabaseAuthConfigured } from "../lib/supabase";
 import {
@@ -11,6 +16,50 @@ type SupabaseIdentityClient = ReturnType<typeof createSupabaseAuthClient>;
 type MemorySession = { client: SupabaseIdentityClient; session: Session | null; refreshToken: string; persistent: boolean };
 const sessions = new Map<string, MemorySession>();
 const refreshes = new Map<string, Promise<StoredCloudSession | null>>();
+type PendingDevice = { client: SupabaseIdentityClient; session: Session; user: CloudUser; remember: boolean; context: DeviceContext; enrollment: Enrollment; timer?: ReturnType<typeof setTimeout> };
+let pendingDevice: PendingDevice | null = null;
+let completingDevice = false;
+const deviceListeners = new Set<() => void>();
+const NO_DEVICE = { required: false as boolean, resendAt: 0, expiresAt: 0, completionVersion: 0, completedOwnerId: "" };
+let deviceState = NO_DEVICE;
+export const getPendingDeviceState = () => deviceState;
+export const getPendingDeviceServerState = () => NO_DEVICE;
+export function subscribePendingDevice(listener: () => void) { deviceListeners.add(listener); return () => { deviceListeners.delete(listener); }; }
+function publishPendingDevice(value: PendingDevice | null) {
+  deviceState = value ? { required: true, resendAt: Date.now() + value.enrollment.resendAvailableIn * 1000, expiresAt: Date.now() + value.enrollment.expiresIn * 1000, completionVersion: deviceState.completionVersion, completedOwnerId: "" } : { ...NO_DEVICE, completionVersion: deviceState.completionVersion };
+  deviceListeners.forEach((listener) => listener());
+}
+export async function cancelDeviceVerification() {
+  const value = pendingDevice;
+  pendingDevice = null;
+  if (value?.timer) clearTimeout(value.timer);
+  publishPendingDevice(null);
+  if (value) await disposeUnusedSupabaseClient(value.client);
+}
+export async function resendDeviceVerification() {
+  const value = pendingDevice;
+  if (!value || completingDevice) return;
+  value.enrollment = await resendDeviceEnrollment(value.session.access_token, value.enrollment);
+  if (pendingDevice !== value) return;
+  if (value.timer) clearTimeout(value.timer);
+  publishPendingDevice(value);
+  value.timer = setTimeout(() => { if (pendingDevice === value) void cancelDeviceVerification(); }, value.enrollment.expiresIn * 1000);
+}
+export async function verifyNewDeviceCode(code: string) {
+  const value = pendingDevice;
+  if (!value || completingDevice) throw new DeviceVerificationRequiredError();
+  completingDevice = true;
+  try {
+    const grant = await completeDeviceEnrollment(value.session.access_token, value.context, value.enrollment, code);
+    if (pendingDevice !== value) throw new DeviceVerificationRequiredError();
+    const user = await acceptAuthorizedSession(value.client, value.session, grant, value.remember);
+    if (value.timer) clearTimeout(value.timer);
+    pendingDevice = null;
+    deviceState = { ...NO_DEVICE, completionVersion: deviceState.completionVersion + 1, completedOwnerId: user.id };
+    deviceListeners.forEach((listener) => listener());
+    return user;
+  } finally { completingDevice = false; }
+}
 
 export type SupabaseSignUpResult =
   | { status: "account_exists" }
@@ -34,7 +83,7 @@ async function withClient<T>(action: (client: SupabaseIdentityClient) => Promise
   try {
     return await action(client);
   } finally {
-    if (![...sessions.values()].some((entry) => entry.client === client)) await client.auth.dispose();
+    if (pendingDevice?.client !== client && ![...sessions.values()].some((entry) => entry.client === client)) await client.auth.dispose();
   }
 }
 
@@ -80,9 +129,9 @@ function expiresAt(session: Session) {
   return new Date((session.expires_at ?? Math.floor(Date.now() / 1000) + session.expires_in) * 1000).toISOString();
 }
 
-async function storeSession(user: CloudUser, session: Session, makeActive: boolean, persistent = false) {
+async function storeSession(user: CloudUser, session: Session, makeActive: boolean, persistent = false, grant?: DeviceGrant) {
   await addOrUpdateAccount({ user, tokens: {
-    accessToken: session.access_token, expiresAt: expiresAt(session), tokenType: session.token_type || "bearer",
+    accessToken: grant?.access_token || session.access_token, expiresAt: grant ? new Date(Date.now() + grant.expires_in * 1000).toISOString() : expiresAt(session), tokenType: session.token_type || "bearer",
     // Refresh tokens never enter cloudAuth, sessionStorage or localStorage.
   } }, { authProvider: "supabase", remember: persistent, makeActive, externalPersistenceVerified: persistent });
 }
@@ -92,6 +141,19 @@ async function acceptSession(client: SupabaseIdentityClient, session: Session | 
     throw new CloudAuthRequestError("No recibimos una sesión válida.", { code: "supabase_session_missing", kind: "auth" });
   }
   const user = await resolveInternalUser(session.access_token, true);
+  await cancelDeviceVerification();
+  const result = await beginDeviceLogin(session.access_token, user);
+  if (result.enrollment) {
+    const value: PendingDevice = { client, session, user, remember, context: result.context, enrollment: result.enrollment };
+    pendingDevice = value; publishPendingDevice(value);
+    value.timer = setTimeout(() => { if (pendingDevice === value) void cancelDeviceVerification(); }, result.enrollment.expiresIn * 1000);
+    throw new DeviceVerificationRequiredError();
+  }
+  return acceptAuthorizedSession(client, session, result.grant!, remember);
+}
+
+async function acceptAuthorizedSession(client: SupabaseIdentityClient, session: Session, grant: DeviceGrant, remember: boolean): Promise<CloudUser> {
+  const user = grant.user;
   // Until bootstrap completes, the token stays in memory. No temporary native
   // key based on sub is needed, and failures cannot leave such an entry behind.
   // Only the backend's users.id indexes accounts. The provider's subject stays
@@ -106,7 +168,8 @@ async function acceptSession(client: SupabaseIdentityClient, session: Session | 
       if (!deleted.ok) throw new CloudAuthRequestError("No pudimos quitar la sesión recordada. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
     }
     if (sessions.get(user.id) !== entry) throw new CloudAuthRequestError("Este acceso fue reemplazado. Volvé a iniciar sesión.", { code: "supabase_login_replaced", kind: "auth" });
-    await storeSession(user, session, true, remember);
+    rememberDeviceGrant(user.id, grant);
+    await storeSession(user, session, true, remember, grant);
   } catch (failure) {
     if (sessions.get(user.id) === entry) {
       if (previous) sessions.set(user.id, previous); else sessions.delete(user.id);
@@ -135,7 +198,7 @@ export async function completeGoogleSupabaseSignIn(client: SupabaseIdentityClien
 }
 
 export async function disposeUnusedSupabaseClient(client: SupabaseIdentityClient) {
-  if (![...sessions.values()].some((entry) => entry.client === client)) await client.auth.dispose();
+  if (pendingDevice?.client !== client && ![...sessions.values()].some((entry) => entry.client === client)) await client.auth.dispose();
 }
 
 export async function signUpWithPassword(email: string, password: string, displayName?: string, options: { remember?: boolean } = {}): Promise<SupabaseSignUpResult> {
@@ -227,24 +290,25 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
   // Preserve rotated refresh tokens across transient backend failures.
   entry.session = data.session;
   entry.refreshToken = data.session.refresh_token;
-  // Save rotation before calling the backend: a transient /auth/me failure
-  // must not leave a stale one-use refresh token on disk.
-  if (entry.persistent) await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
-  if (sessions.get(ownerId) !== entry) return null;
-  let user: CloudUser;
+  let grant: DeviceGrant;
   try {
-    user = await resolveInternalUser(data.session.access_token);
+    grant = await restoreDeviceGrant(data.session.access_token, ownerId);
   } catch (failure) {
     if (sessions.get(ownerId) !== entry) return null;
+    if (failure instanceof CloudAuthRequestError && ["device_revoked", "device_verification_required", "internal_identity_mismatch", "device_proof_invalid"].includes(failure.code || "")) {
+      // Revocation/lost identity cannot retain a restorable refresh token.
+      await removeAccount(ownerId);
+    }
     throw failure;
   }
-  if (user.id !== ownerId) {
-    throw new CloudAuthRequestError("La sesión no corresponde a esta cuenta de ScisoNomics.", { kind: "auth", code: "internal_identity_mismatch" });
-  }
+  const user = grant.user;
+  if (sessions.get(ownerId) !== entry) return null;
+  if (entry.persistent) await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
+  rememberDeviceGrant(ownerId, grant);
   if (sessions.get(ownerId) !== entry || !getStoredAccounts().some((account) => account.user.id === ownerId && account.authProvider === "supabase")) return null;
-  await storeSession(user, data.session, false, entry.persistent);
+  await storeSession(user, data.session, false, entry.persistent, grant);
   const updatedAccount = getStoredAccounts().find((item) => item.user.id === ownerId)!;
-  return { ...updatedAccount, token: data.session.access_token, tokenType: data.session.token_type, expiresAt: expiresAt(data.session) };
+  return { ...updatedAccount, token: grant.access_token, tokenType: "bearer", expiresAt: new Date(Date.now() + grant.expires_in * 1000).toISOString() };
 }
 
 export function refreshSession(ownerId = getActiveOwnerId()): Promise<StoredCloudSession | null> {
@@ -260,6 +324,7 @@ export function forgetSession(ownerId: string) {
 
 export async function deleteSavedSession(ownerId: string) {
   forgetSession(ownerId);
+  forgetDeviceGrant(ownerId);
   return deleteSupabaseRefreshToken(ownerId);
 }
 

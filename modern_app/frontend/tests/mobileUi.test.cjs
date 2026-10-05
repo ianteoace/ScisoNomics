@@ -16,6 +16,7 @@ function stub(filename, exports) {
   const resolved = filename.startsWith(".") ? path.resolve(root, filename) : require.resolve(filename);
   require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
 }
+stub("./components/account/AccountDevices.tsx", { AccountDevices: () => React.createElement("section", {}, "Dispositivos") });
 let pathname = "/dashboard";
 const router = { replace: (href) => { pathname = href; } };
 stub("next/navigation", { usePathname: () => pathname, useRouter: () => router });
@@ -33,6 +34,8 @@ const summary = { ingresos: 10000, gastos: 2500, ahorros: 200, inversiones: 300,
 const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary, fixedExpenses: [], budgets: [], goals: [], scheduled: [], projection: { total_vencido: 0, total_pendiente_30_dias: 0, total_pagado_mes: 0, balance_proyectado_mes: 0 }, calendar: [] },
   loading: false, busy: false, error: "", notice: "", setPeriod() {}, clearMessages() {}, reload() {}, mutate: async () => true };
 let financeEnabled;
+let mobileAccountState = { session: null, checking: false, error: "", refresh: async () => {} };
+stub("./components/mobile/account/MobileAccountProvider.tsx", { useMobileAccount: () => mobileAccountState });
 stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
 const { MobileDialog } = require("../components/mobile/MobileDialog.tsx");
@@ -57,6 +60,12 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     return instance.values[index];
   });
   t.mock.method(React, "useId", () => "dialog-title");
+  t.mock.method(React, "useCallback", (callback, deps) => {
+    const instance = current, index = instance.cursor++, previous = instance.values[index];
+    if (!previous || deps.some((value, i) => value !== previous.deps[i])) instance.values[index] = { deps, callback };
+    return instance.values[index].callback;
+  });
+  t.mock.method(React, "useSyncExternalStore", (_subscribe, getSnapshot) => getSnapshot());
   t.mock.method(React, "useEffect", (callback, deps) => {
     const instance = current, index = instance.cursor++, previous = instance.values[index];
     if (!previous || deps.some((value, i) => value !== previous.deps[i])) pending.push(() => {
@@ -191,6 +200,124 @@ function financeHook(t, repository, enabled = true) {
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
+
+function accountProvider(t, account, restore) {
+  const providerPath = path.join(root, "components/mobile/account/MobileAccountProvider.tsx");
+  const cloud = require("../services/cloudAuth.ts"), auth = require("../services/supabaseCloudAuth.ts");
+  const previous = require.cache[providerPath], oldWindow = global.window;
+  const events = new EventTarget(); global.window = events;
+  let forced = 0, cached = 0, removed = 0, currentAccount = account;
+  t.mock.method(cloud, "getActiveAccount", () => currentAccount);
+  t.mock.method(cloud, "removeAccount", async () => { removed++; currentAccount = null; return { ok: true }; });
+  t.mock.method(auth, "refreshSession", async (id) => { forced++; return restore(id); });
+  t.mock.method(auth, "getSession", async (id) => { cached++; return restore(id); });
+  delete require.cache[providerPath];
+  const { MobileAccountProvider } = require(providerPath);
+  const view = renderer(t, MobileAccountProvider, { children: "Finanzas locales disponibles" }, false);
+  t.after(() => { view.dispose(); require.cache[providerPath] = previous; global.window = oldWindow; });
+  return { ...view, state: () => view.find(node => node.props.value?.refresh)[0].props.value,
+    counts: () => ({ forced, cached }), removed: () => removed,
+    event: () => events.dispatchEvent(new Event(cloud.ACCOUNT_SESSION_CHANGED_EVENT)) };
+}
+
+test("mobile account cold restore runs in background once, events reuse session and do not poll", async t => {
+  const session = { user: { id: "internal-owner", email: "test@example.com" }, token: "not-visible" };
+  const view = accountProvider(t, { authProvider: "supabase", user: session.user }, async id => {
+    assert.equal(id, "internal-owner"); return session;
+  });
+  assert.match(view.html(), /Finanzas locales disponibles/);
+  view.effects(); await flush(); assert.equal(view.state().session, session);
+  assert.equal(view.state().checking, false);
+  view.html(); view.effects(); await flush(); assert.deepEqual(view.counts(), { forced: 1, cached: 0 });
+  view.event(); await flush(); assert.deepEqual(view.counts(), { forced: 1, cached: 1 });
+  view.dispose(); view.event(); await flush(); assert.equal(view.counts().cached, 1);
+});
+
+test("mobile local startup never calls auth and failed restoration does not hide finance", async t => {
+  const view = accountProvider(t, null, async () => { throw new Error("should not call"); });
+  view.html(); view.effects(); await flush();
+  assert.deepEqual(view.counts(), { forced: 0, cached: 0 });
+  assert.equal(view.state().session, null); assert.equal(view.state().error, "");
+});
+
+test("mobile restoration errors are sanitized, retryable and keep local shell available", async t => {
+  const view = accountProvider(t, { authProvider: "supabase", user: { id: "internal-owner" } }, async () => {
+    throw new Error("refresh-token-secret");
+  });
+  view.html(); view.effects(); await flush();
+  assert.match(view.state().error, /modo local/); assert.doesNotMatch(view.state().error, /secret/);
+  assert.match(view.html(), /Finanzas locales disponibles/);
+  await view.state().refresh(true); assert.equal(view.counts().forced, 2);
+});
+
+test("unmounted mobile account ignores an outstanding restore", async t => {
+  const pending = deferred();
+  const view = accountProvider(t, { authProvider: "supabase", user: { id: "internal-owner" } }, () => pending.promise);
+  view.html(); view.effects(); view.dispose();
+  pending.resolve({ user: { id: "internal-owner" } }); await flush();
+  assert.equal(view.state().session, null);
+});
+
+test("cold mobile logout drops stale WebView metadata only after confirmed secure credential absence", async t => {
+  const storage = require("../services/supabaseTokenStorage.ts");
+  t.mock.method(storage, "loadSupabaseRefreshToken", async () => null);
+  const view = accountProvider(t, { authProvider: "supabase", storage: "persistent", user: { id: "internal-owner" } }, async () => null);
+  view.html(); view.effects(); await flush();
+  assert.equal(view.removed(), 1); assert.equal(view.state().session, null);
+  assert.equal(view.state().error, ""); assert.equal(view.state().checking, false);
+});
+
+test("an unreadable mobile credential preserves metadata and presents retry instead of deleting a valid account", async t => {
+  const storage = require("../services/supabaseTokenStorage.ts");
+  t.mock.method(storage, "loadSupabaseRefreshToken", async () => { throw new Error("secret-native-error"); });
+  const view = accountProvider(t, { authProvider: "supabase", storage: "persistent", user: { id: "internal-owner" } }, async () => null);
+  view.html(); view.effects(); await flush();
+  assert.equal(view.removed(), 0); assert.match(view.state().error, /Reintentá/);
+  assert.doesNotMatch(view.state().error, /secret-native-error/);
+});
+
+test("mobile account displays connected identity without tokens or full IDs and logs out through shared auth", async t => {
+  const previous = mobileAccountState, auth = require("../services/supabaseCloudAuth.ts");
+  t.after(() => { mobileAccountState = previous; });
+  let signedOut;
+  mobileAccountState = { ...previous, session: { user: { id: "internal-owner-private", email: "test@example.com", display_name: "Usuario" }, token: "private-access-token" }, refresh: async () => {} };
+  t.mock.method(auth, "signOut", async id => { signedOut = id; return { ok: true }; });
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  assert.match(view.html(), /Cuenta conectada|test@example.com|Usuario/);
+  assert.doesNotMatch(view.html(), /internal-owner-private|private-access-token/);
+  view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
+  await flush(); assert.equal(signedOut, "internal-owner-private");
+});
+
+test("mobile opens the shared email/signup/recovery form without a partial Google entry", t => {
+  const auth = require("../services/supabaseCloudAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  view.find(node => node.type === "button" && node.props.children === "Iniciar sesión o crear cuenta")[0].props.onClick();
+  const html = view.html();
+  assert.match(html, /Email/); assert.match(html, /Contraseña/); assert.match(html, /Crear cuenta/);
+  assert.match(html, /Olvidaste tu contraseña/); assert.doesNotMatch(html, /Continuar con Google/);
+  view.find(node => node.type === "button" && node.props.children === "Continuar en modo local")[0].props.onClick();
+  assert.equal(view.find(node => node.type === "form").length, 0);
+});
+
+test("mobile reports a partial secure logout and can retry deleting the saved session", async t => {
+  const previous = mobileAccountState, auth = require("../services/supabaseCloudAuth.ts");
+  t.after(() => { mobileAccountState = previous; });
+  mobileAccountState = { ...previous, session: { user: { id: "internal-owner", email: "test@example.com" } }, refresh: async () => { mobileAccountState = { ...previous }; } };
+  t.mock.method(auth, "signOut", async () => ({ ok: false }));
+  let deleted;
+  t.mock.method(auth, "deleteSavedSession", async id => { deleted = id; return { ok: true }; });
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
+  await flush(); assert.match(view.html(), /no pudimos borrar por completo/);
+  assert.match(view.html(), /Modo local/);
+  view.find(node => node.type === "button" && node.props.children === "Reintentar borrar sesión")[0].props.onClick();
+  await flush(); assert.equal(deleted, "internal-owner"); assert.doesNotMatch(view.html(), /no pudimos borrar por completo/);
+});
 
 test("mobile reload ignores stale periods and does not poll on navigation/render", async (t) => {
   const first = deferred(); let reads = 0;
@@ -425,9 +552,9 @@ test("settings show real version and Premium features from the drawer metadata",
 test("pending settings have no fake actions, checkout, sync or Windows updater", (t) => {
   pathname = "/configuracion"; const view = renderer(t, MobileApp);
   view.html(); assert.equal(financeEnabled, false);
-  assert.equal(view.find(node => node.type === "button").length, 1); // Only the shell hamburger.
+  assert.deepEqual(view.find(node => node.type === "button").map(node => node.props.children), [view.find(node => node.props["aria-label"] === "Abrir menú")[0].props.children, "Iniciar sesión o crear cuenta"]);
   assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
-  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Sincronizar ahora|Crear backup|Iniciar sesión|localhost/);
+  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Sincronizar ahora|Crear backup|Continuar con Google|localhost/);
   assert.match(view.html(), /scisoftwareco@gmail.com/);
   assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/movimientos", "/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
 });
@@ -444,4 +571,74 @@ test("legal route keeps mobile shell and renders the existing single legal sourc
   assert.match(view.html(), /<h1[^>]*>Legal<\/h1>/);
   view.effects(); assert.equal(pathname, "/legal");
   assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos/);
+});
+
+
+test("device OTP dialog opens accessibly, submits in memory and cancels to local", async t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");
+  let code, canceled=0;
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:0,expiresAt:Date.now()+600000}));
+  t.mock.method(auth,"verifyNewDeviceCode",async value=>{code=value;});
+  t.mock.method(auth,"cancelDeviceVerification",async()=>{canceled++;});
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  const html=view.html();
+  assert.match(html,/Verificá este dispositivo/);
+  assert.match(html,/aria-modal="true"/);
+  assert.match(html,/autocomplete="one-time-code"/i);
+  view.effects();assert.equal(view.counts().shown,1);
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"12x3456"}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  assert.equal(code,"123456");
+  view.find(n=>n.type==="button"&&n.props.children==="Continuar en modo local")[0].props.onClick();
+  await flush();assert.equal(canceled,1);
+});
+
+test("device OTP error and resend do not display code, token or native error details",async t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");let resent=0;
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:0,expiresAt:Date.now()+600000}));
+  t.mock.method(auth,"verifyNewDeviceCode",async()=>{throw new Error("Código vencido. Pedí uno nuevo.");});
+  t.mock.method(auth,"resendDeviceVerification",async()=>{resent++;});
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"123456"}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  assert.match(view.html(),/Código vencido/);
+  assert.doesNotMatch(view.html(),/value="123456"|private_key|access_token|refresh_token/);
+  view.find(n=>n.type==="button"&&n.props.children==="Reenviar código")[0].props.onClick();
+  await flush();assert.equal(resent,1);assert.match(view.html(),/El anterior ya no es válido/);
+});
+
+test("device resend is disabled during its cooldown",t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:Date.now()+60000,expiresAt:Date.now()+600000}));
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  assert.equal(view.find(n=>n.type==="button"&&String(n.props.children).startsWith("Reenviar en"))[0].props.disabled,true);
+});
+
+test("account devices list metadata, rename and require confirmation before current revocation",async t=>{
+  const api=require("../services/deviceAuthorization.ts"), cloud=require("../services/cloudAuth.ts"),auth=require("../services/supabaseCloudAuth.ts");
+  const fixture={device_id:"public-test-device",device_name:"Mi teléfono",platform:"android",status:"trusted",last_seen_at:"2026-01-01",current:true};
+  t.mock.method(cloud,"getValidAccessToken",async()=>({token:"test-grant"}));
+  t.mock.method(api,"listAccountDevices",async()=>[fixture]);
+  let calls=[],logout;
+  t.mock.method(api,"manageAccountDevice",async(...args)=>{calls.push(args);return {ok:true,currentRevoked:args[3]==="device_revoke"};});
+  t.mock.method(auth,"signOut",async owner=>{logout=owner;return {ok:true};});
+  delete require.cache[path.join(root,"components/account/AccountDevices.tsx")];
+  const {AccountDevices}=require("../components/account/AccountDevices.tsx");
+  const view=renderer(t,AccountDevices,{ownerId:"internal-owner"});
+  view.html();view.effects();await flush();
+  assert.match(view.html(),/Este dispositivo/);assert.match(view.html(),/Android/);assert.match(view.html(),/Autorizado/);
+  assert.doesNotMatch(view.html(),/public-test-device|test-grant|private_key/);
+  view.find(n=>n.type==="button"&&n.props.children==="Renombrar")[0].props.onClick();
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"Teléfono personal"}});
+  view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  await flush();assert.equal(calls[0][3],"device_rename");assert.equal(calls[0][4],"Teléfono personal");
+  view.html();view.effects();await flush();
+  view.find(n=>n.type==="button"&&n.props.children==="Revocar")[0].props.onClick();
+  assert.equal(calls.length,1,"Opening confirmation never revokes");
+  assert.match(view.html(),/Se cerrará tu sesión/);
+  view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  await flush();assert.equal(calls[1][3],"device_revoke");assert.equal(calls[1][5],true);assert.equal(logout,"internal-owner");
 });

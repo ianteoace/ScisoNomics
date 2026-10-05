@@ -1,3 +1,5 @@
+import { getRuntimePlatformSync } from "./platform";
+
 export type CloudUser = {
   id: string;
   email: string;
@@ -449,6 +451,7 @@ function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
 
 function readRuntimeTokenState(): StoredRuntimeTokenState {
   if (typeof window === "undefined") return {};
+  if (["android", "ios"].includes(getRuntimePlatformSync())) return {};
   try {
     const raw = window.sessionStorage.getItem(ACCESS_TOKEN_STATE_SESSION_KEY);
     if (!raw) return {};
@@ -470,6 +473,10 @@ function readRuntimeTokenState(): StoredRuntimeTokenState {
 
 function persistRuntimeTokenState() {
   if (typeof window === "undefined") return;
+  if (["android", "ios"].includes(getRuntimePlatformSync())) {
+    try { window.sessionStorage.removeItem(ACCESS_TOKEN_STATE_SESSION_KEY); } catch { /* Memory only on Mobile. */ }
+    return;
+  }
   try {
     const entries = Object.fromEntries(runtimeAccessTokenCache.entries());
     if (Object.keys(entries).length) {
@@ -1911,7 +1918,7 @@ export function subscribeAuthChanges(listener: () => void) {
   return () => window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, listener);
 }
 
-async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
+export async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
   if (!isCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado en este entorno.", { kind: "unknown" });
   let response: Response;
   const controller = new AbortController();

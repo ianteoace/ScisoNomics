@@ -143,7 +143,11 @@ jobs:
           python -m pip install --disable-pip-version-check -r modern_app/backend/requirements.txt -r modern_app/cloud_backend/requirements.txt
           python -m pip install pip-audit
       - name: Python security tests
-        run: python -m unittest modern_app.cloud_backend.test_security -v
+        run: >-
+          python -m unittest
+          modern_app.cloud_backend.test_security
+          modern_app.cloud_backend.test_device_sessions
+          -v
       - name: Smoke import local backend from clean checkout
         env:
           # Import-time logs stay in temporary storage; no server or real app data.

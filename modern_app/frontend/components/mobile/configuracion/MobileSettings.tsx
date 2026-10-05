@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import packageJson from "../../../package.json";
 import { mobileSections } from "../MobileSidebar";
+import { MobileAccount } from "../account/MobileAccount";
 
 function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
   return <section className="card min-w-0 space-y-3 p-4">
@@ -20,7 +21,7 @@ export function MobileSettings() {
       <Link className="btn-secondary flex min-h-12 items-center justify-center" href="/movimientos" prefetch={false}>Ver movimientos</Link>
     </SettingsCard>
     <SettingsCard title="Apariencia"><p>Tema oscuro para todas las pantallas.</p></SettingsCard>
-    <SettingsCard title="Cuenta"><p>Cuenta y acceso desde otros dispositivos próximamente.</p><p>Por ahora usás el modo local, sin necesidad de una cuenta.</p></SettingsCard>
+    <SettingsCard title="Cuenta"><MobileAccount /></SettingsCard>
     <SettingsCard title="Sincronización"><p>La sincronización entre dispositivos estará disponible en el siguiente paso de desarrollo.</p><p>Tus datos actuales se guardan únicamente en este dispositivo.</p></SettingsCard>
     <SettingsCard title="ScisoNomics Premium">
       <p>Durante el desarrollo Mobile, estas funciones están habilitadas:</p>

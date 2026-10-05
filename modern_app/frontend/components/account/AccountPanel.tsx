@@ -1,5 +1,7 @@
 "use client";
 
+import { AccountDevices } from "./AccountDevices";
+
 import { useEffect, useRef, useState } from "react";
 
 import { useToast } from "../../hooks/useToast";
@@ -727,6 +729,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
               </div>
             </div>
           ) : null}
+          <AccountDevices key={user.id} ownerId={user.id} />
           <div className="mt-5 flex justify-end">
             <button className="btn-secondary" onClick={handleLogout}>Cerrar sesión</button>
           </div>

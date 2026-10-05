@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 
 os.environ["SCISONOMICS_ENV"] = "development"
+os.environ["SCISONOMICS_DEVICE_VERIFICATION_MODE"] = "off"  # Legacy compatibility fixture.
 os.environ["SCISONOMICS_JWT_SECRET"] = "email-tests-secret-with-at-least-thirty-two-characters"
 os.environ["SCISONOMICS_ALLOWED_ORIGINS"] = "http://127.0.0.1:3000"
 
