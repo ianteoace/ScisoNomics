@@ -5,6 +5,7 @@ import { AccountDevices } from "../../account/AccountDevices";
 import { SupabaseAccountForm } from "../../account/SupabaseAccountForm";
 import { deleteSavedSession, signOut } from "../../../services/supabaseCloudAuth";
 import { useMobileAccount } from "./MobileAccountProvider";
+import { MobileCloudPull } from "./MobileCloudPull";
 
 export function MobileAccount() {
   const { session, checking, error, refresh } = useMobileAccount();
@@ -28,13 +29,14 @@ export function MobileAccount() {
   }
 
   return <div className="grid min-w-0 gap-3">
-    <p className="text-sm">Tus datos de este dispositivo todavía están en modo local. Conectar una cuenta no los sincroniza ni cambia su propietario.</p>
+    <p className="text-sm">Tus finanzas locales siguen separadas de tu cuenta. Conectar una cuenta no cambia su propietario.</p>
     {checking ? <p role="status">Comprobando cuenta…</p> : null}
     {session ? <>
       <p className="font-semibold text-emerald-300">Cuenta conectada</p>
       {session.user.display_name ? <p className="break-words">{session.user.display_name}</p> : null}
       <p className="break-all">{session.user.email}</p>
       <AccountDevices key={session.user.id} ownerId={session.user.id} />
+      {!checking ? <MobileCloudPull key={`pull:${session.user.id}`} ownerId={session.user.id} /> : null}
       <button className="btn-secondary min-h-12" disabled={busy || checking} onClick={() => { void logout(); }}>{busy ? "Cerrando sesión…" : "Cerrar sesión"}</button>
     </> : <>
       <p className="font-semibold">Modo local</p>

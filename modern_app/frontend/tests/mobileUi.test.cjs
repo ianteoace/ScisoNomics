@@ -17,6 +17,13 @@ function stub(filename, exports) {
   require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
 }
 stub("./components/account/AccountDevices.tsx", { AccountDevices: () => React.createElement("section", {}, "Dispositivos") });
+const pullState = { snapshot: { cursor: null, categories: [], movements: [] }, calls: [], failure: null };
+class MockMobilePullError extends Error {}
+stub("./services/data/mobileCloudPull.ts", {
+  MobilePullError: MockMobilePullError,
+  readMobileCloudSnapshot: async () => pullState.snapshot,
+  pullMobileCloudNow: async owner => { pullState.calls.push(owner); if (pullState.failure) throw pullState.failure; },
+});
 let pathname = "/dashboard";
 const router = { replace: (href) => { pathname = href; } };
 stub("next/navigation", { usePathname: () => pathname, useRouter: () => router });
@@ -549,12 +556,12 @@ test("settings show real version and Premium features from the drawer metadata",
   assert.deepEqual(mobileSections.filter(section => section.premium).map(section => section.feature).sort(), ["budgets", "fixed_expenses", "planning", "saving_goals"]);
 });
 
-test("pending settings have no fake actions, checkout, sync or Windows updater", (t) => {
+test("local settings have no cloud pull action, checkout or Windows updater", (t) => {
   pathname = "/configuracion"; const view = renderer(t, MobileApp);
   view.html(); assert.equal(financeEnabled, false);
   assert.deepEqual(view.find(node => node.type === "button").map(node => node.props.children), [view.find(node => node.props["aria-label"] === "Abrir menú")[0].props.children, "Iniciar sesión o crear cuenta"]);
   assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
-  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Sincronizar ahora|Crear backup|Continuar con Google|localhost/);
+  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Crear backup|Continuar con Google|localhost/);
   assert.match(view.html(), /scisoftwareco@gmail.com/);
   assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/movimientos", "/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
 });
@@ -641,4 +648,26 @@ test("account devices list metadata, rename and require confirmation before curr
   assert.match(view.html(),/Se cerrará tu sesión/);
   view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
   await flush();assert.equal(calls[1][3],"device_revoke");assert.equal(calls[1][5],true);assert.equal(logout,"internal-owner");
+});
+
+test('manual cloud download has status, persists read-only preview, and no automatic pull', async t => {
+  const { MobileCloudPull } = require('../components/mobile/account/MobileCloudPull.tsx');
+  pullState.calls=[];pullState.failure=null;pullState.snapshot={cursor:null,categories:[],movements:[]};
+  const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+  view.html();view.effects();await flush();assert.equal(pullState.calls.length,0);
+  assert.match(view.html(),/Todavía no descargaste/);
+  pullState.snapshot={cursor:'2026-10-05T12:00:00Z',categories:[{nombre:'Cloud',tipo:'gasto'}],movements:[{sync_id:'cloud-id',fecha:'2026-10-05',tipo:'gasto',categoria:'Cloud',descripcion:'prueba m8',monto:1234}]};
+  const button=view.find(n=>n.type==='button'&&n.props.children==='Sincronizar ahora')[0];button.props.onClick();
+  assert.match(view.html(),/Sincronizando/);assert.equal(view.find(n=>n.type==='button')[0].props.disabled,true);
+  button.props.onClick();await flush();
+  assert.deepEqual(pullState.calls,['internal-owner']);assert.match(view.html(),/Descarga completada/);assert.match(view.html(),/prueba m8/);
+  assert.equal(view.find(n=>n.type==='input'||n.type==='form').length,0);
+});
+test('manual pull displays sanitized error and keeps previously downloaded rows',async t=>{
+  const { MobileCloudPull }=require('../components/mobile/account/MobileCloudPull.tsx');
+  pullState.failure=new MockMobilePullError('El dispositivo no está autorizado.');
+  const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);view.html();view.effects();await flush();
+  view.find(n=>n.type==='button')[0].props.onClick();await flush();
+  assert.match(view.html(),/dispositivo no está autorizado/);assert.match(view.html(),/prueba m8/);assert.equal(view.find(n=>n.type==='button')[0].props.disabled,false);
+  pullState.failure=null;
 });

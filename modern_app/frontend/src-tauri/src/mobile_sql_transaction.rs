@@ -6,6 +6,8 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 pub struct Statement {
     sql: String,
     values: Vec<Value>,
+    // Optional compare-and-set assertion, checked before committing the batch.
+    expected_rows: Option<u64>,
 }
 
 // Same SQLite pool and permissions as plugin-sql, but all statements share
@@ -44,7 +46,13 @@ pub async fn mobile_sql_transaction(
             };
         }
         match query.execute(&mut *transaction).await {
-            Ok(result) => changed.push(result.rows_affected()),
+            Ok(result) => {
+                if statement.expected_rows.is_some_and(|expected| expected != result.rows_affected()) {
+                    let _ = transaction.rollback().await;
+                    return Err(message.into());
+                }
+                changed.push(result.rows_affected());
+            }
             Err(_) => {
                 let _ = transaction.rollback().await;
                 return Err(message.into());

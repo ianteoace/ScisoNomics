@@ -9,7 +9,7 @@
     "test:auth": "node --test tests/supabaseCloudAuth.test.cjs tests/deviceAuthorization.test.cjs",
     "test:billing": "node --test tests/premiumBilling.test.cjs",
     "test:updater": "node --test tests/appUpdater.test.cjs",
-    "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs tests/mobileDevConfig.test.cjs",
+    "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs tests/mobileDevConfig.test.cjs tests/mobileCloudPull.test.cjs",
     "start": "next start -p 3000",
     "tauri:dev": "tauri dev",
     "tauri:android:dev": "tauri android dev --host 127.0.0.1 --config src-tauri/tauri.android.dev.conf.json",
