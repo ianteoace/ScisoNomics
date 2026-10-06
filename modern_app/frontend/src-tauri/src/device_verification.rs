@@ -337,4 +337,31 @@ mod tests {
       "invalid_account_binding"
     );
   }
+
+  #[test]
+  fn android_storage_key_is_canonical_base64url_sha256() {
+    for raw in [[1u8; 32], [128u8; 32], [255u8; 32]] {
+      let binding = URL_SAFE_NO_PAD.encode(raw);
+      let key = storage_account_key(&binding).unwrap();
+      assert_eq!(key.len(), 43);
+      assert!(key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+      assert_eq!(URL_SAFE_NO_PAD.decode(&key).unwrap(), Sha256::digest(raw).as_slice());
+    }
+    assert_ne!(storage_account_key(&URL_SAFE_NO_PAD.encode([1u8; 32])).unwrap(),
+      storage_account_key(&URL_SAFE_NO_PAD.encode([2u8; 32])).unwrap());
+  }
+
+  #[test]
+  fn encoded_identity_fits_android_encrypted_record_and_roundtrips() {
+    let identity = generate_identity();
+    let encoded = encode_identity(&identity).unwrap();
+    assert!(!encoded.is_empty() && encoded.len() <= 4096);
+    assert!(!encoded.chars().any(char::is_whitespace));
+    // Header (2), GCM IV (12) and authentication tag (16) keep the encrypted
+    // compact JSON inside Android's 30..8192 byte record contract.
+    assert!((30..=8192).contains(&(encoded.len() + 30)));
+    let decoded = decode_identity(&encoded).unwrap();
+    assert_eq!(public_identity(&identity).unwrap().public_key_hash,
+      public_identity(&decoded).unwrap().public_key_hash);
+  }
 }

@@ -536,8 +536,18 @@ fn debug_refresh_keyring_status(account_id: String) -> Result<RefreshKeyringDebu
   })
 }
 
+fn device_identity_debug(stage: &'static str) {
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage={stage}");
+  #[cfg(not(all(debug_assertions, target_os = "android")))]
+  let _ = stage;
+}
+
 fn load_account_device_identity(app: &tauri::AppHandle, account_binding: &str) -> Result<Option<StoredIdentity>, String> {
+  device_identity_debug("storage_account_key");
   let storage_key = device_verification::storage_account_key(account_binding)?;
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage=identity_load account_key_length={}", storage_key.len());
   #[cfg(target_os = "windows")]
   let loaded = wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key);
   #[cfg(target_os = "android")]
@@ -567,6 +577,8 @@ fn persist_account_device_identity(app: &tauri::AppHandle, account_binding: &str
   let _ = app;
   let storage_key = device_verification::storage_account_key(account_binding)?;
   let encoded = device_verification::encode_identity(identity)?;
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage=identity_save encoded_length={}", encoded.len());
   #[cfg(target_os = "windows")]
   {
     wincred_write_secret(
@@ -605,18 +617,25 @@ fn sign_account_device_proof(
 #[tauri::command]
 async fn get_or_create_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<DeviceIdentityResult, String> {
   tauri::async_runtime::spawn_blocking(move || {
-    device_verification::validate_account_binding(&account_binding)?;
+    device_identity_debug("validate_binding");
+    device_verification::validate_account_binding(&account_binding)
+      .inspect_err(|_| device_identity_debug("validate_binding_failed"))?;
     let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
       .lock()
       .map_err(|_| "device_identity_lock_failed".to_string())?;
-    if let Some(identity) = load_account_device_identity(&app, &account_binding)? {
+    if let Some(identity) = load_account_device_identity(&app, &account_binding)
+      .inspect_err(|_| device_identity_debug("identity_load_failed"))? {
+      device_identity_debug("identity_loaded");
       return Ok(DeviceIdentityResult {
         created: false,
         identity: device_verification::public_identity(&identity)?,
       });
     }
+    device_identity_debug("generate_identity");
     let identity = device_verification::generate_identity();
-    persist_account_device_identity(&app, &account_binding, &identity)?;
+    persist_account_device_identity(&app, &account_binding, &identity)
+      .inspect_err(|_| device_identity_debug("identity_save_failed"))?;
+    device_identity_debug("identity_created");
     Ok(DeviceIdentityResult {
       created: true,
       identity: device_verification::public_identity(&identity)?,

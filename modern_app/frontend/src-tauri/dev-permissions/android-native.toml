@@ -1,0 +1,11 @@
+[[permission]]
+identifier = "allow-android-dev-native"
+description = "Public identity/proof commands and the existing mobile transaction API, for Android development only."
+commands.allow = [
+  "get_or_create_account_device_identity",
+  "sign_device_enrollment_proof",
+  "sign_device_authentication_proof",
+  "sign_refresh_proof",
+  "sign_device_management_proof",
+  "mobile_sql_transaction",
+]

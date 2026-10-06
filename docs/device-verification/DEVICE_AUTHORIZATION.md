@@ -4,6 +4,9 @@ Implementación local para Windows y Android. **Milestone 8 todavía no está
 cerrado:** faltan las pruebas con correo real y un segundo perfil Windows contra
 un backend de prueba autorizado. No se desplegó ni se modificó Railway.
 
+El [plan de validación M8B](MILESTONE_8B_VALIDATION.md) detalla el aislamiento,
+variables de staging, pruebas reales pendientes y rollout propuesto sin deploy.
+
 ## Identidad y protocolo
 
 Se reutilizan la identidad Ed25519 por cuenta, `users.device_key_namespace` y el

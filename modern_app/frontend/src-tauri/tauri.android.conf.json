@@ -1,5 +1,8 @@
 {
   "identifier": "com.scisoftware.scisonomics",
+  "build": {
+    "beforeDevCommand": "npm run dev:mobile"
+  },
   "bundle": {
     "externalBin": [],
     "android": {

@@ -1,9 +1,11 @@
 package com.scisoftware.securestorage
 
 import android.app.Activity
+import android.content.pm.ApplicationInfo
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
+import android.util.Log
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -30,6 +32,15 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
     // A serialized worker avoids blocking the UI, key-creation races and late writes.
     private val worker = Executors.newSingleThreadExecutor()
     private val alias = "scisonomics.supabase.refresh.v1"
+    private var identityStage: String? = null // Accessed only on the serialized worker.
+
+    private fun identityTrace(stage: String, detail: String = "") {
+        if (identityStage == null) return
+        identityStage = stage
+        if ((activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Log.i("ScisoSecureStorage", "stage=$stage $detail")
+        }
+    }
 
     private fun record(accountId: String): AtomicFile {
         require(Regex("^[a-fA-F0-9]{64}::[A-Za-z0-9_-]{1,120}$").matches(accountId))
@@ -42,10 +53,14 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun key(create: Boolean): SecretKey {
+        identityTrace("keystore_lookup", "create=$create")
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val existing = store.getKey(alias, null)
+        identityTrace("keystore_key", "present=${existing != null}")
         if (existing != null) return existing as SecretKey
+        if (!create) identityTrace("keystore_key_missing")
         check(create) // Missing/inaccessible key never triggers plaintext or silent recovery.
+        identityTrace("keystore_generate")
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         generator.init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
             .setKeySize(256).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -55,6 +70,7 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun read(file: AtomicFile, accountId: String): String? {
+        identityTrace("read_blob", "exists=${file.baseFile.exists()}")
         // openRead recovers AtomicFile's interrupted-write state, when applicable.
         val bytes = try { file.openRead().use { stream ->
             check(stream.channel.size() in 30..8192)
@@ -65,9 +81,11 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
                 return null
             }
         check(bytes.size in 30..8192 && bytes[0].toInt() == 1 && bytes[1].toInt() == 12)
+        identityTrace("validate_blob", "length=${bytes.size}")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(false), GCMParameterSpec(128, bytes.copyOfRange(2, 14)))
         cipher.updateAAD(accountId.toByteArray(Charsets.UTF_8))
+        identityTrace("decrypt_blob")
         val plaintext = cipher.doFinal(bytes.copyOfRange(14, bytes.size))
         return try { String(plaintext, Charsets.UTF_8).also { validateToken(it) } }
             finally { plaintext.fill(0) }
@@ -77,10 +95,14 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
         require(token.isNotEmpty() && token.length <= 4096 && token.none { it.isWhitespace() })
     }
 
-    private fun execute(invoke: Invoke, action: (TokenArgs) -> JSObject) {
+    private fun execute(invoke: Invoke, identityOperation: String? = null, action: (TokenArgs) -> JSObject) {
         worker.execute {
+            identityStage = identityOperation
             try { invoke.resolve(action(invoke.parseArgs(TokenArgs::class.java))) }
-            catch (_: Exception) { invoke.reject("mobile_secure_storage_failed") }
+            catch (error: Exception) {
+                identityTrace(identityStage ?: "invoke", "error_type=${error.javaClass.simpleName}")
+                invoke.reject("mobile_secure_storage_failed")
+            } finally { identityStage = null }
         }
     }
 
@@ -91,18 +113,24 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
         cipher.init(Cipher.ENCRYPT_MODE, secretKey)
         check(cipher.iv.size == 12)
         cipher.updateAAD(accountId.toByteArray(Charsets.UTF_8))
+        identityTrace("encrypt_blob", "plaintext_length=${token.length}")
         val plaintext = token.toByteArray(Charsets.UTF_8)
         val encrypted = try { cipher.doFinal(plaintext) } finally { plaintext.fill(0) }
+        identityTrace("atomic_write")
         val output = file.startWrite()
         try {
             output.write(byteArrayOf(1, 12) + cipher.iv + encrypted)
             file.finishWrite(output)
         } catch (error: Exception) { file.failWrite(output); throw error }
+        identityTrace("roundtrip_read")
         check(read(file, accountId) == token)
+        identityTrace("roundtrip_verified")
     }
 
     private fun identityRecord(accountKey: String): AtomicFile {
+        identityTrace("validate_account_key", "length=${accountKey.length}")
         require(Regex("^[A-Za-z0-9_-]{43}$").matches(accountKey))
+        identityTrace("identity_directory")
         val dir = File(activity.noBackupFilesDir, "device_identities")
         check(dir.isDirectory || dir.mkdirs())
         return AtomicFile(File(dir, "$accountKey.bin"))
@@ -111,7 +139,7 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
     // Internal Rust bridge only. No corresponding Rust JS commands or permissions.
     // The separate directory and AAD prevent the refresh-token API reading/replacing keys.
     @Command
-    fun saveIdentity(invoke: Invoke) = execute(invoke) { args ->
+    fun saveIdentity(invoke: Invoke) = execute(invoke, "save_identity") { args ->
         val value = requireNotNull(args.token)
         validateToken(value)
         write(identityRecord(args.accountId), "device-identity:${args.accountId}", value)
@@ -119,13 +147,13 @@ class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
-    fun loadIdentity(invoke: Invoke) = execute(invoke) { args ->
+    fun loadIdentity(invoke: Invoke) = execute(invoke, "load_identity") { args ->
         val value = read(identityRecord(args.accountId), "device-identity:${args.accountId}")
         JSObject().apply { put("value", value ?: org.json.JSONObject.NULL) }
     }
 
     @Command
-    fun deleteIdentity(invoke: Invoke) = execute(invoke) { args ->
+    fun deleteIdentity(invoke: Invoke) = execute(invoke, "delete_identity") { args ->
         val file = identityRecord(args.accountId)
         file.delete()
         check(read(file, "device-identity:${args.accountId}") == null)

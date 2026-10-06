@@ -22,6 +22,7 @@ function setup(t,platform="android") {
     localStorage:{getItem:key=>store.get(key)||null,setItem:(key,value)=>store.set(key,value),removeItem:key=>store.delete(key)},
     __TAURI_INTERNALS__:{invoke:async (command,args)=>{
       native.push({command,args});
+      if (ctx.nativeError) throw ctx.nativeError;
       if(command==="get_or_create_account_device_identity") return {identity};
       if(command.startsWith("sign_")) return {...identity,signature:"test-signature"};
       throw new Error("Unexpected private command");
@@ -129,4 +130,31 @@ test("identity bridge has no JS permission or native fallback for private materi
   assert.doesNotMatch(capabilities,/identity|private|sign/);
   const lib=fs.readFileSync(path.join(root,"src-tauri/src/lib.rs"),"utf8");
   assert.match(lib,/identity_load\(app/);assert.match(lib,/spawn_blocking/);
+});
+
+test("development logs classify ACL rejection without native bodies or secret arguments", async t => {
+  const previousEnv=process.env.NODE_ENV;
+  process.env.NODE_ENV="development";
+  t.after(()=>{if(previousEnv===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previousEnv;});
+  const logs=[];
+  t.mock.method(console,"info",(...args)=>logs.push(args));
+  const ctx=setup(t);
+  ctx.nativeError="get_or_create_account_device_identity not allowed. hidden-native-body";
+  await assert.rejects(ctx.api.beginDeviceLogin("primary-token",user), e=>e.code==="device_storage_failed");
+  const diagnostic=logs.find(args=>args[0]==="[device-auth]");
+  assert.deepEqual(diagnostic,["[device-auth]",{stage:"native_invoke",command:"get_or_create_account_device_identity",code:"native_command_denied"}]);
+  for(const sensitive of ["hidden-native-body","test-binding","primary-token","memory-continuation"])
+    assert.ok(!JSON.stringify(logs).includes(sensitive));
+});
+
+test("production native failures remain generic and emit no development diagnostics", async t => {
+  const previousEnv=process.env.NODE_ENV;
+  process.env.NODE_ENV="production";
+  t.after(()=>{if(previousEnv===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=previousEnv;});
+  const logs=[];
+  t.mock.method(console,"info",(...args)=>logs.push(args));
+  const ctx=setup(t);
+  ctx.nativeError="device_identity_storage_failed";
+  await assert.rejects(ctx.api.beginDeviceLogin("primary-token",user), e=>e.code==="device_storage_failed");
+  assert.equal(logs.length,0);
 });

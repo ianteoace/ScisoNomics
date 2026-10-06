@@ -1,0 +1,54 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "build": {
+    "devUrl": "http://127.0.0.1:3000"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "ScisoNomics",
+        "url": "http://localhost:3000/"
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "default",
+        "mobile-sql",
+        "mobile-auth",
+        {
+          "identifier": "android-dev-localhost",
+          "description": "Native access for the Android development server over ADB reverse only.",
+          "local": false,
+          "remote": { "urls": ["http://localhost:3000/*"] },
+          "windows": ["main"],
+          "platforms": ["android"],
+          "permissions": [
+            "allow-android-dev-native",
+            "core:default",
+            "dialog:default",
+            "deep-link:allow-get-current",
+            "sql:default",
+            "sql:allow-execute",
+            "mobile-secure-storage:allow-save",
+            "mobile-secure-storage:allow-load",
+            "mobile-secure-storage:allow-delete",
+            {
+              "identifier": "opener:allow-open-url",
+              "allow": [
+                { "url": "https://egwxtvroruvjwhpizbeg.supabase.co/auth/v1/authorize*" },
+                { "url": "https://ktfrqbghsrfmfkzzapkh.supabase.co/auth/v1/authorize*" },
+                { "url": "https://github.com/ianteoace/scisonomics/**" },
+                { "url": "https://www.mercadopago.com.ar/subscriptions/checkout*" },
+                { "url": "https://www.mercadopago.com/subscriptions/checkout*" },
+                { "url": "https://scisonomics-production-d8a3.up.railway.app/**" },
+                { "url": "http://127.0.0.1:9000/**" },
+                { "url": "http://localhost:9000/**" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

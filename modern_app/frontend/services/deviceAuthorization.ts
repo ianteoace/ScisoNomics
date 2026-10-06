@@ -33,7 +33,14 @@ async function native<T>(command: string, args: Record<string, unknown>): Promis
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     return await invoke<T>(command, args);
-  } catch {
+  } catch (error) {
+    if (process.env.NODE_ENV === "development") {
+      const message = typeof error === "string" ? error : "";
+      const code = message.includes("not allowed") ? "native_command_denied"
+        : /^device_identity_[a-z_]+$/.test(message) ? message : "native_command_failed";
+      // Never log the rejection body or invoke arguments (binding/challenge/OTP).
+      console.info("[device-auth]", { stage: "native_invoke", command, code });
+    }
     throw new CloudAuthRequestError("No pudimos acceder a la identidad segura del dispositivo. Intentá nuevamente.", { code: "device_storage_failed" });
   }
 }
