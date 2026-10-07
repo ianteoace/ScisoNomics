@@ -39,35 +39,108 @@ export function mapMovimiento(row: MovimientoRow): FinanceMovimiento {
     meta_id: row.meta_id ?? null, nota: row.nota ?? "", categoria_id: Number(row.categoria_id),
   };
 }
-export const mobileFinanceRepository: FinanceRepository = {
-  ...mobileAnalyticsRepository,
-  ...mobilePlanningRepository,
-  ...mobileSchedulingRepository,
-  async getCalendar(period) { return groupCalendarMovements(await this.listMovimientos(period)); },
-  async listCategorias(tipo) {
+export function mobileAccountEntityRepository(ownerId = LOCAL_OWNER) {
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(ownerId)) throw new Error("El propietario no es válido.");
+  return {
+  async listCategorias(tipo?: MoveType) {
     if (tipo !== undefined) validateType(tipo);
     const database = await getMobileDatabase();
     try {
       const rows = await database.select<Categoria[]>(
         `SELECT id, nombre, tipo FROM categorias
          WHERE owner_user_id = $1 AND (deleted_at IS NULL OR deleted_at = '')
-           AND ($2 IS NULL OR tipo = $2) ORDER BY tipo, nombre`, [LOCAL_OWNER, tipo ?? null],
+           AND ($2 IS NULL OR tipo = $2) ORDER BY tipo, nombre`, [ownerId, tipo ?? null],
       );
       return rows.map(mapCategoria);
     } catch { throw new Error("No se pudieron cargar las categorías."); }
   },
-  async createCategoria(input) {
+
+  async createCategoria(input: CreateCategoria) {
     const { nombre, tipo } = validateCategoria(input);
     const database = await getMobileDatabase();
     const existing = await database.select<{ id: number }[]>(
-      "SELECT id FROM categorias WHERE owner_user_id = $1 AND nombre = $2 AND tipo = $3", [LOCAL_OWNER, nombre, tipo],
+      "SELECT id FROM categorias WHERE owner_user_id = $1 AND nombre = $2 AND tipo = $3", [ownerId, nombre, tipo],
     ).catch(() => { throw new Error("No se pudo comprobar la categoría."); });
     if (existing.length) throw new Error("Ya existe una categoría con ese nombre y tipo.");
     await write(
       "INSERT INTO categorias (nombre, tipo, owner_user_id, sync_id) VALUES ($1, $2, $3, $4)",
-      [nombre, tipo, LOCAL_OWNER, newSyncId()], "No se pudo guardar la categoría. Revisá si ya existe y reintentá.",
+      [nombre, tipo, ownerId, newSyncId()], "No se pudo guardar la categoría. Revisá si ya existe y reintentá.",
     );
   },
+
+  async createMovimiento(input: CreateMovimiento) {
+    const clean = validateMovimiento(input);
+    if (ownerId !== LOCAL_OWNER && (clean.nota || clean.meta_id != null)) throw new Error("Notas y metas todavía no se sincronizan en Mobile.");
+    const database = await getMobileDatabase();
+    const categories = await database.select<{ id: number }[]>(
+      "SELECT id FROM categorias WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')",
+      [clean.categoria_id, ownerId],
+    ).catch(() => { throw new Error("No se pudo comprobar la categoría."); });
+    if (!categories.length) throw new Error("La categoría seleccionada no existe o no está disponible.");
+    await requireChanged(
+      `INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto, nota, owner_user_id, sync_id, meta_id)
+       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 FROM categorias
+       WHERE id = $3 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')
+       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')))`,
+      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, ownerId, newSyncId(), clean.meta_id ?? null],
+      "No se pudo guardar el movimiento. Revisá la categoría y reintentá.",
+    );
+  },
+
+  async updateMovimiento(id: number, input: CreateMovimiento) {
+    validateId(id);
+    const clean = validateMovimiento(input);
+    if (ownerId !== LOCAL_OWNER && (clean.nota || clean.meta_id != null)) throw new Error("Notas y metas todavía no se sincronizan en Mobile.");
+    await requireChanged(
+      `UPDATE movimientos SET fecha = $1, tipo = $2, categoria_id = $3, descripcion = $4, monto = $5, nota = $6, meta_id = $9,
+        updated_at = CURRENT_TIMESTAMP, sync_status = 'pending', local_change_version = local_change_version + 1, sync_error_code = NULL
+       WHERE id = $7 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')
+       AND EXISTS (SELECT 1 FROM categorias WHERE id = $3 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = ''))
+       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')))`,
+      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, id, ownerId, clean.meta_id ?? null],
+      "No se pudo actualizar el movimiento. Revisá que el movimiento y la categoría sigan disponibles.",
+    );
+  },
+
+  async deleteMovimiento(id: number) {
+    validateId(id);
+    await requireChanged(
+      `UPDATE movimientos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending', local_change_version = local_change_version + 1, sync_error_code = NULL
+       WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')`,
+      [id, ownerId], "No se pudo eliminar el movimiento. Puede que ya no esté disponible.",
+    );
+  },
+
+  async updateCategoria(id: number, input: CreateCategoria) {
+    validateId(id);
+    const clean = validateCategoria(input);
+    await requireChanged(
+      `UPDATE categorias SET nombre = $1, tipo = $2, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending', local_change_version = local_change_version + 1, sync_error_code = NULL
+       WHERE id = $3 AND owner_user_id = $4 AND (deleted_at IS NULL OR deleted_at = '')`,
+      [clean.nombre, clean.tipo, id, ownerId], "No se pudo actualizar la categoría. Revisá si ya existe ese nombre y tipo.",
+    );
+  },
+
+  async deleteCategoria(id: number) {
+    validateId(id);
+    const result = await write(
+      `UPDATE categorias SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending', local_change_version = local_change_version + 1, sync_error_code = NULL
+       WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')
+       AND NOT EXISTS (SELECT 1 FROM movimientos WHERE categoria_id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = ''))`,
+      [id, ownerId], "No se pudo eliminar la categoría.",
+    );
+    if (result.rowsAffected !== 1) throw new Error("No se pudo eliminar la categoría: tiene movimientos asociados o ya no está disponible.");
+  },
+
+  };
+}
+
+export const mobileFinanceRepository: FinanceRepository = {
+  ...mobileAccountEntityRepository(),
+  ...mobileAnalyticsRepository,
+  ...mobilePlanningRepository,
+  ...mobileSchedulingRepository,
+  async getCalendar(period) { return groupCalendarMovements(await this.listMovimientos(period)); },
   async listMovimientos(period) {
     validatePeriod(period);
     const database = await getMobileDatabase();
@@ -85,63 +158,6 @@ export const mobileFinanceRepository: FinanceRepository = {
       );
       return rows.map(mapMovimiento);
     } catch { throw new Error("No se pudieron cargar los movimientos."); }
-  },
-  async createMovimiento(input) {
-    const clean = validateMovimiento(input);
-    const database = await getMobileDatabase();
-    const categories = await database.select<{ id: number }[]>(
-      "SELECT id FROM categorias WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')",
-      [clean.categoria_id, LOCAL_OWNER],
-    ).catch(() => { throw new Error("No se pudo comprobar la categoría."); });
-    if (!categories.length) throw new Error("La categoría seleccionada no existe o no está disponible.");
-    await requireChanged(
-      `INSERT INTO movimientos (fecha, tipo, categoria_id, descripcion, monto, nota, owner_user_id, sync_id, meta_id)
-       SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9 FROM categorias
-       WHERE id = $3 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')
-       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $7 AND (deleted_at IS NULL OR deleted_at = '')))`,
-      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, LOCAL_OWNER, newSyncId(), clean.meta_id ?? null],
-      "No se pudo guardar el movimiento. Revisá la categoría y reintentá.",
-    );
-  },
-  async updateMovimiento(id, input) {
-    validateId(id);
-    const clean = validateMovimiento(input);
-    await requireChanged(
-      `UPDATE movimientos SET fecha = $1, tipo = $2, categoria_id = $3, descripcion = $4, monto = $5, nota = $6, meta_id = $9,
-        updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-       WHERE id = $7 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')
-       AND EXISTS (SELECT 1 FROM categorias WHERE id = $3 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = ''))
-       AND ($9 IS NULL OR EXISTS (SELECT 1 FROM metas_ahorro WHERE id = $9 AND owner_user_id = $8 AND (deleted_at IS NULL OR deleted_at = '')))`,
-      [clean.fecha, clean.tipo, clean.categoria_id, clean.descripcion, clean.monto, clean.nota, id, LOCAL_OWNER, clean.meta_id ?? null],
-      "No se pudo actualizar el movimiento. Revisá que el movimiento y la categoría sigan disponibles.",
-    );
-  },
-  async deleteMovimiento(id) {
-    validateId(id);
-    await requireChanged(
-      `UPDATE movimientos SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-       WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')`,
-      [id, LOCAL_OWNER], "No se pudo eliminar el movimiento. Puede que ya no esté disponible.",
-    );
-  },
-  async updateCategoria(id, input) {
-    validateId(id);
-    const clean = validateCategoria(input);
-    await requireChanged(
-      `UPDATE categorias SET nombre = $1, tipo = $2, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-       WHERE id = $3 AND owner_user_id = $4 AND (deleted_at IS NULL OR deleted_at = '')`,
-      [clean.nombre, clean.tipo, id, LOCAL_OWNER], "No se pudo actualizar la categoría. Revisá si ya existe ese nombre y tipo.",
-    );
-  },
-  async deleteCategoria(id) {
-    validateId(id);
-    const result = await write(
-      `UPDATE categorias SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, sync_status = 'pending'
-       WHERE id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = '')
-       AND NOT EXISTS (SELECT 1 FROM movimientos WHERE categoria_id = $1 AND owner_user_id = $2 AND (deleted_at IS NULL OR deleted_at = ''))`,
-      [id, LOCAL_OWNER], "No se pudo eliminar la categoría.",
-    );
-    if (result.rowsAffected !== 1) throw new Error("No se pudo eliminar la categoría: tiene movimientos asociados o ya no está disponible.");
   },
   async getSummary(period) {
     validatePeriod(period);

@@ -19,10 +19,11 @@ function stub(filename, exports) {
 stub("./components/account/AccountDevices.tsx", { AccountDevices: () => React.createElement("section", {}, "Dispositivos") });
 const pullState = { snapshot: { cursor: null, categories: [], movements: [] }, calls: [], failure: null };
 class MockMobilePullError extends Error {}
+stub("./services/data/mobileCloudPush.ts", { pushMobileCloudNow: async () => ({uploaded:0,rejected:0,conflicts:0,stillPending:0}) });
 stub("./services/data/mobileCloudPull.ts", {
   MobilePullError: MockMobilePullError,
   readMobileCloudSnapshot: async () => pullState.snapshot,
-  pullMobileCloudNow: async owner => { pullState.calls.push(owner); if (pullState.failure) throw pullState.failure; },
+  pullMobileCloudNow: async owner => { pullState.calls.push(owner); if (pullState.failure) throw pullState.failure; return {categoriesApplied:1,movementsApplied:1}; },
 });
 let pathname = "/dashboard";
 const router = { replace: (href) => { pathname = href; } };
@@ -670,4 +671,27 @@ test('manual pull displays sanitized error and keeps previously downloaded rows'
   view.find(n=>n.type==='button')[0].props.onClick();await flush();
   assert.match(view.html(),/dispositivo no está autorizado/);assert.match(view.html(),/prueba m8/);assert.equal(view.find(n=>n.type==='button')[0].props.disabled,false);
   pullState.failure=null;
+});
+
+test('cloud manual upload displays confirmation and conflict counts without automatic download',async t=>{
+ const push=require('../services/data/mobileCloudPush.ts');let uploads=0;
+ t.mock.method(push,'pushMobileCloudNow',async owner=>{assert.equal(owner,'internal-owner');uploads++;return{uploaded:2,rejected:1,conflicts:1,stillPending:1};});
+ const {MobileCloudPull}=require('../components/mobile/account/MobileCloudPull.tsx');const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+ view.html();view.effects();await flush();const before=pullState.calls.length;
+ view.find(n=>n.type==='button'&&n.props.children==='Subir cambios')[0].props.onClick();await flush();
+ assert.equal(uploads,1);assert.equal(pullState.calls.length,before);assert.match(view.html(),/2 cambios confirmados/);assert.match(view.html(),/1 conflictos/);assert.match(view.html(),/Se conservaron para revisi/);
+});
+test('cloud creation reuses movement form and scoped repository, with no note or goal controls',async t=>{
+ const financeModule=require('../services/data/mobileFinanceRepository.ts');let received;
+ t.mock.method(financeModule,'mobileAccountEntityRepository',owner=>{assert.equal(owner,'internal-owner');return{createMovimiento:async input=>{received=input;}};});
+ pullState.snapshot={cursor:'present',categories:[{id:1,nombre:'Cloud',tipo:'gasto'}],movements:[]};
+ const {MobileCloudPull}=require('../components/mobile/account/MobileCloudPull.tsx');const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+ view.html();view.effects();await flush();view.find(n=>n.type==='button'&&n.props.children==='Crear movimiento cloud')[0].props.onClick();
+ assert.doesNotMatch(view.html(),/Nota \(opcional\)|Meta de ahorro/);
+ const inputs=view.find(n=>n.type==='input'),select=view.find(n=>n.type==='select').at(-1);
+ inputs.find(n=>n.props.placeholder==='0,00')?.props.onChange({target:{value:'1234'}});
+ // Find fields by their stable HTML constraints, as in the existing form tests.
+ const amount=view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];amount.props.onChange({target:{value:'1234'}});
+ select.props.onChange({target:{value:'1'}});view.find(n=>n.type==='form')[0].props.onSubmit({preventDefault(){}});await flush();
+ assert.equal(received.categoria_id,1);assert.equal(received.nota,'');assert.equal(received.meta_id,null);assert.match(view.html(),/Cambio guardado/);
 });

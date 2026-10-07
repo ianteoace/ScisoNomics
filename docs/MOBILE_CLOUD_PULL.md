@@ -1,5 +1,9 @@
 # M9B, primera etapa: cloud → Android
 
+La etapa siguiente [M9C](MOBILE_CLOUD_PUSH.md) agrega creación/edición en el
+contexto explícito de cuenta y push manual. El registro de validación M9B de
+este documento corresponde a su primera etapa, con la vista de consulta.
+
 El pull es manual desde Configuración → Cuenta → **Sincronizar ahora**.
 Las categorías y movimientos descargados se muestran allí en una vista de
 consulta (los 50 movimientos más recientes). Los módulos financieros existentes

@@ -26,7 +26,7 @@ function fixture(t, filename=':memory:') {
   const open=()=>{
     const db=new DatabaseSync(filename);
     db.exec('PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS _sqlx_migrations(version INTEGER PRIMARY KEY,success INTEGER);');
-    ['0001_mobile_finance.sql','0002_mobile_planning.sql','0003_mobile_scheduling.sql','0004_mobile_cloud_pull.sql'].forEach((file,i)=>{
+    ['0001_mobile_finance.sql','0002_mobile_planning.sql','0003_mobile_scheduling.sql','0004_mobile_cloud_pull.sql','0005_mobile_cloud_push.sql'].forEach((file,i)=>{
       if(!db.prepare('SELECT 1 FROM _sqlx_migrations WHERE version=?').get(i+1)) {db.exec(fs.readFileSync(path.join(root,'src-tauri/migrations',file),'utf8'));db.prepare('INSERT INTO _sqlx_migrations VALUES(?,1)').run(i+1);}
     }); state.db=db;
     return {select:async(sql,params=[])=>{const b=bind(sql,params);return db.prepare(b.sql).all(...b.values);},close:async()=>db.close()};

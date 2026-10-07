@@ -8,20 +8,20 @@ import { validateDate } from "./mobileRepositorySupport";
 // Consumes the existing /sync/pull protocol. No desktop local API or push.
 const unsupported = ["tags", "movimiento_tags", "metas_ahorro", "gastos_programados", "gastos_fijos", "presupuestos"] as const;
 type Row = Record<string, unknown>;
-type Change = { sync_id: string; created_at: string; updated_at: string; deleted_at: string | null;
+type Change = { sync_id: string; created_at: string; updated_at: string; deleted_at: string | null; last_remote_revision: string;
   remote_updated_at: string; last_modified_device_id: string; tipo: string };
 type Category = Change & { nombre: string };
 type Movement = Change & { categoria_sync_id: string; fecha: string; descripcion: string; monto: number };
 export type PullResult = { ownerId: string; cursorBefore: string | null; cursorAfter: string;
   categoriesApplied: number; movementsApplied: number; ignoredCount: number };
-export type CloudSnapshot = { cursor: string | null; categories: { nombre: string; tipo: string }[];
-  movements: { sync_id: string; fecha: string; tipo: string; categoria: string; descripcion: string; monto: number }[] };
+export type CloudSnapshot = { cursor: string | null; categories: { id: number; nombre: string; tipo: import("../../types/domain").MoveType }[];
+  movements: { id: number; categoria_id: number; sync_status: string; sync_error_code: string | null; sync_id: string; fecha: string; tipo: string; categoria: string; descripcion: string; monto: number }[] };
 
 export class MobilePullError extends Error {
   constructor(public readonly code: string, message: string, options?: ErrorOptions) { super(message, options); }
 }
 function invalid(): never { throw new MobilePullError("invalid_payload", "La respuesta cloud no es válida. No se avanzó la sincronización."); }
-function owner(value: string) {
+export function assertMobileCloudOwner(value: string) {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,120}$/.test(value) || value === "local") {
     throw new MobilePullError("invalid_owner", "La cuenta no tiene un identificador interno válido.");
   }
@@ -33,7 +33,7 @@ function text(value: unknown, max: number, required = true): string {
   return value;
 }
 // Keep microseconds: cloud revisions must not be rounded to JavaScript milliseconds.
-function timestamp(value: unknown): string {
+export function normalizeCloudRevision(value: unknown): string {
   const raw = text(value, 64);
   if (!/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/.test(raw)) invalid();
   const normalized = raw.replace(" ", "T");
@@ -45,9 +45,9 @@ function timestamp(value: unknown): string {
 function common(row: Row): Change {
   const tipo = text(row.tipo, 20);
   if (!["ingreso", "gasto", "ahorro", "inversion"].includes(tipo)) invalid();
-  return { sync_id: text(row.sync_id, 120), tipo, created_at: timestamp(row.created_at),
-    updated_at: timestamp(row.updated_at), deleted_at: row.deleted_at ? timestamp(row.deleted_at) : null,
-    remote_updated_at: timestamp(row.remote_updated_at), last_modified_device_id: text(row.last_modified_device_id, 120, false) };
+  return { sync_id: text(row.sync_id, 120), tipo, created_at: normalizeCloudRevision(row.created_at),
+    updated_at: normalizeCloudRevision(row.updated_at), deleted_at: row.deleted_at ? normalizeCloudRevision(row.deleted_at) : null,
+    remote_updated_at: normalizeCloudRevision(row.remote_updated_at), last_remote_revision: text(row.remote_updated_at, 64), last_modified_device_id: text(row.last_modified_device_id, 120, false) };
 }
 function changes(value: unknown): Row[] {
   if (!Array.isArray(value) || value.length > 50000 || value.some(row => !row || typeof row !== "object" || Array.isArray(row))) invalid();
@@ -68,7 +68,7 @@ function parse(payload: unknown) {
   if (!payload || typeof payload !== "object") invalid();
   const p = payload as Row;
   if (p.ok !== true) invalid();
-  const cursor = text(p.cursor, 64); timestamp(cursor);
+  const cursor = text(p.cursor, 64); normalizeCloudRevision(cursor);
   const categories = newest(changes(p.categorias).map(row => ({ ...common(row), nombre: text(row.nombre, 120).trim() })));
   const movements = newest(changes(p.movimientos).map(row => {
     const base = common(row), fecha = text(row.fecha, 10);
@@ -77,13 +77,13 @@ function parse(payload: unknown) {
     // Server-local categoria_id is deliberately ignored: resolve by sync identity.
     return { ...base, fecha, monto: row.monto, categoria_sync_id: text(row.categoria_sync_id, 120), descripcion: text(row.descripcion, 500, false) };
   }));
-  if ([...categories, ...movements].some(row => row.remote_updated_at > timestamp(cursor))) invalid();
+  if ([...categories, ...movements].some(row => row.remote_updated_at > normalizeCloudRevision(cursor))) invalid();
   const ignored = Object.fromEntries(unsupported.map(key => [key, Array.isArray(p[key]) ? p[key].length : 0]));
   return { cursor, categories, movements, ignored };
 }
 
 export async function getMobilePullCursor(ownerId: string): Promise<string | null> {
-  owner(ownerId);
+  assertMobileCloudOwner(ownerId);
   const db = await getMobileDatabase();
   const rows = await db.select<{ cursor: string }[]>("SELECT cursor FROM mobile_pull_state WHERE owner_user_id=$1 AND supported_entities_version=1", [ownerId]);
   return rows[0]?.cursor ?? null;
@@ -95,13 +95,13 @@ function revisionWins(table: string) {
 }
 
 export async function applyMobilePull(ownerId: string, payload: unknown, expectedCursor: string | null): Promise<PullResult> {
-  owner(ownerId);
+  assertMobileCloudOwner(ownerId);
   const batch = parse(payload), now = new Date().toISOString();
-  if (expectedCursor && timestamp(batch.cursor) < timestamp(expectedCursor)) invalid();
+  if (expectedCursor && normalizeCloudRevision(batch.cursor) < normalizeCloudRevision(expectedCursor)) invalid();
   await getMobileDatabase();
-  const metadata = "created_at,updated_at,deleted_at,sync_status,last_synced_at,last_remote_updated_at,last_remote_device_id";
-  const sourceMeta = "json_extract(j.value,'$.created_at'),json_extract(j.value,'$.updated_at'),json_extract(j.value,'$.deleted_at'),'synced',$3,json_extract(j.value,'$.remote_updated_at'),json_extract(j.value,'$.last_modified_device_id')";
-  const updateMeta = "updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,sync_status='synced',last_synced_at=excluded.last_synced_at,last_remote_updated_at=excluded.last_remote_updated_at,last_remote_device_id=excluded.last_remote_device_id";
+  const metadata = "created_at,updated_at,deleted_at,sync_status,last_synced_at,last_remote_updated_at,last_remote_device_id,last_remote_revision";
+  const sourceMeta = "json_extract(j.value,'$.created_at'),json_extract(j.value,'$.updated_at'),json_extract(j.value,'$.deleted_at'),'synced',$3,json_extract(j.value,'$.remote_updated_at'),json_extract(j.value,'$.last_modified_device_id'),json_extract(j.value,'$.last_remote_revision')";
+  const updateMeta = "updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,sync_status='synced',last_synced_at=excluded.last_synced_at,last_remote_updated_at=excluded.last_remote_updated_at,last_remote_device_id=excluded.last_remote_device_id,last_remote_revision=excluded.last_remote_revision,sync_error_code=NULL";
   const statements = [
     // CAS plus expected_rows rejects another writer; any later failure rolls this back.
     { sql: `INSERT INTO mobile_pull_state(owner_user_id,cursor,updated_at)
@@ -112,7 +112,7 @@ export async function applyMobilePull(ownerId: string, payload: unknown, expecte
         SELECT $1,json_extract(j.value,'$.sync_id'),json_extract(j.value,'$.nombre'),json_extract(j.value,'$.tipo'),${sourceMeta}
         FROM json_each($2) j WHERE true
         ON CONFLICT(owner_user_id,sync_id) DO UPDATE SET nombre=excluded.nombre,tipo=excluded.tipo,${updateMeta}
-        WHERE ${revisionWins("categorias")}`, values: [ownerId, JSON.stringify(batch.categories), now] },
+        WHERE categorias.sync_status NOT IN ('pending','sync_error') AND (${revisionWins("categorias")})`, values: [ownerId, JSON.stringify(batch.categories), now] },
     { sql: `INSERT INTO movimientos(owner_user_id,sync_id,fecha,tipo,categoria_id,descripcion,monto,${metadata})
         SELECT $1,json_extract(j.value,'$.sync_id'),json_extract(j.value,'$.fecha'),json_extract(j.value,'$.tipo'),
         (SELECT c.id FROM categorias c WHERE c.owner_user_id=$1 AND c.sync_id=json_extract(j.value,'$.categoria_sync_id')),
@@ -120,7 +120,14 @@ export async function applyMobilePull(ownerId: string, payload: unknown, expecte
         FROM json_each($2) j WHERE true
         ON CONFLICT(owner_user_id,sync_id) DO UPDATE SET fecha=excluded.fecha,tipo=excluded.tipo,categoria_id=excluded.categoria_id,
           descripcion=excluded.descripcion,monto=excluded.monto,${updateMeta}
-        WHERE ${revisionWins("movimientos")}`, values: [ownerId, JSON.stringify(batch.movements), now] },
+        WHERE movimientos.sync_status NOT IN ('pending','sync_error') AND (${revisionWins("movimientos")})`, values: [ownerId, JSON.stringify(batch.movements), now] },
+    // A rejected/unacknowledged local edit must survive a subsequent download.
+    { sql: `UPDATE mobile_pull_state SET cursor=cursor WHERE owner_user_id=$1
+        AND NOT EXISTS(SELECT 1 FROM categorias c JOIN json_each($2) j ON c.sync_id=json_extract(j.value,'$.sync_id')
+          WHERE c.owner_user_id=$1 AND c.sync_status IN ('pending','sync_error'))
+        AND NOT EXISTS(SELECT 1 FROM movimientos m JOIN json_each($3) j ON m.sync_id=json_extract(j.value,'$.sync_id')
+          WHERE m.owner_user_id=$1 AND m.sync_status IN ('pending','sync_error'))`,
+      values: [ownerId, JSON.stringify(batch.categories), JSON.stringify(batch.movements)], expected_rows: 1 },
   ];
   let applied: number[];
   try { applied = await invoke<number[]>("mobile_sql_transaction", { statements }); }
@@ -131,12 +138,12 @@ export async function applyMobilePull(ownerId: string, payload: unknown, expecte
 }
 
 export async function readMobileCloudSnapshot(ownerId: string): Promise<CloudSnapshot> {
-  owner(ownerId);
+  assertMobileCloudOwner(ownerId);
   const db = await getMobileDatabase();
   const [cursor, categories, movements] = await Promise.all([
     getMobilePullCursor(ownerId),
-    db.select<CloudSnapshot["categories"]>("SELECT nombre,tipo FROM categorias WHERE owner_user_id=$1 AND deleted_at IS NULL ORDER BY tipo,nombre", [ownerId]),
-    db.select<CloudSnapshot["movements"]>(`SELECT m.sync_id,m.fecha,m.tipo,c.nombre AS categoria,m.descripcion,m.monto FROM movimientos m
+    db.select<CloudSnapshot["categories"]>("SELECT id,nombre,tipo FROM categorias WHERE owner_user_id=$1 AND deleted_at IS NULL ORDER BY tipo,nombre", [ownerId]),
+    db.select<CloudSnapshot["movements"]>(`SELECT m.id,m.categoria_id,m.sync_status,m.sync_error_code,m.sync_id,m.fecha,m.tipo,c.nombre AS categoria,m.descripcion,m.monto FROM movimientos m
       JOIN categorias c ON c.id=m.categoria_id AND c.owner_user_id=m.owner_user_id
       WHERE m.owner_user_id=$1 AND m.deleted_at IS NULL ORDER BY m.fecha DESC,m.id DESC`, [ownerId]),
   ]);
@@ -151,14 +158,9 @@ export function pullMobileCloudNow(ownerId: string): Promise<PullResult> {
   return request;
 }
 async function pull(ownerId: string) {
-  owner(ownerId);
+  assertMobileCloudOwner(ownerId);
   if (getRuntimePlatformSync() !== "android") throw new MobilePullError("unsupported_platform", "La descarga cloud está disponible en Android.");
-  const session = await getSession(ownerId);
-  if (!session || session.authProvider !== "supabase" || session.user.id !== ownerId || getActiveOwnerId() !== ownerId) {
-    throw new MobilePullError("session_required", "Iniciá sesión y autorizá este dispositivo antes de sincronizar.");
-  }
-  // getSession returns the device grant after existing trusted-device authorization.
-  // Cloud revalidates trusted/family on /sync/pull; no parallel authorization here.
+  const session = await getMobileCloudSession(ownerId);
   const cursor = await getMobilePullCursor(ownerId);
   let payload: unknown;
   try { payload = await cloudRequest<unknown>(`/sync/pull${cursor ? `?since=${encodeURIComponent(cursor)}` : ""}`, { headers: { Authorization: `Bearer ${session.token}` } }, 45000); }
@@ -168,4 +170,16 @@ async function pull(ownerId: string) {
   }
   if (getActiveOwnerId() !== ownerId) throw new MobilePullError("owner_changed", "La cuenta cambió durante la descarga. No se aplicaron los datos.");
   return applyMobilePull(ownerId, payload, cursor);
+}
+
+export async function getMobileCloudSession(ownerId: string) {
+  assertMobileCloudOwner(ownerId);
+  if (getRuntimePlatformSync() !== "android") throw new MobilePullError("unsupported_platform", "La sincronización cloud está disponible en Android.");
+  const session = await getSession(ownerId);
+  if (!session || session.authProvider !== "supabase" || session.user.id !== ownerId || getActiveOwnerId() !== ownerId) {
+    throw new MobilePullError("session_required", "Iniciá sesión y autorizá este dispositivo antes de sincronizar.");
+  }
+  // getSession returns the device grant after existing trusted-device authorization.
+  // Cloud revalidates trusted/family on /sync/pull; no parallel authorization here.
+  return session;
 }

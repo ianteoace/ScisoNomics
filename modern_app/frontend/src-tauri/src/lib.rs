@@ -1075,6 +1075,11 @@ pub fn run() {
         description: "mobile_cloud_pull",
         sql: include_str!("../migrations/0004_mobile_cloud_pull.sql"),
         kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 5,
+        description: "mobile_cloud_push",
+        sql: include_str!("../migrations/0005_mobile_cloud_push.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
       }])
       .build()
   );

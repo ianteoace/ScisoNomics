@@ -22,7 +22,7 @@ export function MobileSettings() {
     </SettingsCard>
     <SettingsCard title="Apariencia"><p>Tema oscuro para todas las pantallas.</p></SettingsCard>
     <SettingsCard title="Cuenta"><MobileAccount /></SettingsCard>
-    <SettingsCard title="Sincronización"><p>Desde Cuenta podés descargar categorías y movimientos con “Sincronizar ahora”.</p><p>Los datos descargados se consultan allí, separados de tus finanzas locales. El envío de cambios desde Mobile estará disponible en el siguiente paso.</p></SettingsCard>
+    <SettingsCard title="Sincronización"><p>Desde Cuenta podés descargar categorías y movimientos con “Sincronizar ahora” y enviar pendientes con “Subir cambios”.</p><p>Creá movimientos para tu cuenta desde esa sección. Tus finanzas locales permanecen separadas.</p></SettingsCard>
     <SettingsCard title="ScisoNomics Premium">
       <p>Durante el desarrollo Mobile, estas funciones están habilitadas:</p>
       <ul className="list-disc space-y-2 pl-5">{mobileSections.filter((section) => section.premium).map((section) => <li key={section.feature}>{section.label}</li>)}</ul>

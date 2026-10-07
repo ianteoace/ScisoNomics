@@ -16,6 +16,7 @@ const root = path.resolve(__dirname, "..");
 const schema = fs.readFileSync(path.join(root, "src-tauri/migrations/0001_mobile_finance.sql"), "utf8");
 const planningSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0002_mobile_planning.sql"), "utf8");
 const schedulingSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0003_mobile_scheduling.sql"), "utf8");
+const pushSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0005_mobile_cloud_push.sql"), "utf8");
 const pullSchema = fs.readFileSync(path.join(root, "src-tauri/migrations/0004_mobile_cloud_pull.sql"), "utf8");
 const corePath = require.resolve("@tauri-apps/api/core");
 const driverPath = require.resolve("@tauri-apps/plugin-sql");
@@ -46,6 +47,7 @@ function fixture(t, filename = ":memory:") {
       if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=2").get()) { raw.exec(planningSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(2,1)"); }
       if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=3").get()) { raw.exec(schedulingSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(3,1)"); }
       if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=4").get()) { raw.exec(pullSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(4,1)"); }
+      if (!raw.prepare("SELECT 1 FROM _sqlx_migrations WHERE version=5").get()) { raw.exec(pushSchema); raw.exec("INSERT INTO _sqlx_migrations VALUES(5,1)"); }
       if (state.omitSchedulingMigration) raw.exec("DELETE FROM _sqlx_migrations WHERE version=3");
       if (state.disableFK) raw.exec("PRAGMA foreign_keys = OFF");
       if (state.omitMigration) raw.exec("DELETE FROM _sqlx_migrations");
@@ -412,7 +414,7 @@ test("v1 to v2 upgrade preserves every existing field, tombstones, IDs and balan
   assert.deepEqual(upgraded.prepare("PRAGMA foreign_key_check").all(), []);
   await (await m.getMobileDatabase()).close(); m = state.modules(); await m.getMobileDatabase();
   assert.equal((await m.mobileFinanceRepository.getSummary(period)).saldo, 700);
-  assert.deepEqual(state.databases[0].prepare("SELECT version,success FROM _sqlx_migrations ORDER BY version").all().map((r) => ({ ...r })), [{ version: 1, success: 1 }, { version: 2, success: 1 }, { version: 3, success: 1 }, { version: 4, success: 1 }]);
+  assert.deepEqual(state.databases[0].prepare("SELECT version,success FROM _sqlx_migrations ORDER BY version").all().map((r) => ({ ...r })), [{ version: 1, success: 1 }, { version: 2, success: 1 }, { version: 3, success: 1 }, { version: 4, success: 1 }, { version: 5, success: 1 }]);
 });
 
 test("fixed expense CRUD preserves identity and persists without generating financial movements", async (t) => {
@@ -809,7 +811,7 @@ test("derived statistics and reports remain identical after reopening persisted 
   let m=state.modules(),r=m.mobileFinanceRepository;await r.createCategoria({nombre:'Local',tipo:'ingreso'});await r.createMovimiento(movement);
   const before=[await r.getStatistics(period),await r.getMonthlyReport(period),await r.getAnnualStatistics(2026)];await (await m.getMobileDatabase()).close();m=state.modules();r=m.mobileFinanceRepository;
   assert.deepEqual([await r.getStatistics(period),await r.getMonthlyReport(period),await r.getAnnualStatistics(2026)],before);
-  assert.deepEqual(state.databases[0].prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(state.databases[0].prepare('SELECT COUNT(*) AS n FROM _sqlx_migrations').get().n,4);
+  assert.deepEqual(state.databases[0].prepare('PRAGMA foreign_key_check').all(),[]);assert.equal(state.databases[0].prepare('SELECT COUNT(*) AS n FROM _sqlx_migrations').get().n,5);
 });
 
 test("desktop analytics delegate exact existing API periods and never open mobile SQLite",async(t)=>{

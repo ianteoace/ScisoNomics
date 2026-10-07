@@ -110,6 +110,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1",
         "http://localhost:3000",
+        # Opt-in local dev only; no arbitrary origin or production CORS expansion.
+        *(["http://localhost:3001"] if os.getenv("SCISONOMICS_DESKTOP_CONCURRENT_DEV") == "1" else []),
         "http://localhost",
         "http://tauri.localhost",
         "https://tauri.localhost",

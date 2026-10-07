@@ -1,0 +1,12 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "build": {
+    "devUrl": "http://localhost:3001",
+    "beforeDevCommand": "npm run dev:desktop:concurrent"
+  },
+  "app": {
+    "security": {
+      "devCsp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://scisonomics-production-d8a3.up.railway.app https://egwxtvroruvjwhpizbeg.supabase.co https://marvelous-intuition-staging.up.railway.app https://ktfrqbghsrfmfkzzapkh.supabase.co; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:"
+    }
+  }
+}
