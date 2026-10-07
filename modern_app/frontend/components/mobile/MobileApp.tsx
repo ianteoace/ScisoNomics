@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import type { Categoria, GastoFijo, Presupuesto, MetaAhorro, GastoProgramado } from "../../types/domain";
 import type { FinanceMovimiento } from "../../services/data/financeRepositoryTypes";
+import { useMobileAccount } from "./account/MobileAccountProvider";
+import { switchToLocalMode } from "../../services/cloudAuth";
+import { LOCAL_FINANCIAL_CONTEXT, type MobileFinancialContext } from "../../services/data/mobileFinancialContext";
 import { MobileHeader } from "./MobileHeader";
 import { MobileSidebar, mobileSections } from "./MobileSidebar";
 import { MobileDialog } from "./MobileDialog";
@@ -33,12 +36,31 @@ type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement";
 const removalTitles = { scheduled: "planificación", movement: "movimiento", category: "categoría", fixed: "gasto fijo", budget: "presupuesto", goal: "meta" };
 
 export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
+  const { financialContext, financialReady, error, refresh } = useMobileAccount();
+  if (!financialReady) return <div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
+    <p role="alert">{error}</p><button className="btn mt-3" onClick={() => void refresh(true)}>Reintentar sesión</button>
+    <button className="btn-secondary mt-3" onClick={switchToLocalMode}>Continuar con datos locales</button>
+  </> : null}</div>;
+  return <MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} />;
+}
+
+function MobileFinancialApp({ context, legalContent }: { context: MobileFinancialContext; legalContent?: React.ReactNode }) {
   const rawPathname = (usePathname() || "/").replace(/\/$/, "");
   const pathname = rawPathname === "/reporte-mensual" ? "/reporte" : rawPathname;
   const router = useRouter();
   const section = mobileSections.find((item) => item.href === pathname);
   const legal = pathname === "/legal";
-  const finance = useMobileFinance(!["/estadisticas", "/reporte", "/configuracion", "/legal"].includes(pathname));
+  const localModule = ["/gastos-fijos", "/presupuestos", "/metas", "/planificacion"].includes(pathname);
+  const ownerId = localModule ? "local" : context.ownerId;
+  return <MobileFinancialPage key={`${ownerId}:${localModule}`} pathname={pathname} section={section} legal={legal} router={router}
+    context={localModule ? { ...LOCAL_FINANCIAL_CONTEXT, isCurrent: context.isCurrent } : context} legalContent={legalContent} />;
+}
+
+function MobileFinancialPage({ pathname, section, legal, router, context, legalContent }: {
+  pathname: string; section: (typeof mobileSections)[number] | undefined; legal: boolean;
+  router: ReturnType<typeof useRouter>; context: MobileFinancialContext; legalContent?: React.ReactNode;
+}) {
+  const finance = useMobileFinance(!["/estadisticas", "/reporte", "/configuracion", "/legal"].includes(pathname), context);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [removal, setRemoval] = useState<Removal | null>(null);
@@ -59,6 +81,7 @@ export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } =
     <MobileHeader title={legal ? "Legal" : section?.label ?? "Inicio"} menuOpen={menuOpen} onOpenMenu={() => setMenuOpen(true)} />
     {menuOpen ? <MobileSidebar pathname={pathname} onClose={() => setMenuOpen(false)} /> : null}
     <main className="mx-auto grid w-full max-w-2xl gap-5 px-4 pt-5" style={{ paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))" }}>
+      {!legal && pathname !== "/configuracion" ? <p className="text-xs text-slate-400">{context.ownerId === "local" ? "Datos locales" : "Cuenta sincronizada"}</p> : null}
       {pathname === "/estadisticas" ? <MobileStatistics /> : null}
       {pathname === "/reporte" ? <MobileReport /> : null}
       {pathname === "/configuracion" ? <MobileSettings /> : null}
@@ -76,7 +99,7 @@ export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } =
       {!loading && data && pathname === "/planificacion" ? <MobileScheduling rows={data.scheduled} summary={data.projection} onCreate={() => edit({ kind: "scheduled" })} onEdit={(row) => edit({ kind: "scheduled", row })} onDelete={(row) => remove({ kind: "scheduled", row })} onPay={(row) => { finance.clearMessages(); setPayment(row); }} /> : null}
       {!loading && data && pathname === "/calendario" ? <MobileCalendar period={{ year: Number(finance.period.slice(0, 4)), month: Number(finance.period.slice(5, 7)) }} days={data.calendar} busy={busy} onPeriod={({ month, year }) => finance.setPeriod(`${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`)} /> : null}
     </main>
-    {editor?.kind === "movement" ? <MobileMovementForm categories={data?.categories ?? []} goals={data?.goals ?? []} movement={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
+    {editor?.kind === "movement" ? <MobileMovementForm cloudContext={context.ownerId !== "local"} categories={data?.categories ?? []} goals={data?.goals ?? []} movement={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
       onSave={(input) => finance.mutate((repository) => editor.row ? repository.updateMovimiento(editor.row.id, input) : repository.createMovimiento(input), "Movimiento guardado.", input.fecha.slice(0, 7))} /> : null}
     {editor?.kind === "category" ? <MobileCategoryForm category={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
       onSave={(input) => finance.mutate((repository) => editor.row ? repository.updateCategoria(editor.row.id, input) : repository.createCategoria(input), "Categoría guardada.")} /> : null}

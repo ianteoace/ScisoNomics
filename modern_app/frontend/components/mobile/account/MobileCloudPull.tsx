@@ -9,8 +9,8 @@ import { MobileMovementForm } from "../movimientos/MobileMovementForm";
 import { MobileDialog } from "../MobileDialog";
 import type { FinanceMovimiento } from "../../../services/data/financeRepositoryTypes";
 
-// Explicit account context only. Anonymous financial modules keep owner=local.
-export function MobileCloudPull({ ownerId }: { ownerId: string }) {
+// Same explicit account context as normal financial modules.
+export function MobileCloudPull({ ownerId, isCurrent = () => true }: { ownerId: string; isCurrent?: () => boolean }) {
   const [snapshot, setSnapshot] = useState<CloudSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -26,7 +26,7 @@ export function MobileCloudPull({ ownerId }: { ownerId: string }) {
     return () => { mounted.current = false; };
   }, [ownerId]);
   async function synchronize() {
-    if (pending.current) return;
+    if (pending.current || !isCurrent()) return;
     pending.current = true; setBusy(true); setError(""); setNotice("");
     try {
       const result = await pullMobileCloudNow(ownerId);
@@ -37,7 +37,7 @@ export function MobileCloudPull({ ownerId }: { ownerId: string }) {
     } finally { pending.current = false; if (mounted.current) setBusy(false); }
   }
   async function upload() {
-    if (pending.current) return;
+    if (pending.current || !isCurrent()) return;
     pending.current = true; setBusy(true); setError(""); setNotice("");
     try {
       const result = await pushMobileCloudNow(ownerId);
@@ -50,10 +50,10 @@ export function MobileCloudPull({ ownerId }: { ownerId: string }) {
     finally { pending.current = false; if (mounted.current) setBusy(false); }
   }
   async function save(action: (repository: ReturnType<typeof mobileAccountEntityRepository>) => Promise<void>) {
-    if (pending.current) return false;
+    if (pending.current || !mounted.current || !isCurrent()) return false;
     pending.current = true; setBusy(true); setError(""); setNotice("");
     try {
-      await action(mobileAccountEntityRepository(ownerId));
+      await action(mobileAccountEntityRepository(ownerId, isCurrent));
       const next = await readMobileCloudSnapshot(ownerId);
       if (mounted.current) { setSnapshot(next); setNotice("Cambio guardado para esta cuenta. Usá Subir cambios cuando quieras enviarlo."); }
       return true;

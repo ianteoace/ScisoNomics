@@ -47,6 +47,16 @@ function setup(t,platform="android") {
   return ctx;
 }
 
+test("cached authorization hint is owner scoped, local only, and cleared by normal logout",async t=>{
+  const ctx=setup(t);
+  assert.equal(ctx.api.hasCachedDeviceGrant(user.id),false);assert.equal(ctx.calls.length,0);assert.equal(ctx.native.length,0);
+  ctx.trusted=true;const {grant}=await ctx.api.beginDeviceLogin('primary-fixture',user);
+  ctx.api.rememberDeviceGrant(user.id,grant);const calls=ctx.calls.length,native=ctx.native.length;
+  assert.equal(ctx.api.hasCachedDeviceGrant(user.id),true);assert.equal(ctx.api.hasCachedDeviceGrant('other-owner'),false);
+  assert.equal(ctx.calls.length,calls);assert.equal(ctx.native.length,native);
+  ctx.api.forgetDeviceGrant(user.id);assert.equal(ctx.api.hasCachedDeviceGrant(user.id),false);
+});
+
 for(const platform of ["desktop","android"])test(`${platform} unknown device returns continuation only, with no persisted session`,async t=>{
   const ctx=setup(t,platform), result=await ctx.api.beginDeviceLogin("primary-token",user);
   assert.equal(result.enrollment.status,"pending_verification");

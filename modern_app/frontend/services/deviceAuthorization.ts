@@ -103,6 +103,15 @@ function readMetadata(owner: string): Metadata {
   return value;
 }
 
+// Local authorization history only. Cloud requests still require native proof and
+// server validation; the mobile account provider also checks secure credentials.
+export function hasCachedDeviceGrant(owner: string): boolean {
+  try {
+    const saved = readMetadata(owner);
+    return Boolean(saved.accountBinding && saved.deviceId && saved.familyId);
+  } catch { return false; }
+}
+
 export function forgetDeviceGrant(owner: string) {
   metadata.delete(owner);
   window.localStorage.removeItem(key(owner));

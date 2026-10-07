@@ -61,6 +61,10 @@ test('empty cursor, category before movement, real SQL FK, internal owner and se
   assert.equal(row.last_remote_updated_at,revision);assert.equal(row.created_at,'2026-10-05T10:00:00.000000Z');
   assert.equal(await m.getMobilePullCursor('owner-a'),revision);assert.equal(await m.getMobilePullCursor('owner-b'),null);
   assert.equal((await m.readMobileCloudSnapshot('owner-a')).movements[0].descripcion,'prueba m8');
+  const normal = require('../services/data/mobileFinanceRepository.ts').createMobileFinanceRepository('owner-a');
+  assert.equal((await normal.listMovimientos({year:2026,month:10}))[0].descripcion,'prueba m8');
+  assert.equal(s.db.prepare('SELECT sync_status FROM movimientos').get().sync_status,'synced');
+  assert.deepEqual(await require('../services/data/mobileFinanceRepository.ts').mobileFinanceRepository.listMovimientos({year:2026,month:10}),[]);
 });
 test('repeated batch/change is idempotent and stale revision never resurrects or overwrites',async t=>{
   const s=fixture(t),m=s.modules();await m.applyMobilePull('owner-a',payload([category,category],[movement,movement]),null);

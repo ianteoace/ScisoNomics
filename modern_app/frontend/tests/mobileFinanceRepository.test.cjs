@@ -24,6 +24,80 @@ const apiPath = path.join(root, "services/api.ts");
 const movement = { fecha: "2026-10-04", tipo: "ingreso", categoria_id: 1, descripcion: "Ingreso demo", monto: 10000 };
 const period = { year: 2026, month: 10 };
 
+test("financial owner resolver uses only authorized internal users.id and logout returns local", () => {
+  const { resolveMobileFinancialOwner: resolve } = require('../services/data/mobileFinancialContext.ts');
+  const account = {authProvider:'supabase',user:{id:'internal-owner',auth_provider_id:'provider-sub',email:'owner@example.test'}};
+  assert.equal(resolve(null,false),'local');
+  assert.equal(resolve(account,false),'local');
+  assert.equal(resolve(account,true),'internal-owner');
+  assert.equal(resolve({...account,authProvider:'legacy'},true),'local');
+  assert.equal(resolve({...account,user:{email:'owner@example.test',auth_provider_id:'provider-sub'}},true),'local');
+  assert.equal(resolve(null,true),'local');
+});
+
+test("normal repositories isolate account/local CRUD, category IDs and every aggregate in real SQLite", async t => {
+  const state=fixture(t), m=state.modules();
+  const a=m.createMobileFinanceRepository('owner-a'),b=m.createMobileFinanceRepository('owner-b'),local=m.mobileFinanceRepository;
+  for(const [repo,amount] of [[local,99999],[b,77777],[a,1000]]) {
+    await repo.createCategoria({nombre:'General',tipo:'ingreso'});
+    await repo.createMovimiento({...movement,categoria_id:(await repo.listCategorias())[0].id,monto:amount});
+  }
+  const db=state.databases[0],before=JSON.stringify(['categorias','movimientos'].map(table=>db.prepare(`SELECT * FROM ${table} WHERE owner_user_id='local'`).all()));
+  const row=(await a.listMovimientos(period))[0],foreign=(await b.listMovimientos(period))[0];
+  assert.equal(row.monto,1000); assert.equal((await local.listMovimientos(period))[0].monto,99999);
+  assert.equal((await a.getSummary(period)).saldo,1000);
+  assert.equal((await a.getStatistics(period)).summary.ingreso,1000);
+  assert.equal((await a.getMonthlyReport(period)).ingresos,1000);
+  assert.equal((await a.getAnnualStatistics(2026)).monthly.find(x=>x.mes===10).ingresos,1000);
+  await assert.rejects(a.createMovimiento({...movement,categoria_id:foreign.categoria_id}));
+  await assert.rejects(a.updateMovimiento(foreign.id,{...movement,categoria_id:row.categoria_id}));
+  await assert.rejects(a.deleteMovimiento(foreign.id));
+  await assert.rejects(a.updateCategoria(foreign.categoria_id,{nombre:'Ajena',tipo:'ingreso'}));
+  await assert.rejects(a.deleteCategoria(foreign.categoria_id));
+  const identity=db.prepare('SELECT sync_id FROM movimientos WHERE id=?').get(row.id).sync_id;
+  db.prepare("UPDATE movimientos SET sync_status='synced' WHERE id=?").run(row.id);
+  await a.updateMovimiento(row.id,{...movement,categoria_id:row.categoria_id,monto:1200});
+  let saved=db.prepare('SELECT * FROM movimientos WHERE id=?').get(row.id);
+  assert.equal(saved.sync_status,'pending');assert.equal(saved.sync_id,identity);assert.equal(saved.local_change_version,1);
+  await a.deleteMovimiento(row.id);saved=db.prepare('SELECT * FROM movimientos WHERE id=?').get(row.id);
+  assert.ok(saved.deleted_at);assert.equal(saved.sync_status,'pending');assert.equal(saved.sync_id,identity);
+  assert.deepEqual(await a.listMovimientos(period),[]);assert.equal((await a.getSummary(period)).saldo,0);
+  assert.equal((await b.listMovimientos(period)).length,1);
+  assert.equal(JSON.stringify(['categorias','movimientos'].map(table=>db.prepare(`SELECT * FROM ${table} WHERE owner_user_id='local'`).all())),before);
+  assert.equal(state.desktopCalls.length,0);
+});
+
+test("cloud financial reports never consume local planning and cloud planning writes fail closed",async t=>{
+  const state=fixture(t),m=state.modules(),local=m.mobileFinanceRepository,a=m.createMobileFinanceRepository('owner-a');
+  await local.createCategoria({nombre:'Gasto local',tipo:'gasto'});
+  const category=(await local.listCategorias())[0];
+  await local.createPresupuesto({categoria_id:category.id,mes:10,anio:2026,monto:1});
+  await local.createMeta({nombre:'Local',monto_objetivo:100,monto_inicial:0,estado:'activa',fecha_objetivo:null,descripcion:''});
+  await local.createMovimiento({...movement,tipo:'gasto',categoria_id:category.id,monto:20});
+  const report=await a.getMonthlyReport(period);assert.deepEqual(report.metas,[]);assert.deepEqual(report.presupuestos_excedidos,[]);
+  assert.deepEqual(await a.listGastosProgramados(),[]);assert.equal((await a.getStatistics(period)).planificacion.total_pendiente_30_dias,0);
+  await assert.rejects(a.createPresupuesto({categoria_id:category.id,mes:10,anio:2026,monto:5}),/Datos locales/);
+  await assert.rejects(a.markGastoProgramadoPaid(1),/Datos locales/);
+});
+
+test("invalidated financial context refuses delayed or stale mutations without changing either owner",async t=>{
+  const state=fixture(t),m=state.modules();let valid=true;
+  const a=m.createMobileFinanceRepository('owner-a',()=>valid);
+  await a.createCategoria({nombre:'Propia',tipo:'ingreso'});const category=(await a.listCategorias())[0];
+  const db=state.databases[0],before=JSON.stringify(db.prepare('SELECT * FROM categorias').all());
+  const delayed=a.createCategoria({nombre:'No debe guardarse',tipo:'ingreso'});
+  valid=false;
+  await assert.rejects(delayed,/cuenta activa cambió/);
+  await assert.rejects(a.createMovimiento({...movement,categoria_id:category.id}),/cuenta activa cambió/);
+  await assert.rejects(a.updateCategoria(category.id,{nombre:'Obsoleta',tipo:'ingreso'}),/cuenta activa cambió/);
+  await assert.rejects(a.deleteCategoria(category.id),/cuenta activa cambió/);
+  const queries=state.statements.length;
+  for(const read of [()=>a.listCategorias(),()=>a.listMovimientos(period),()=>a.getSummary(period),()=>a.getStatistics(period),()=>a.getMonthlyReport(period),()=>a.getAnnualStatistics(2026)]) await assert.rejects(read());
+  assert.equal(state.statements.length,queries);
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM categorias').all()),before);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM movimientos').get().n,0);
+});
+
 function fixture(t, filename = ":memory:") {
   const previousWindow = global.window;
   const previousCore = require.cache[corePath];

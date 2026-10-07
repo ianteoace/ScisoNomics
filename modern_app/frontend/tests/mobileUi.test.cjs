@@ -42,7 +42,8 @@ const summary = { ingresos: 10000, gastos: 2500, ahorros: 200, inversiones: 300,
 const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary, fixedExpenses: [], budgets: [], goals: [], scheduled: [], projection: { total_vencido: 0, total_pendiente_30_dias: 0, total_pagado_mes: 0, balance_proyectado_mes: 0 }, calendar: [] },
   loading: false, busy: false, error: "", notice: "", setPeriod() {}, clearMessages() {}, reload() {}, mutate: async () => true };
 let financeEnabled;
-let mobileAccountState = { session: null, checking: false, error: "", refresh: async () => {} };
+const localFinancialContext = { ownerId: "local", isCurrent: () => true };
+let mobileAccountState = { financialContext: localFinancialContext, financialReady: true, financialAccount: null, session: null, checking: false, error: "", refresh: async () => {} };
 stub("./components/mobile/account/MobileAccountProvider.tsx", { useMobileAccount: () => mobileAccountState });
 stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
@@ -194,7 +195,7 @@ test("first installation shows empty dashboard and category guidance without cre
   assert.match(view.html(), /Creá una categoría para empezar/);
 });
 
-function financeHook(t, repository, enabled = true) {
+function financeHook(t, repository, enabled = true, input = { context: localFinancialContext }) {
   const hookPath = path.join(root, "components/mobile/useMobileFinance.ts"), repoPath = path.join(root, "services/data/financeRepository.ts");
   const oldHook = require.cache[hookPath], oldRepo = require.cache[repoPath];
   stub("./services/data/financeRepository.ts", { getFinanceRepository: async () => repository });
@@ -202,20 +203,22 @@ function financeHook(t, repository, enabled = true) {
   const { useMobileFinance } = require(hookPath);
   t.after(() => { require.cache[hookPath] = oldHook; if (oldRepo) require.cache[repoPath] = oldRepo; else delete require.cache[repoPath]; });
   let value;
-  function Probe() { value = useMobileFinance(enabled); return React.createElement("div"); }
+  function Probe() { value = useMobileFinance(enabled, input.context); return React.createElement("div"); }
   const view = renderer(t, Probe, {}, false);
   return { ...view, value: () => value };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
 
-function accountProvider(t, account, restore) {
+function accountProvider(t, account, restore, cachedGrant = false) {
   const providerPath = path.join(root, "components/mobile/account/MobileAccountProvider.tsx");
   const cloud = require("../services/cloudAuth.ts"), auth = require("../services/supabaseCloudAuth.ts");
   const previous = require.cache[providerPath], oldWindow = global.window;
   const events = new EventTarget(); global.window = events;
   let forced = 0, cached = 0, removed = 0, currentAccount = account;
   t.mock.method(cloud, "getActiveAccount", () => currentAccount);
+  t.mock.method(cloud, "getActiveCloudSession", () => currentAccount);
+  t.mock.method(require("../services/deviceAuthorization.ts"), "hasCachedDeviceGrant", () => cachedGrant);
   t.mock.method(cloud, "removeAccount", async () => { removed++; currentAccount = null; return { ok: true }; });
   t.mock.method(auth, "refreshSession", async (id) => { forced++; return restore(id); });
   t.mock.method(auth, "getSession", async (id) => { cached++; return restore(id); });
@@ -225,6 +228,7 @@ function accountProvider(t, account, restore) {
   t.after(() => { view.dispose(); require.cache[providerPath] = previous; global.window = oldWindow; });
   return { ...view, state: () => view.find(node => node.props.value?.refresh)[0].props.value,
     counts: () => ({ forced, cached }), removed: () => removed,
+    setAccount: value => { currentAccount = value; },
     event: () => events.dispatchEvent(new Event(cloud.ACCOUNT_SESSION_CHANGED_EVENT)) };
 }
 
@@ -248,12 +252,91 @@ test("mobile local startup never calls auth and failed restoration does not hide
   assert.equal(view.state().session, null); assert.equal(view.state().error, "");
 });
 
+test("authorized cached owner opens offline before network restoration and remains stable on network failure",async t=>{
+  const storage=require('../services/supabaseTokenStorage.ts');
+  t.mock.method(storage,'loadSupabaseRefreshToken',async()=> 'secure-fixture-not-exposed');
+  const network=deferred(),account={authProvider:'supabase',storage:'persistent',user:{id:'internal-owner'}};
+  const view=accountProvider(t,account,()=>network.promise,true);
+  view.html();view.effects();await flush();
+  assert.equal(view.state().financialReady,true);assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  assert.equal(view.state().checking,true);assert.equal(view.state().session,null);
+  const context=view.state().financialContext;
+  network.resolve(null);await flush();assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  assert.equal(context.isCurrent(),true);assert.equal(view.removed(),0);
+  assert.doesNotMatch(view.state().error,/secure-fixture|internal-owner/);
+});
+
+test("owner event invalidates old lease immediately; logout/local and relogin isolate namespaces",async t=>{
+  const a={authProvider:'supabase',storage:'session',user:{id:'owner-a'}},b={...a,user:{id:'owner-b'}};
+  const view=accountProvider(t,a,async id=>({...a,user:{id},token:'not-visible'}),true);
+  view.html();view.effects();await flush();const old=view.state().financialContext;
+  assert.equal(old.ownerId,'owner-a');assert.equal(old.isCurrent(),true);
+  view.setAccount(b);view.event();assert.equal(old.isCurrent(),false);await flush();
+  assert.equal(view.state().financialContext.ownerId,'owner-b');
+  view.setAccount(null);view.event();await flush();assert.equal(view.state().financialContext.ownerId,'local');
+  view.setAccount(a);view.event();await flush();assert.equal(view.state().financialContext.ownerId,'owner-a');
+  assert.equal(old.isCurrent(),false);assert.equal(view.removed(),0);
+});
+
+test("saved account without previous device authorization never selects a cloud financial owner",async t=>{
+  const account={authProvider:'supabase',user:{id:'internal-owner'}};
+  const view=accountProvider(t,account,async()=>null,false);
+  view.html();view.effects();await flush();assert.equal(view.state().financialContext.ownerId,'local');
+  assert.equal(view.state().financialReady,true);
+});
+
+test("explicit credential rejection disables cached cloud context; transient network errors retain it",async t=>{
+  const storage=require('../services/supabaseTokenStorage.ts'),cloud=require('../services/cloudAuth.ts');
+  t.mock.method(storage,'loadSupabaseRefreshToken',async()=> 'secure-fixture');
+  let failure=new cloud.CloudAuthRequestError('Sin conexión',{kind:'network'});
+  const view=accountProvider(t,{authProvider:'supabase',storage:'persistent',user:{id:'internal-owner'}},async()=>{throw failure;},true);
+  view.html();view.effects();await flush();assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  const old=view.state().financialContext;
+  failure=new cloud.CloudAuthRequestError('Sesión rechazada',{kind:'auth',code:'invalid_refresh_token'});
+  await view.state().refresh(true);assert.equal(view.state().financialContext.ownerId,'local');assert.equal(old.isCurrent(),false);
+  assert.equal(view.removed(),0);
+});
+
+test("invalidated finance hook hides cached data and refuses old form submissions",async t=>{
+  let valid=true,writes=0;
+  const input={context:{ownerId:'owner-a',isCurrent:()=>valid}};
+  const repository={listCategorias:async()=>[],listMovimientos:async()=>[],getSummary:async()=>summary,
+    listGastosFijos:async()=>[],listPresupuestos:async()=>[],listMetas:async()=>[],listGastosProgramados:async()=>[],getSchedulingSummary:async()=>({})};
+  const view=financeHook(t,repository,true,input);view.html();view.effects();await flush();view.html();
+  const oldMutate=view.value().mutate;assert.ok(view.value().data);
+  valid=false;input.context={ownerId:'owner-b',isCurrent:()=>true};view.html();
+  assert.equal(view.value().data,null);
+  assert.equal(await oldMutate(async()=>{writes++;},'Obsoleto'),false);assert.equal(writes,0);
+  view.effects();await flush();view.html();assert.ok(view.value().data);assert.equal(view.value().data.ownerId,'owner-b');
+});
+
+test("normal cloud Movimientos uses the account context and the existing form without notes/metas",t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  mobileAccountState={...previous,financialContext:{ownerId:'internal-owner',isCurrent:()=>true}};
+  let used;
+  t.mock.method(require('../components/mobile/useMobileFinance.ts'),'useMobileFinance',(enabled,context)=>{used=context.ownerId;return finance;});
+  pathname='/movimientos';const view=renderer(t,MobileApp);assert.match(view.html(),/Cuenta sincronizada/);
+  assert.equal(used,'internal-owner');
+  view.find(n=>n.type==='button'&&n.props.children==='Agregar movimiento')[0].props.onClick();
+  assert.doesNotMatch(view.html(),/Nota \(opcional\)|Meta de ahorro|internal-owner/);
+  pathname='/presupuestos';view.html();assert.equal(used,'local');assert.match(view.html(),/Datos locales/);
+});
+
+test("unreadable account context offers explicit local mode, never silently creates local data",t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});let switches=0;
+  mobileAccountState={...previous,financialReady:false,error:'No se pudo leer la sesión guardada.'};
+  t.mock.method(require('../services/cloudAuth.ts'),'switchToLocalMode',()=>{switches++;});
+  const view=renderer(t,MobileApp);assert.match(view.html(),/Reintentar sesión/);assert.match(view.html(),/La cuenta necesita atención/);
+  assert.doesNotMatch(view.html(),/Listado de movimientos|Resumen financiero/);assert.equal(switches,0);
+  view.find(n=>n.type==='button'&&n.props.children==='Continuar con datos locales')[0].props.onClick();assert.equal(switches,1);
+});
+
 test("mobile restoration errors are sanitized, retryable and keep local shell available", async t => {
   const view = accountProvider(t, { authProvider: "supabase", user: { id: "internal-owner" } }, async () => {
     throw new Error("refresh-token-secret");
   });
   view.html(); view.effects(); await flush();
-  assert.match(view.state().error, /modo local/); assert.doesNotMatch(view.state().error, /secret/);
+  assert.match(view.state().error, /sin conexión/); assert.doesNotMatch(view.state().error, /secret/);
   assert.match(view.html(), /Finanzas locales disponibles/);
   await view.state().refresh(true); assert.equal(view.counts().forced, 2);
 });
@@ -289,10 +372,12 @@ test("mobile account displays connected identity without tokens or full IDs and 
   t.after(() => { mobileAccountState = previous; });
   let signedOut;
   mobileAccountState = { ...previous, session: { user: { id: "internal-owner-private", email: "test@example.com", display_name: "Usuario" }, token: "private-access-token" }, refresh: async () => {} };
+  mobileAccountState = { ...mobileAccountState, financialAccount: mobileAccountState.session,
+    financialContext: { ownerId: mobileAccountState.session.user.id, isCurrent: () => true } };
   t.mock.method(auth, "signOut", async id => { signedOut = id; return { ok: true }; });
   const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
   const view = renderer(t, MobileAccount, {}, false);
-  assert.match(view.html(), /Cuenta conectada|test@example.com|Usuario/);
+  assert.match(view.html(), /Cuenta sincronizada|test@example.com|Usuario/);
   assert.doesNotMatch(view.html(), /internal-owner-private|private-access-token/);
   view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
   await flush(); assert.equal(signedOut, "internal-owner-private");
@@ -315,6 +400,8 @@ test("mobile reports a partial secure logout and can retry deleting the saved se
   const previous = mobileAccountState, auth = require("../services/supabaseCloudAuth.ts");
   t.after(() => { mobileAccountState = previous; });
   mobileAccountState = { ...previous, session: { user: { id: "internal-owner", email: "test@example.com" } }, refresh: async () => { mobileAccountState = { ...previous }; } };
+  mobileAccountState = { ...mobileAccountState, financialAccount: mobileAccountState.session,
+    financialContext: { ownerId: mobileAccountState.session.user.id, isCurrent: () => true } };
   t.mock.method(auth, "signOut", async () => ({ ok: false }));
   let deleted;
   t.mock.method(auth, "deleteSavedSession", async id => { deleted = id; return { ok: true }; });
@@ -322,7 +409,7 @@ test("mobile reports a partial secure logout and can retry deleting the saved se
   const view = renderer(t, MobileAccount, {}, false);
   view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
   await flush(); assert.match(view.html(), /no pudimos borrar por completo/);
-  assert.match(view.html(), /Modo local/);
+  assert.match(view.html(), /Datos locales/);
   view.find(node => node.type === "button" && node.props.children === "Reintentar borrar sesión")[0].props.onClick();
   await flush(); assert.equal(deleted, "internal-owner"); assert.doesNotMatch(view.html(), /no pudimos borrar por completo/);
 });
