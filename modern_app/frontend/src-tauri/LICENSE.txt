@@ -26,9 +26,11 @@ La instalación, acceso o uso de ScisoNomics implica la aceptación plena de est
 
 Si el usuario no acepta estos términos, deberá abstenerse de instalar, acceder o utilizar ScisoNomics.
 
-3. Capacidad para utilizar la aplicación
+3. Capacidad y público objetivo
 
-El usuario declara contar con capacidad legal suficiente para aceptar estos términos y utilizar la aplicación. Si la aplicación es utilizada por una persona menor de edad o por una persona que requiera autorización legal, el uso deberá realizarse bajo responsabilidad y autorización de su representante legal.
+ScisoNomics está diseñada y destinada a personas mayores de 18 años. No está dirigida a niños ni adolescentes.
+
+Al crear una cuenta o utilizar las funciones cloud, el usuario declara tener 18 años o más y contar con capacidad legal suficiente para aceptar estos términos y utilizar la aplicación.
 
 4. Uso permitido
 
@@ -63,7 +65,9 @@ Las funciones incluidas en cada plan podrán variar con el tiempo, siempre procu
 
 El acceso a funciones Premium puede requerir una suscripción activa, pago, activación manual, período de prueba, promoción o cualquier otra modalidad comercial que ScisoNomics implemente.
 
-Actualmente, ScisoNomics permite contratar una suscripción Premium mensual mediante Mercado Pago. El proceso de pago se realiza a través de los servicios de Mercado Pago y está sujeto también a sus términos, políticas, disponibilidad y medios de pago habilitados.
+Actualmente, la versión para Windows puede permitir contratar una suscripción Premium mensual mediante Mercado Pago. Según la plataforma y la disponibilidad comercial, ScisoNomics podrá ofrecer suscripciones mediante el sistema de compras de la tienda correspondiente, incluyendo Google Play en Android y, en futuras versiones para plataformas Apple, el sistema de compras de Apple.
+
+Cada compra o suscripción está sujeta también a los términos, políticas, disponibilidad y reglas del proveedor mediante el cual fue contratada.
 
 ScisoNomics podrá además otorgar acceso Premium de manera manual a determinados usuarios, cuentas de prueba, promociones, acciones comerciales, soporte, usuarios autorizados u otros casos válidos definidos por el responsable del servicio.
 
@@ -86,11 +90,15 @@ Si la suscripción se encuentra vencida, expirada, impaga, sin autorización vá
 
 8. Cambios de plan, cancelación y vencimiento
 
-Cuando la suscripción Premium sea gestionada mediante Mercado Pago, el usuario podrá administrar o cancelar dicha suscripción desde las herramientas que Mercado Pago ponga a su disposición.
+La suscripción Premium deberá administrarse o cancelarse mediante el proveedor por el cual fue contratada, por ejemplo Mercado Pago, Google Play o, cuando corresponda en futuras plataformas, Apple.
 
 El usuario también podrá contactar a soporte de ScisoNomics ante dudas o inconvenientes relacionados con el estado de su suscripción.
 
-La cancelación de una suscripción no implica necesariamente la pérdida inmediata del acceso Premium. Si existe un período previamente abonado y vigente, ScisoNomics podrá mantener el acceso Premium hasta la finalización de dicho período.
+La cancelación impide futuras renovaciones conforme a las reglas del proveedor y no implica necesariamente la pérdida inmediata del acceso Premium. Si existe un período previamente abonado y vigente, el acceso podrá mantenerse hasta la finalización de dicho período, salvo que corresponda un reembolso, revocación u otra regla del proveedor o de la normativa aplicable.
+
+Las solicitudes de reembolso se gestionarán conforme al canal de compra, las políticas del proveedor y la normativa aplicable. Cuando resulte aplicable el derecho de arrepentimiento u otro derecho irrenunciable del consumidor, podrá ejercerse por los canales habilitados sin que estos términos lo limiten.
+
+Eliminar la cuenta de ScisoNomics no cancela automáticamente una suscripción administrada por un proveedor externo. Si el usuario no desea futuras renovaciones, deberá gestionar también la cancelación ante el proveedor correspondiente.
 
 Una vez finalizado el período abonado, o cuando la suscripción se encuentre vencida, cancelada, expirada, impaga o sin autorización válida, ScisoNomics podrá limitar el acceso a funciones Premium.
 
@@ -110,7 +118,7 @@ ScisoNomics podrá modificar precios o condiciones comerciales en el futuro. En 
 
 11. Proveedores de pago
 
-ScisoNomics utiliza actualmente Mercado Pago como proveedor externo para procesar y gestionar determinadas suscripciones Premium en la versión de escritorio disponible en Windows.
+ScisoNomics utiliza actualmente Mercado Pago como proveedor externo para procesar y gestionar determinadas suscripciones Premium en Windows. En Android, ScisoNomics podrá utilizar Google Play Billing cuando la compra Premium esté habilitada en esa plataforma. En futuras versiones para plataformas Apple, podrá utilizarse el sistema de compras de Apple.
 
 El checkout, los medios de pago disponibles y el procesamiento de los datos financieros necesarios para completar la operación son gestionados por Mercado Pago conforme a sus propios términos, políticas de privacidad, procesos de validación, medidas de seguridad y disponibilidad.
 
@@ -292,7 +300,7 @@ El usuario puede eliminar su cuenta ScisoNomics y sus datos cloud desde Configur
 
 La eliminación de datos cloud no necesariamente elimina automáticamente datos almacenados localmente en dispositivos del usuario, backups locales, exportaciones realizadas por el usuario o copias que el usuario haya generado.
 
-La eliminación de datos estará sujeta a validación de identidad, requisitos técnicos, legales y plazos razonables de procesamiento.
+La eliminación de datos estará sujeta a validación de identidad, requisitos técnicos y legales. La eliminación de la cuenta no cancela automáticamente suscripciones administradas por proveedores externos, que deberán gestionarse también desde el proveedor correspondiente.
 
 28. Soporte
 
@@ -408,11 +416,11 @@ e. Datos locales:
 
 5. Datos de pago y suscripción
 
-ScisoNomics utiliza actualmente Mercado Pago para gestionar determinadas suscripciones Premium.
+ScisoNomics utiliza actualmente Mercado Pago para gestionar determinadas suscripciones Premium en Windows. Cuando la compra Premium esté habilitada en Android, podrá utilizar Google Play Billing; en futuras versiones para plataformas Apple podrá utilizarse el sistema de compras de Apple.
 
-Los datos necesarios para procesar el medio de pago son tratados por Mercado Pago conforme a sus propias políticas, términos y medidas de seguridad.
+Los datos necesarios para procesar el medio de pago son tratados por el proveedor de compra correspondiente conforme a sus propias políticas, términos y medidas de seguridad.
 
-ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el procesamiento se realiza mediante Mercado Pago.
+ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el procesamiento es realizado por esos proveedores.
 
 ScisoNomics puede recibir, consultar y almacenar información limitada relacionada con la operación y el estado de la suscripción, incluyendo:
 
@@ -519,23 +527,31 @@ Si el usuario comparte un backup con terceros, lo hace bajo su responsabilidad.
 
 14. Conservación de datos
 
-Los datos se conservarán mientras sean necesarios para el funcionamiento de la aplicación, la cuenta del usuario, la sincronización, soporte, cumplimiento legal, gestión de plan o suscripción, o hasta que el usuario solicite su eliminación cuando corresponda.
+Los datos de la cuenta y los datos financieros cloud se conservarán mientras sean necesarios para prestar las funciones solicitadas por el usuario y se eliminarán cuando la cuenta sea eliminada, salvo información que deba conservarse temporalmente por una finalidad legítima o una obligación aplicable.
 
-Los datos almacenados localmente podrán permanecer en el dispositivo hasta que el usuario los elimine o hasta que la aplicación, sistema operativo o herramientas de desinstalación los remuevan.
+Los datos almacenados localmente podrán permanecer en el dispositivo hasta que el usuario los elimine o hasta que la aplicación, el sistema operativo o las herramientas de desinstalación los remuevan.
 
-Ciertos datos técnicos, comerciales o logs podrán conservarse durante períodos razonables para seguridad, soporte, auditoría técnica, cumplimiento legal o gestión de pagos.
+Como política operativa general:
+a. los logs técnicos ordinarios podrán conservarse hasta 90 días;
+b. los registros de seguridad podrán conservarse hasta 180 días, salvo que exista un incidente de seguridad abierto o una necesidad legal que justifique un período mayor;
+c. si en el futuro se implementan backups cloud operados por ScisoNomics, la purga posterior a una eliminación de cuenta tendrá como objetivo un plazo máximo de 30 días;
+d. los registros de billing, pagos, reembolsos, disputas o evidencia comercial se conservarán únicamente durante el tiempo necesario para gestionar esas finalidades o cumplir obligaciones legales aplicables.
+
+Cuando resulte posible, la información retenida después del cierre de una cuenta será minimizada, separada de la cuenta activa o pseudonimizada. Estos plazos no modifican la conservación de backups o exportaciones locales controlados por el usuario.
 
 15. Eliminación de datos
 
 El usuario puede eliminar la cuenta activa y sus datos cloud desde la aplicación, con confirmación adicional, o solicitar asistencia mediante el canal de contacto indicado.
 
-La eliminación estará sujeta a verificación de identidad, condiciones técnicas y plazos razonables.
+La eliminación estará sujeta a verificación de identidad y condiciones técnicas y legales.
 
 La eliminación de datos cloud no garantiza eliminación automática de datos locales, backups, exportaciones o copias creadas por el usuario.
 
-La eliminación interna revoca las sesiones y dispositivos autorizados de la cuenta. La eliminación de la identidad en el proveedor de autenticación puede quedar pendiente; la aplicación informa ese estado. Los registros comerciales y de seguridad se conservan separados de la cuenta activa y se minimizan los datos de identificación vinculados a ella. Eliminar la cuenta no cancela automáticamente una suscripción de Mercado Pago.
+La eliminación interna revoca las sesiones y dispositivos autorizados de la cuenta. Cuando la eliminación de la identidad en el proveedor de autenticación no pueda completarse inmediatamente, el acceso interno permanecerá bloqueado y el proveedor podrá procesarse de forma asíncrona hasta completar el cierre. Los registros comerciales y de seguridad que deban conservarse quedan separados de la cuenta activa y se minimizan los datos de identificación vinculados a ella.
 
-Pendiente de revisión legal y operativa: alcance y plazos de retención, tratamiento de copias del operador, procedimiento de solicitudes por soporte y políticas comerciales o de reembolso. No se establece un plazo ni una política nueva mediante esta actualización técnica.
+Eliminar la cuenta no cancela automáticamente una suscripción administrada por Mercado Pago, Google Play, Apple u otro proveedor externo. Si el usuario no desea futuras renovaciones, deberá administrar la suscripción desde el proveedor correspondiente.
+
+Si el usuario no puede acceder a la aplicación, podrá solicitar asistencia para eliminar su cuenta mediante scisoftwareco@gmail.com. ScisoNomics podrá verificar la identidad antes de ejecutar una solicitud para evitar eliminaciones no autorizadas.
 
 16. Derechos del titular de datos
 
@@ -585,11 +601,13 @@ Estas transferencias se realizarán conforme a la finalidad del servicio y a la 
 
 Los datos financieros almacenados únicamente de forma local en el dispositivo del usuario no son transferidos automáticamente a estos proveedores por el solo hecho de utilizar ScisoNomics. La transmisión de información dependerá de las funciones cloud, autenticación, sincronización, pagos u otros servicios que el usuario utilice.
 
-20. Confidencialidad
+20. Confidencialidad y no venta de datos identificables
 
-ScisoNomics no venderá los datos personales del usuario a anunciantes.
+ScisoNomics no vende datos personales ni datos financieros identificables de sus usuarios.
 
-La información del usuario no será compartida con terceros para fines ajenos al funcionamiento, soporte, seguridad, cumplimiento legal, gestión de suscripción o prestación de servicios asociados, salvo consentimiento del usuario u obligación legal.
+La información del usuario no será compartida con terceros para fines ajenos al funcionamiento, soporte, seguridad, cumplimiento legal, gestión de suscripción o prestación de servicios asociados, salvo consentimiento válido del usuario u obligación legal.
+
+ScisoNomics podrá generar en el futuro estadísticas, tendencias o productos de análisis basados exclusivamente en información agregada y anonimizada que no permita identificar razonablemente a personas individuales. Esta posibilidad no autoriza la venta ni cesión de historiales financieros identificables ni modifica las obligaciones de información y consentimiento que resulten aplicables.
 
 21. Publicidad y marketing
 
@@ -601,11 +619,11 @@ La aplicación podrá incorporar analítica técnica para conocer errores, rendi
 
 Cuando se utilice analítica, se procurará limitar la información recopilada a lo necesario para mejorar el servicio y evitar incluir información financiera personal detallada.
 
-23. Datos de menores
+23. Personas menores de edad
 
-ScisoNomics no está dirigida específicamente a menores de edad.
+ScisoNomics está destinada a personas mayores de 18 años y no está dirigida a niños ni adolescentes.
 
-Si una persona menor utiliza la aplicación, deberá hacerlo bajo autorización y responsabilidad de sus padres, tutores o representantes legales.
+No se ofrece el registro cloud ni la contratación de Premium como servicio dirigido a menores de 18 años.
 
 24. Decisiones automatizadas
 
