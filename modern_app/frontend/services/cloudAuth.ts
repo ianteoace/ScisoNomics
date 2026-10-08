@@ -1918,6 +1918,15 @@ export function subscribeAuthChanges(listener: () => void) {
   return () => window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, listener);
 }
 
+export async function handleDeletedAccountResponse(authorization: string) {
+  const token = /^Bearer /i.test(authorization) ? authorization.slice(7).trim() : "";
+  const owner = token ? getStoredAccounts().find(account => getRuntimeAccessToken(account.user.id)?.accessToken === token)?.user.id : undefined;
+  if (owner) {
+    try { await (await import("./accountDeletion")).forgetDeletedAccount(owner); }
+    catch { /* A closed server account cannot regain access through cleanup failure. */ }
+  }
+}
+
 export async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
   if (!isCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado en este entorno.", { kind: "unknown" });
   let response: Response;
@@ -1934,7 +1943,9 @@ export async function cloudRequest<T>(path: string, options: RequestInit = {}, t
     console.error("Cloud auth request failed", { path, errorType: error instanceof Error ? error.name : typeof error });
     const isTimeout = error instanceof Error && error.name === "AbortError";
     throw new CloudAuthRequestError(
-      isTimeout
+      path.startsWith("/account/delete/")
+        ? "No pudimos confirmar el resultado. Reintentá la misma solicitud; no iniciés otra eliminación."
+        : isTimeout
         ? "No pudimos verificar la cuenta por un problema de conexión. La cuenta no fue eliminada."
         : "No se pudo conectar con el servicio de cuenta.",
       { kind: isTimeout ? "timeout" : "network" },
@@ -1946,6 +1957,11 @@ export async function cloudRequest<T>(path: string, options: RequestInit = {}, t
     const body = await response.json().catch(() => null);
     const detail = body?.detail;
     const detailCode = typeof detail?.code === "string" ? detail.code : null;
+    if (detailCode === "account_deleted") {
+      // A delayed denial from account A must never disconnect account B.
+      // Match only the exact device grant used by this request.
+      await handleDeletedAccountResponse(new Headers(options.headers).get("Authorization") || "");
+    }
     const verification = detail?.verification;
     const recovery =
       verification?.status === "verification_required" &&

@@ -7,7 +7,7 @@
     "dev:mobile": "next dev --webpack -p 3000 --hostname 0.0.0.0",
     "dev:desktop:concurrent": "node ../scripts/dev-desktop-concurrent.cjs",
     "build": "next build",
-    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs tests/deviceAuthorization.test.cjs",
+    "test:auth": "node --test tests/supabaseCloudAuth.test.cjs tests/deviceAuthorization.test.cjs tests/accountDeletion.test.cjs",
     "test:billing": "node --test tests/premiumBilling.test.cjs",
     "test:updater": "node --test tests/appUpdater.test.cjs",
     "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs tests/mobileDevConfig.test.cjs tests/mobileCloudPull.test.cjs tests/mobileCloudPush.test.cjs",

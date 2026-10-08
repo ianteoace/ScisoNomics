@@ -1,5 +1,5 @@
 import { API_URL, getLocalRequestHeaders, getLocalRequestSecurity, getLocalRequestSecuritySnapshot, type LocalRequestSecurity } from "./http";
-import { forceRefreshActiveCloudSession, getActiveCloudSession, getActiveCloudSessionAsync, getActiveOwnerId, getValidAccessToken } from "./cloudAuth";
+import { forceRefreshActiveCloudSession, getActiveCloudSession, getActiveCloudSessionAsync, getActiveOwnerId, getValidAccessToken, handleDeletedAccountResponse } from "./cloudAuth";
 
 const LAST_SYNC_KEY = "scisonomics_last_manual_sync_at";
 const LAST_AUTO_SYNC_KEY = "scisonomics_last_auto_sync_at";
@@ -930,6 +930,10 @@ async function cloudFetch(
         : options.headers && !Array.isArray(options.headers)
           ? (options.headers as Record<string, string>)["Authorization"]
           : null;
+    if (response.status === 410 && authorizationHeader) {
+      const closed = await response.clone().json().catch(() => null);
+      if (closed?.detail?.code === "account_deleted") await handleDeletedAccountResponse(authorizationHeader);
+    }
     if (response.status === 401 && authorizationHeader && !metadata.authRetryAttempted) {
       const refreshedSession = await forceRefreshActiveCloudSession(metadata.ownerUsed || undefined).catch(() => null);
       if (refreshedSession?.token) {

@@ -120,8 +120,8 @@ test("Android dev grants only public device proofs and the existing mobile trans
   const permission = fs.readFileSync(path.join(root,"src-tauri/dev-permissions/android-native.toml"),"utf8");
   const commands=JSON.parse(permission.match(/commands\.allow\s*=\s*(\[[\s\S]*?\])/)[1].replace(/,\s*\]/,"]"));
   assert.deepEqual(commands,["get_or_create_account_device_identity","sign_device_enrollment_proof",
-    "sign_device_authentication_proof","sign_refresh_proof","sign_device_management_proof","mobile_sql_transaction"]);
-  for(const privateCommand of ["loadIdentity","saveIdentity","deleteIdentity","delete_account_device_identity"])
+    "sign_device_authentication_proof","sign_refresh_proof","sign_device_management_proof","sign_account_deletion_proof","delete_account_device_identity","mobile_sql_transaction"]);
+  for(const privateCommand of ["loadIdentity","saveIdentity","deleteIdentity"])
     assert.ok(!commands.includes(privateCommand));
   // Dev permissions are outside Tauri's shared permissions/ glob so packaged
   // Android and Windows don't acquire an application ACL manifest accidentally.

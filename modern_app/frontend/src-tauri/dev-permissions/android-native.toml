@@ -7,5 +7,7 @@ commands.allow = [
   "sign_device_authentication_proof",
   "sign_refresh_proof",
   "sign_device_management_proof",
+  "sign_account_deletion_proof",
+  "delete_account_device_identity",
   "mobile_sql_transaction",
 ]

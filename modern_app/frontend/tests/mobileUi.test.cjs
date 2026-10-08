@@ -47,6 +47,27 @@ let mobileAccountState = { financialContext: localFinancialContext, financialRea
 stub("./components/mobile/account/MobileAccountProvider.tsx", { useMobileAccount: () => mobileAccountState });
 stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
+
+test('account deletion has explicit consequences, exact typed confirmation and OTP; errors preserve the account',async t=>{
+ const cloud=require('../services/cloudAuth.ts'),service=require('../services/accountDeletion.ts');
+ t.mock.method(cloud,'getActiveOwnerId',()=> 'internal-delete-owner');
+ const oldWindow=global.window;global.window=new EventTarget();t.after(()=>{global.window=oldWindow;});
+ const intent={requestId:'test-intent',capability:'memory-only',expiresIn:300,resendAvailableIn:60};let requested=0,confirmed=0;
+ t.mock.method(service,'requestAccountDeletion',async owner=>{assert.equal(owner,'internal-delete-owner');requested++;return intent;});
+ t.mock.method(service,'accountDeletionOperation',()=>({complete:async(code,text)=>{confirmed++;assert.equal(code,'123456');assert.equal(text,'ELIMINAR');throw new Error('El código no es correcto.');}}));
+ const {AccountDeletionDialog}=require('../components/account/AccountDeletionDialog.tsx');
+ const view=renderer(t,AccountDeletionDialog,{ownerId:'internal-delete-owner'},false);view.html();view.effects();
+ view.find(n=>n.type==='button'&&n.props.children==='Eliminar mi cuenta')[0].props.onClick();
+ assert.match(view.html(),/irreversible respecto a cloud/);assert.match(view.html(),/no se eliminan automáticamente/);assert.match(view.html(),/no cancela una suscripción/);
+ assert.doesNotMatch(view.html(),/internal-delete-owner|memory-only/);
+ view.find(n=>n.type==='button'&&n.props.children==='Continuar y enviar código')[0].props.onClick();await flush();view.html();assert.equal(requested,1);
+ const confirm=()=>view.find(n=>n.type==='button'&&n.props.children==='Eliminar cuenta y datos cloud')[0];
+ assert.equal(confirm().props.disabled,true);const inputs=view.find(n=>n.type==='input');
+ inputs.find(n=>n.props.autoComplete==='one-time-code').props.onChange({target:{value:'123456'}});
+ inputs.find(n=>n.props.autoComplete==='off').props.onChange({target:{value:'ELIMINAR'}});
+ assert.equal(confirm().props.disabled,false);confirm().props.onClick();await flush();
+ assert.equal(confirmed,1);assert.match(view.html(),/El código no es correcto/);assert.match(view.html(),/Eliminar cuenta y datos cloud/);
+});
 const { MobileDialog } = require("../components/mobile/MobileDialog.tsx");
 const { MobileMovementForm } = require("../components/mobile/movimientos/MobileMovementForm.tsx");
 const { compatibleCategories, formatMobileDate } = require("../components/mobile/mobileUi.ts");

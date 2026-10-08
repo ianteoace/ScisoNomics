@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from . import mercadopago_billing as mp
+from . import account_lifecycle
 
 
 OPEN_STATUSES = {"creating", "uncertain", "pending", "authorized", "paused"}
@@ -146,6 +147,20 @@ def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice
     row = conn.execute("SELECT * FROM billing_subscriptions WHERE provider_subscription_id = ? AND provider = 'mercadopago'", (provider_id,)).fetchone()
     if row is None:
         row = conn.execute("SELECT * FROM billing_subscriptions WHERE external_reference = ? AND provider = 'mercadopago'", (reference,)).fetchone()
+    if row is None:
+        retained = conn.execute("SELECT 1 FROM retained_billing_subscriptions WHERE provider='mercadopago' AND (provider_subscription_id=? OR external_reference_hash=?)", (provider_id, account_lifecycle.reference(reference))).fetchone()
+        if retained:
+            return {"status":"account_deleted"}
+    if row is not None:
+        # Same lock order as close: user first, then commercial/financial rows.
+        # Re-read after waiting; the account might have closed in the meantime.
+        try:
+            account_lifecycle.lock_active_user(conn, row["user_id"])
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 410:
+                return {"status":"account_deleted"}
+            raise
+        row = conn.execute("SELECT * FROM billing_subscriptions WHERE id=?", (row["id"],)).fetchone()
     if row is None or (reference and reference != row["external_reference"]) or (expected_subscription_id is not None and row["id"] != expected_subscription_id) or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
         raise BillingConflict("subscription_not_owned")
     if row["provider_plan_id"] and str(provider.get("preapproval_plan_id") or "") != row["provider_plan_id"]:

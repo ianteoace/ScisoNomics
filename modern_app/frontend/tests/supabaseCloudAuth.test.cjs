@@ -831,6 +831,24 @@ test("revoked persisted Supabase refresh is cleared without using legacy", async
   assert.ok(!ctx.calls.some((call) => call.url.pathname === "/auth/refresh"));
 });
 
+for (const mobile of [false, true]) test(`${mobile ? "Android" : "Windows"} signs in again over a saved expired account without removing it`, async t => {
+  const ctx = setup(t, {tauri: true, mobile});
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  ctx.browser.sessionStorage.data.clear();
+  ctx.rejectRefresh = true;
+  const reloaded = loadServices();
+  assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, "session_expired");
+  assert.equal(reloaded.cloud.getStoredAccounts().length, 1);
+  const callsBeforeLogin = ctx.calls.length;
+  assert.equal((await reloaded.external.signInWithPassword("alice@example.com", "correct")).id, "sciso-A");
+  assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, "active");
+  assert.equal(reloaded.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(reloaded.cloud.getStoredAccounts().length, 1);
+  assert.equal(ctx.credentials.size, 1);
+  assert.equal(reloaded.external.getPendingDeviceState().required, false);
+  assert.ok(!ctx.calls.slice(callsBeforeLogin).some(call => call.url.searchParams.get("grant_type") === "refresh_token"));
+});
+
 test("native rotation failure is visible in persistence status and never falls back to localStorage", async (t) => {
   const ctx = setup(t, { tauri: true });
   await ctx.external.signInWithPassword("alice@example.com", "correct");

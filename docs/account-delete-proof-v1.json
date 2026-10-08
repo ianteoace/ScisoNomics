@@ -1,0 +1,21 @@
+{
+  "description": "Synthetic public interoperability vector; reuses the frozen V1 synthetic test key, never a real device key.",
+  "identity": {
+    "formatVersion": 1,
+    "deviceId": "00112233-4455-6677-8899-aabbccddeeff",
+    "publicKey": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "publicKeyHash": "Vkdap1RjR0wChd9dvyvKtz2mUTWIOem3dIGy6rEHcIw"
+  },
+  "accountBinding": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8",
+  "challenge": {
+    "challengeId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "issuedAt": 100,
+    "expiresAt": 220,
+    "familyId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "targetDeviceId": null,
+    "requestHash": "JkFgDcVnAmZ1FaVrCHyYQM5i7Yqxj0jRnwPG7XhbGkA"
+  },
+  "messageHex": "534349534f4e4f4d4943532d4143434f554e542d44454c4554452d563100a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf00112233445566778899aabbccddeeff56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708caaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000000000006400000000000000dcbbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb2641600dc56702667515a56b087c9840ce62ed8ab18f48d19f03c6ed785b1a40",
+  "signature": "MJEMHLeaVqGOlUPJHhuno4-apZj4bCaxcx89xgKMM7sXOcLYtgCnPtrOGbhn1h0bu_XZX8gtZN_MQpI-kaA5Dg"
+}

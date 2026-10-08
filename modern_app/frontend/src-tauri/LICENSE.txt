@@ -1,7 +1,7 @@
 SCISONOMICS
 TÉRMINOS Y CONDICIONES DE USO Y POLÍTICA DE PRIVACIDAD
 
-Última actualización: 02/10/2026
+Última actualización: 07/10/2026
 Autor / Desarrollador: Ian Acevedo
 Contacto de soporte: scisoftwareco@gmail.com
 País de operación principal: República Argentina
@@ -16,7 +16,7 @@ SECCIÓN I — TÉRMINOS Y CONDICIONES DE USO
 
 1. Identificación del servicio
 
-ScisoNomics es una aplicación de escritorio orientada a la gestión financiera personal. La aplicación permite al usuario cargar, organizar y visualizar información financiera propia, incluyendo movimientos, ingresos, gastos, categorías, presupuestos, planificación, estadísticas, backups y datos asociados a su cuenta.
+ScisoNomics es una aplicación de gestión financiera personal disponible en Windows y Android. La disponibilidad de funciones puede variar entre plataformas. La aplicación permite al usuario cargar, organizar y visualizar información financiera propia, incluyendo movimientos, ingresos, gastos, categorías, presupuestos, planificación, estadísticas, backups y datos asociados a su cuenta.
 
 ScisoNomics puede funcionar con datos almacenados localmente en el dispositivo del usuario y, cuando el usuario utiliza una cuenta cloud o funciones de sincronización, puede sincronizar determinados datos con servidores externos para permitir respaldo, recuperación o uso entre dispositivos.
 
@@ -249,7 +249,8 @@ Actualmente pueden intervenir, entre otros:
 a. Supabase, para servicios asociados a autenticación de cuentas;
 b. Railway, para infraestructura y ejecución de servicios cloud de ScisoNomics;
 c. Mercado Pago, para procesamiento y gestión de determinadas suscripciones y pagos Premium;
-d. GitHub, para distribución de releases y actualizaciones de la aplicación de escritorio para Windows.
+d. GitHub, para distribución de releases y actualizaciones de la aplicación de escritorio para Windows;
+e. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
 
 También podrán utilizarse librerías, servicios del sistema operativo, infraestructura técnica u otros proveedores necesarios para el funcionamiento, seguridad, distribución o mantenimiento del servicio.
 
@@ -287,7 +288,7 @@ ScisoNomics podrá suspender, limitar o modificar funciones de la aplicación o 
 
 27. Eliminación de cuenta y datos
 
-El usuario podrá solicitar la eliminación de su cuenta o de datos asociados mediante los canales de contacto disponibles.
+El usuario puede eliminar su cuenta ScisoNomics y sus datos cloud desde Configuración → Cuenta → Eliminar mi cuenta, con confirmación adicional por código y verificación del dispositivo. También puede solicitar asistencia por los canales de contacto disponibles sin tener instalada la aplicación.
 
 La eliminación de datos cloud no necesariamente elimina automáticamente datos almacenados localmente en dispositivos del usuario, backups locales, exportaciones realizadas por el usuario o copias que el usuario haya generado.
 
@@ -526,11 +527,15 @@ Ciertos datos técnicos, comerciales o logs podrán conservarse durante período
 
 15. Eliminación de datos
 
-El usuario podrá solicitar la eliminación de datos cloud o cuenta mediante el canal de contacto indicado.
+El usuario puede eliminar la cuenta activa y sus datos cloud desde la aplicación, con confirmación adicional, o solicitar asistencia mediante el canal de contacto indicado.
 
 La eliminación estará sujeta a verificación de identidad, condiciones técnicas y plazos razonables.
 
 La eliminación de datos cloud no garantiza eliminación automática de datos locales, backups, exportaciones o copias creadas por el usuario.
+
+La eliminación interna revoca las sesiones y dispositivos autorizados de la cuenta. La eliminación de la identidad en el proveedor de autenticación puede quedar pendiente; la aplicación informa ese estado. Los registros comerciales y de seguridad se conservan separados de la cuenta activa y se minimizan los datos de identificación vinculados a ella. Eliminar la cuenta no cancela automáticamente una suscripción de Mercado Pago.
+
+Pendiente de revisión legal y operativa: alcance y plazos de retención, tratamiento de copias del operador, procedimiento de solicitudes por soporte y políticas comerciales o de reembolso. No se establece un plazo ni una política nueva mediante esta actualización técnica.
 
 16. Derechos del titular de datos
 
@@ -561,7 +566,8 @@ Actualmente pueden intervenir, entre otros:
 a. Supabase, para servicios asociados a autenticación y gestión técnica de cuentas;
 b. Railway, como infraestructura utilizada para ejecutar servicios backend y funciones cloud de ScisoNomics;
 c. Mercado Pago, para procesamiento y gestión de pagos y suscripciones Premium;
-d. GitHub, para distribución de versiones y actualizaciones de la aplicación de escritorio para Windows.
+d. GitHub, para distribución de versiones y actualizaciones de la aplicación de escritorio para Windows;
+e. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
 
 Estos proveedores podrán tratar información únicamente en la medida necesaria para prestar los servicios utilizados por ScisoNomics y conforme a sus propias políticas y condiciones aplicables.
 

@@ -295,7 +295,7 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
     grant = await restoreDeviceGrant(data.session.access_token, ownerId);
   } catch (failure) {
     if (sessions.get(ownerId) !== entry) return null;
-    if (failure instanceof CloudAuthRequestError && ["device_revoked", "device_verification_required", "internal_identity_mismatch", "device_proof_invalid"].includes(failure.code || "")) {
+    if (failure instanceof CloudAuthRequestError && ["account_deleted", "device_revoked", "device_verification_required", "internal_identity_mismatch", "device_proof_invalid"].includes(failure.code || "")) {
       // Revocation/lost identity cannot retain a restorable refresh token.
       await removeAccount(ownerId);
     }

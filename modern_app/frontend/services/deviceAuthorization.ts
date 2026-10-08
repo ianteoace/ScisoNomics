@@ -118,6 +118,21 @@ export function forgetDeviceGrant(owner: string) {
   // Normal logout keeps the native identity; known devices do not need a new OTP.
 }
 
+export async function signAccountDeletion(owner: string, challenge: Challenge) {
+  const saved = readMetadata(owner);
+  if (challenge.familyId !== saved.familyId || challenge.targetDeviceId !== null || !challenge.requestHash) {
+    throw new CloudAuthRequestError("La confirmación no corresponde a esta sesión.", {code:"deletion_actor_mismatch",kind:"auth"});
+  }
+  return native<Proof>("sign_account_deletion_proof", {accountBinding:saved.accountBinding, challenge});
+}
+
+// Capture only this public namespace before shared logout forgets its metadata.
+export function deletedIdentityCleanup(owner: string): () => Promise<boolean> {
+  let saved: Metadata;
+  try { saved = readMetadata(owner); } catch { return async () => true; }
+  return () => native<boolean>("delete_account_device_identity", {accountBinding:saved.accountBinding});
+}
+
 export async function restoreDeviceGrant(token: string, owner: string) {
   const saved = readMetadata(owner);
   const { identity } = await native<{ identity: Identity }>("get_or_create_account_device_identity", { accountBinding: saved.accountBinding });

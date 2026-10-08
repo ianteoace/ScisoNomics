@@ -474,6 +474,9 @@ def _ensure_security_audit_schema(conn: CloudConnection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_created ON security_audit_log(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_actor ON security_audit_log(actor_id)")
+    # Additive close journal/barriers and commercial archive; no existing FK changes.
+    from .account_lifecycle import ensure_schema
+    ensure_schema(conn)
 
 
 def _ensure_billing_columns(conn: CloudConnection) -> None:

@@ -67,6 +67,7 @@ from .security import client_ip, enforce_rate_limit, request_body_limit_bytes, r
 from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supabase_access_token
 from .supabase_bootstrap import audit_link, bootstrap_user
 from . import device_sessions
+from . import account_deletion, account_lifecycle
 from . import billing_subscriptions as subscriptions
 from . import mercadopago_billing as mp_billing
 
@@ -142,7 +143,7 @@ AUTH_NO_STORE_PATHS = {
 @app.middleware("http")
 async def auth_no_store_middleware(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith(("/auth/google/status/", "/auth/devices")):
+    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith(("/auth/google/status/", "/auth/devices", "/account/delete/")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -153,6 +154,8 @@ async def safe_auth_validation_error(request: Request, exc: RequestValidationErr
     # Pydantic's default error includes the rejected input; never echo a login ID.
     if request.url.path == "/auth/google/status":
         return JSONResponse(status_code=422, content={"detail": "Solicitud de Google invalida."})
+    if request.url.path.startswith("/account/delete/"):
+        return JSONResponse(status_code=422, content={"detail": {"code": "invalid_deletion_request", "message": "Solicitud de eliminación inválida."}})
     if request.url.path.startswith("/auth/devices"):
         return JSONResponse(status_code=422, content={"detail": {"code": "invalid_device_request", "message": "Solicitud de verificación de dispositivo inválida."}})
     if request.url.path in AUTH_NO_STORE_PATHS:
@@ -256,6 +259,12 @@ def _security_audit(
     source_ip: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
+    original_actor, original_target = actor_id, target_id
+    actor_id = account_lifecycle.minimized_actor(conn, actor_id)
+    target_id = account_lifecycle.minimized_actor(conn, target_id)
+    if actor_id != original_actor or target_id != original_target:
+        source_ip = None
+        details = account_lifecycle.minimized_details(details)
     conn.execute(
         """
         INSERT INTO security_audit_log (event_type, actor_id, target_id, source_ip, outcome, details, created_at)
@@ -469,6 +478,10 @@ def send_verification_email(
     ttl_minutes = _env_int("SCISONOMICS_EMAIL_VERIFICATION_TTL_MINUTES", 10, 1)
     body, html_body = _verification_email_content(code, ttl_minutes)
     subject = "Tu codigo de verificacion de ScisoNomics"
+    if purpose == "delete_account":
+        subject = "Confirmar eliminación de tu cuenta ScisoNomics"
+        body = f"Tu código para ELIMINAR tu cuenta ScisoNomics es {code}. Vence en 5 minutos. Esta acción elimina tu cuenta y datos cloud. No elimina tus copias locales ni cancela Mercado Pago. Si no solicitaste esto, no compartas el código."
+        html_body = f"<html><body><h2>{subject}</h2><p>{html.escape(body)}</p></body></html>"
     if purpose == "new_device":
         subject = "Código de verificación de ScisoNomics"
         body = f"Tu código de verificación es {code}. Vence en 10 minutos. Fue solicitado desde un dispositivo nuevo. Si no reconocés este intento, ignorá este email."
@@ -741,6 +754,7 @@ def _issue_auth_response(
     device_id: str | None = None,
     device_name: str | None = None,
 ) -> AuthResponse:
+    account_lifecycle.lock_active_user(conn, user.id)
     refresh_token = create_refresh_token()
     refresh_token_id = str(uuid4())
     refresh_token_hash = hash_refresh_token(refresh_token)
@@ -1112,6 +1126,7 @@ def _find_or_create_google_user(conn, profile: dict[str, Any], now: str) -> User
     google_email_verified = bool(profile.get("email_verified", True))
     if not google_sub or not EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Google no devolvio un perfil valido.")
+    account_lifecycle.reject_deleted_identity(conn, "google", google_sub)
     _logger.info("[google-auth] callback profile google_sub=%s email=%s", short_identifier(google_sub), mask_email(email))
 
     google_row = conn.execute(
@@ -1490,6 +1505,7 @@ def _pull_table(conn, user_id: str, key: str, since: str | None = None, until: s
 
 
 def _upsert_device(conn, user_id: str, device_id: Any, device_name: Any, now: str) -> None:
+    account_lifecycle.lock_active_user(conn, user_id)
     clean_device_id = str(device_id or "").strip()
     if not clean_device_id:
         return
@@ -1564,6 +1580,7 @@ def _get_supabase_user(token: str, identity=None) -> UserOut:
     columns = "id, email, display_name, created_at, updated_at, auth_provider_id"
     try:
         with connect() as conn:
+            account_lifecycle.reject_deleted_identity(conn, "supabase", provider_id)
             # The provider identity is authoritative once linked. Email changes
             # must never move it to another internal account.
             row = conn.execute(
@@ -1664,6 +1681,7 @@ def get_device_identity_user(authorization: str | None = Header(default=None)) -
 
 
 device_sessions.register_routes(app, get_device_identity_user, get_current_user, send_verification_email)
+account_deletion.register_routes(app, send_verification_email)
 
 
 @app.get("/health")
@@ -1979,6 +1997,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
     except mp_billing.MercadoPagoError as exc:
         raise _billing_error(exc) from exc
     with connect() as conn:
+        account_lifecycle.lock_active_user(conn, user.id)
         billing_user = conn.execute("SELECT plan,subscription_status,subscription_expires_at,billing_source FROM users WHERE id = ?", (user.id,)).fetchone()
         if billing_user is None:
             raise HTTPException(status_code=404, detail={"code": "user_not_found"})
@@ -2017,6 +2036,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
             _security_audit(conn, "subscription.created", outcome="intent", actor_id=user.id, target_id=intent_id, source_ip=client_ip(request))
     # Commit a claim before the POST: even a timeout must never cause a second POST.
     with connect() as conn:
+        account_lifecycle.lock_active_user(conn, user.id)
         claimed = conn.execute("UPDATE billing_subscriptions SET status = 'uncertain', updated_at = ? WHERE id = ? AND user_id = ? AND status = 'creating' AND provider_subscription_id IS NULL", (now_iso(), intent_id, user.id))
         if claimed.rowcount != 1:
             raise HTTPException(status_code=409, detail={"code": "subscription_creation_unconfirmed"})
@@ -2031,6 +2051,7 @@ def start_billing_subscription(request: Request, user: UserOut = Depends(get_cur
         })
         provider_id, checkout_url = subscriptions.validate_pending_preapproval(provider, reference, amount_text, payer_email)
         with connect() as conn:
+            account_lifecycle.lock_active_user(conn, user.id)
             updated = conn.execute(
                 "UPDATE billing_subscriptions SET provider_subscription_id = ?, checkout_url = ?, status = CASE WHEN status IN ('creating','uncertain') THEN 'pending' ELSE status END, last_provider_sync_at = ?, updated_at = ? WHERE id = ? AND (provider_subscription_id IS NULL OR provider_subscription_id = ?)",
                 (provider_id, checkout_url, now_iso(), now_iso(), intent_id, provider_id),
@@ -2252,6 +2273,7 @@ async def sync_push(payload: dict[str, Any], request: Request, user: UserOut = D
         device_name = str(payload.get("device_name") or "").strip() or None
 
         with connect() as conn:
+            account_lifecycle.lock_active_user(conn, user.id)
             _upsert_device(conn, user.id, device_id, device_name, now)
             for table in SYNC_TABLES:
                 items = payload.get(table, []) or []
@@ -2305,8 +2327,11 @@ def sync_pull(since: str | None = Query(default=None), user: UserOut = Depends(g
         init_db()
         cursor = now_iso()
         with connect() as conn:
+            account_lifecycle.lock_active_user(conn, user.id)
             payload = {table: _pull_table(conn, user.id, table, since, cursor) for table in SYNC_TABLES}
         return {"ok": True, "cursor": cursor, "incremental": bool(since), **payload}
+    except HTTPException:
+        raise
     except Exception as exc:
         _logger.exception(
             "[sync-pull] failed user_id=%s incremental=%s error_type=%s",

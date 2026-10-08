@@ -681,7 +681,16 @@ async fn sign_device_management_proof(
   }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
-#[allow(dead_code)]
+#[tauri::command]
+async fn sign_account_deletion_proof(
+  app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput,
+) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let identity = require_account_device_identity(&app, &account_binding)?;
+    device_verification::sign_account_delete(&identity, &account_binding, &challenge)
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
+}
+
 #[tauri::command]
 async fn delete_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<bool, String> {
   tauri::async_runtime::spawn_blocking(move || {
@@ -1111,6 +1120,8 @@ pub fn run() {
       sign_device_authentication_proof,
       sign_refresh_proof,
       sign_device_management_proof,
+      sign_account_deletion_proof,
+      delete_account_device_identity,
       complete_app_close_sync,
       set_app_close_sync_timeout,
       #[cfg(desktop)]

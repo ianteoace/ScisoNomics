@@ -29,6 +29,14 @@ produccion fuera de Git; no copiarlas a ejemplos, issues ni resultados publicado
 
 ## Controles incorporados
 
+- Eliminación de cuenta con grant trusted, OTP específico y firma Ed25519 nativa
+  en dominio `delete_account`, independiente del contrato Device Proof V1.
+  Borrado interno transaccional, revocación de familias/dispositivos, barrera contra
+  bootstrap de identidades eliminadas y reintento externo server-side. Billing y
+  evidencia de seguridad se separan/minimizan; no se cancela Mercado Pago ni se
+  borra SQLite local. Ver [ACCOUNT_DELETION.md](docs/ACCOUNT_DELETION.md), incluidos
+  los pendientes de retención/legal y credencial Supabase administrativa opcional.
+
 - Passwords nuevas derivadas con scrypt; hashes PBKDF2 anteriores se migran al iniciar sesion.
 - Access tokens de corta duracion con emisor, audiencia, tipo y `jti` validados.
 - Refresh tokens rotativos con deteccion de reutilizacion y revocacion de toda la familia.

@@ -1,4 +1,4 @@
-import { getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId } from "./cloudAuth";
+import { getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId, handleDeletedAccountResponse } from "./cloudAuth";
 import { API_URL, getLocalRequestHeaders } from "./http";
 
 export type PremiumFeatureKey = "budgets" | "saving_goals" | "fixed_expenses" | "planning";
@@ -90,6 +90,15 @@ export function getCachedEntitlements(ownerId = getActiveOwnerId()): BillingEnti
   return DEFAULT_ENTITLEMENTS;
 }
 
+export function forgetAccountEntitlements(ownerId: string) {
+  if (ownerId === "local") return;
+  entitlementsRequestVersion.set(ownerId, (entitlementsRequestVersion.get(ownerId) || 0) + 1);
+  entitlementsCache.delete(ownerId);
+  const stored = readStoredEntitlements();
+  delete stored[ownerId];
+  writeStoredEntitlements(stored);
+}
+
 async function cacheLocalEntitlements(ownerId: string) {
   try {
     const session = await getActiveCloudSessionAsync();
@@ -129,7 +138,13 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
       },
       cache: "no-store",
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      if (response.status === 410) {
+        const closed = await response.json().catch(() => null);
+        if (closed?.detail?.code === "account_deleted") await handleDeletedAccountResponse(`Bearer ${session.token}`);
+      }
+      throw new Error(`HTTP ${response.status}`);
+    }
     const entitlements = normalizeEntitlements(await response.json());
     if (getActiveOwnerId() !== ownerId || getActiveAccount()?.user.id !== ownerId || entitlementsRequestVersion.get(ownerId) !== requestVersion) return getCachedEntitlements(ownerId);
     setCachedEntitlements(ownerId, entitlements);
