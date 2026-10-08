@@ -16,6 +16,7 @@
         "default",
         "mobile-sql",
         "mobile-auth",
+        "mobile-billing",
         {
           "identifier": "android-dev-localhost",
           "description": "Native access for the Android development server over ADB reverse only.",
@@ -33,6 +34,12 @@
             "mobile-secure-storage:allow-save",
             "mobile-secure-storage:allow-load",
             "mobile-secure-storage:allow-delete",
+            "google-play-billing:allow-query-products",
+            "google-play-billing:allow-purchase",
+            "google-play-billing:allow-query-purchases",
+            "google-play-billing:allow-manage-subscription",
+            "google-play-billing:allow-registerListener",
+            "google-play-billing:allow-remove-listener",
             {
               "identifier": "opener:allow-open-url",
               "allow": [

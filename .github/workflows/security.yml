@@ -148,6 +148,7 @@ jobs:
           modern_app.cloud_backend.test_security
           modern_app.cloud_backend.test_device_sessions
           modern_app.cloud_backend.test_account_deletion
+          modern_app.cloud_backend.test_google_play_billing
           -v
       - name: Smoke import local backend from clean checkout
         env:

@@ -46,7 +46,7 @@ export function AccountDeletionDialog({ownerId}: {ownerId: string}) {
       <div className="grid gap-4">
         <p>Se eliminarán tu cuenta ScisoNomics y tus datos sincronizados. La acción es irreversible respecto a cloud.</p>
         <p>Los datos locales, backups y exportaciones de tus dispositivos no se eliminan automáticamente. Los datos guardados de la cuenta permanecerán separados y dejarán de mostrarse como cuenta activa.</p>
-        <p>Eliminar la cuenta no cancela una suscripción en Mercado Pago. Administrala desde tu cuenta de Mercado Pago antes de continuar.</p>
+        <p>Eliminar la cuenta no cancela suscripciones en Google Play ni Mercado Pago. Administralas en el proveedor donde las contrataste antes de continuar.</p>
         <p className="text-sm text-slate-400">Los registros comerciales y de seguridad necesarios se conservan separados de la cuenta activa. La eliminación del acceso externo puede quedar pendiente de completar.</p>
         {error?<p role="alert" className="text-red-300">{error}</p>:null}
         {!intent?<button className="btn min-h-12" disabled={busy} onClick={()=>void start()}>{busy?"Enviando…":"Continuar y enviar código"}</button>:<>

@@ -117,6 +117,7 @@ def audit(conn, event, ref, outcome="success"):
 
 def close_internal(conn, user, row, token, payload):
     user_id, ref, stamp = user["id"], "deleted:"+row["id"], devices.stamp()
+    conn.execute("UPDATE google_play_account_bindings SET user_id=NULL,deletion_ref=? WHERE user_id=?",(ref,user_id))
     for provider, subject in (("supabase",user["auth_provider_id"]),("google",user["google_sub"])):
         if subject:
             conn.execute("INSERT INTO deleted_account_identities(identity_hash,provider,deletion_ref,created_at) VALUES(?,?,?,?) ON CONFLICT(identity_hash) DO NOTHING", (lifecycle.identity_reference(provider,subject),provider,ref,stamp))

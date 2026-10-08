@@ -199,6 +199,21 @@ No incluir en el paquete DNDA:
 - enlazar esas páginas con Términos y Privacidad existentes;
 - mantener textos Windows/Android alineados con el producto real.
 
+## Estado técnico M10B: Google Play Billing
+
+Android integra compras y restauración mediante Google Play Billing, con precio
+del catálogo Play y validación server-side. Windows mantiene Mercado Pago.
+Premium es un entitlement común: se conserva el mayor período válido verificado
+entre proveedores y grants manuales. Eliminar la cuenta no cancela suscripciones;
+el usuario debe administrarlas en el proveedor correspondiente.
+
+La implementación local incluye RTDN autenticado y archivo comercial tras borrar
+la cuenta. Falta configurar Play Console, internal testing, license testers,
+credenciales server-side, Pub/Sub y reconciliación programada en staging para
+validar compra, renovación, cancelación y revocación reales. No hubo publicación,
+deploy ni cambios en producción. No se modifican aquí plazos o políticas legales.
+Ver [arquitectura, configuración y checklist M10B](GOOGLE_PLAY_BILLING.md).
+
 ## Pendientes profesionales
 
 Validar con asesoría jurídica/contable cuando corresponda:

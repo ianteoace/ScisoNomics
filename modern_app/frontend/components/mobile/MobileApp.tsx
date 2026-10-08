@@ -30,6 +30,8 @@ import { MobileCalendar } from "./calendario/MobileCalendar";
 import { MobileStatistics } from "./estadisticas/MobileStatistics";
 import { MobileReport } from "./reporte/MobileReport";
 import { MobileSettings } from "./configuracion/MobileSettings";
+import { useMobilePremium } from "./useMobilePremium";
+import { canUseFeature } from "../../services/entitlements";
 
 type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
 type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement"; row: FinanceMovimiento } | { kind: "category"; row: Categoria } | { kind: "fixed"; row: GastoFijo } | { kind: "budget"; row: Presupuesto } | { kind: "goal"; row: MetaAhorro };
@@ -49,11 +51,24 @@ function MobileFinancialApp({ context, legalContent }: { context: MobileFinancia
   const pathname = rawPathname === "/reporte-mensual" ? "/reporte" : rawPathname;
   const router = useRouter();
   const section = mobileSections.find((item) => item.href === pathname);
+  const entitlement = useMobilePremium(context.ownerId, true);
+  if(section?.feature&&!canUseFeature(section.feature,entitlement))return <MobilePremiumGate title={section.label} pathname={pathname} router={router} />;
   const legal = pathname === "/legal";
   const localModule = ["/gastos-fijos", "/presupuestos", "/metas", "/planificacion"].includes(pathname);
   const ownerId = localModule ? "local" : context.ownerId;
   return <MobileFinancialPage key={`${ownerId}:${localModule}`} pathname={pathname} section={section} legal={legal} router={router}
     context={localModule ? { ...LOCAL_FINANCIAL_CONTEXT, isCurrent: context.isCurrent } : context} legalContent={legalContent} />;
+}
+
+function MobilePremiumGate({title,pathname,router}:{title:string;pathname:string;router:ReturnType<typeof useRouter>}) {
+  const [menuOpen,setMenuOpen]=useState(false);
+  return <div className="min-h-screen bg-slate-950 text-slate-100">
+    <MobileHeader title={title} menuOpen={menuOpen} onOpenMenu={()=>setMenuOpen(true)} />
+    {menuOpen?<MobileSidebar pathname={pathname} onClose={()=>setMenuOpen(false)} />:null}
+    <main className="grid gap-4 p-5"><p>Esta función requiere Premium vigente en tu cuenta.</p>
+      <button className="btn min-h-12" onClick={()=>router.push("/configuracion")}>Ver Premium y cuenta</button>
+      <button className="btn-secondary min-h-12" onClick={()=>router.push("/dashboard")}>Volver a Inicio</button></main>
+  </div>;
 }
 
 function MobileFinancialPage({ pathname, section, legal, router, context, legalContent }: {

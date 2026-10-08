@@ -92,50 +92,13 @@ def public_status(conn, user_id: str) -> dict:
 
 
 def expire_entitlement_if_due(conn, user_id: str, *, now: str) -> None:
-    user = conn.execute(
-        "SELECT plan,billing_source,subscription_expires_at FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    if user is None or user["billing_source"] != "mercadopago" or user["plan"] != "premium":
-        return
-    expires = _parse_date(user["subscription_expires_at"])
-    if expires is None or expires > datetime.now(timezone.utc):
-        return
-    latest = _row(conn, user_id)
-    status = "canceled" if latest and latest["status"] == "canceled" else "expired"
-    conn.execute(
-        "UPDATE users SET plan = 'free', subscription_status = ?, subscription_expires_at = NULL, updated_at = ? WHERE id = ? AND billing_source = 'mercadopago'",
-        (status, now, user_id),
-    )
+    from .billing_entitlements import project
+    project(conn, user_id, now=now)
 
 
 def _set_effective_entitlement(conn, row, *, now: str) -> None:
-    latest = _row(conn, row["user_id"])
-    if latest is None or latest["id"] != row["id"]:
-        return
-    user = conn.execute(
-        "SELECT id, plan, subscription_status, subscription_expires_at, billing_source FROM users WHERE id = ?",
-        (row["user_id"],),
-    ).fetchone()
-    if user is None:
-        raise BillingConflict("user_missing")
-    source = str(user["billing_source"] or "")
-    # Existing/manual Premium and subsequent admin grants have priority.
-    if source != "mercadopago" and str(user["plan"] or "").lower() == "premium":
-        return
-    paid_until = _parse_date(row["paid_until"])
-    entitled = paid_until is not None and paid_until > datetime.now(timezone.utc)
-    if entitled:
-        conn.execute(
-            "UPDATE users SET plan = 'premium', subscription_status = 'active', subscription_expires_at = ?, billing_source = 'mercadopago', updated_at = ? WHERE id = ?",
-            (paid_until.isoformat(), now, row["user_id"]),
-        )
-    elif source == "mercadopago":
-        status = "canceled" if row["status"] == "canceled" else "expired"
-        conn.execute(
-            "UPDATE users SET plan = 'free', subscription_status = ?, subscription_expires_at = NULL, billing_source = 'mercadopago', updated_at = ? WHERE id = ?",
-            (status, now, row["user_id"]),
-        )
+    from .billing_entitlements import project
+    project(conn, row["user_id"], now=now)
 
 
 def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None, payment_invoice: dict | None = None, expected_subscription_id: str | None = None) -> dict:

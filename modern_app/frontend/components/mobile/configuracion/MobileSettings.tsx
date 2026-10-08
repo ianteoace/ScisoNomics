@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import packageJson from "../../../package.json";
 import { mobileSections } from "../MobileSidebar";
 import { MobileAccount } from "../account/MobileAccount";
+import { MobilePremium } from "../billing/MobilePremium";
 
 function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
   return <section className="card min-w-0 space-y-3 p-4">
@@ -24,9 +25,8 @@ export function MobileSettings() {
     <SettingsCard title="Cuenta"><MobileAccount /></SettingsCard>
     <SettingsCard title="Sincronización"><p>Desde Cuenta podés descargar categorías y movimientos con “Sincronizar ahora” y enviar pendientes con “Subir cambios”.</p><p>Creá movimientos para tu cuenta desde esa sección. Tus finanzas locales permanecen separadas.</p></SettingsCard>
     <SettingsCard title="ScisoNomics Premium">
-      <p>Durante el desarrollo Mobile, estas funciones están habilitadas:</p>
+      <MobilePremium />
       <ul className="list-disc space-y-2 pl-5">{mobileSections.filter((section) => section.premium).map((section) => <li key={section.feature}>{section.label}</li>)}</ul>
-      <p>La contratación de Premium todavía no está habilitada en Mobile.</p>
     </SettingsCard>
     <SettingsCard title="Backups y restauración"><p>Disponible próximamente en Mobile.</p><p>Todavía no se crean copias de seguridad. Desinstalar la app o borrar su almacenamiento elimina los datos locales.</p></SettingsCard>
     <SettingsCard title="Actualizaciones"><p>Las actualizaciones de Android se gestionarán mediante la tienda.</p><p>Esta función todavía no está habilitada.</p></SettingsCard>

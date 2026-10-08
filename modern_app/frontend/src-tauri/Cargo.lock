@@ -87,6 +87,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
+ "tauri-plugin-google-play-billing",
  "tauri-plugin-log",
  "tauri-plugin-mobile-secure-storage",
  "tauri-plugin-opener",
@@ -4749,6 +4750,15 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-google-play-billing"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

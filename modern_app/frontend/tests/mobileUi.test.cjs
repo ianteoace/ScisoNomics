@@ -46,7 +46,16 @@ const localFinancialContext = { ownerId: "local", isCurrent: () => true };
 let mobileAccountState = { financialContext: localFinancialContext, financialReady: true, financialAccount: null, session: null, checking: false, error: "", refresh: async () => {} };
 stub("./components/mobile/account/MobileAccountProvider.tsx", { useMobileAccount: () => mobileAccountState });
 stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
+let mobilePremium={plan:"premium",status:"active",features:{budgets:true,saving_goals:true,fixed_expenses:true,planning:true},expires_at:null};
+stub("./components/mobile/useMobilePremium.ts", {useMobilePremium:()=>mobilePremium});
 const { MobileApp } = require("../components/mobile/MobileApp.tsx");
+test('Premium modules are gated by account entitlement while free navigation stays available',t=>{
+ const previous=mobilePremium;mobilePremium={plan:'free',status:'active',features:{budgets:false,saving_goals:false,fixed_expenses:false,planning:false},expires_at:null};
+ t.after(()=>{mobilePremium=previous;pathname='/dashboard';});
+ pathname='/presupuestos';const blocked=renderToStaticMarkup(React.createElement(MobileApp));
+ assert.match(blocked,/requiere Premium vigente/);assert.match(blocked,/Abrir menú/);assert.doesNotMatch(blocked,/Nuevo presupuesto/);
+ pathname='/dashboard';assert.doesNotMatch(renderToStaticMarkup(React.createElement(MobileApp)),/requiere Premium vigente/);
+});
 
 test('account deletion has explicit consequences, exact typed confirmation and OTP; errors preserve the account',async t=>{
  const cloud=require('../services/cloudAuth.ts'),service=require('../services/accountDeletion.ts');
@@ -58,7 +67,7 @@ test('account deletion has explicit consequences, exact typed confirmation and O
  const {AccountDeletionDialog}=require('../components/account/AccountDeletionDialog.tsx');
  const view=renderer(t,AccountDeletionDialog,{ownerId:'internal-delete-owner'},false);view.html();view.effects();
  view.find(n=>n.type==='button'&&n.props.children==='Eliminar mi cuenta')[0].props.onClick();
- assert.match(view.html(),/irreversible respecto a cloud/);assert.match(view.html(),/no se eliminan automáticamente/);assert.match(view.html(),/no cancela una suscripción/);
+ assert.match(view.html(),/irreversible respecto a cloud/);assert.match(view.html(),/no se eliminan automáticamente/);assert.match(view.html(),/no cancela suscripciones/);assert.match(view.html(),/Google Play/);
  assert.doesNotMatch(view.html(),/internal-delete-owner|memory-only/);
  view.find(n=>n.type==='button'&&n.props.children==='Continuar y enviar código')[0].props.onClick();await flush();view.html();assert.equal(requested,1);
  const confirm=()=>view.find(n=>n.type==='button'&&n.props.children==='Eliminar cuenta y datos cloud')[0];
@@ -802,4 +811,44 @@ test('cloud creation reuses movement form and scoped repository, with no note or
  const amount=view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];amount.props.onChange({target:{value:'1234'}});
  select.props.onChange({target:{value:'1'}});view.find(n=>n.type==='form')[0].props.onSubmit({preventDefault(){}});await flush();
  assert.equal(received.categoria_id,1);assert.equal(received.nota,'');assert.equal(received.meta_id,null);assert.match(view.html(),/Cambio guardado/);
+});
+
+async function premiumView(t, initialStatus='none') {
+ const previous=mobilePremium;mobilePremium={plan:'free',status:'active',features:{budgets:false,saving_goals:false,fixed_expenses:false,planning:false},expires_at:null};
+ t.after(()=>{mobilePremium=previous;});
+ const cloud=require('../services/cloudAuth.ts'),play=require('../services/googlePlayBilling.ts');
+ const state={owner:'internal-play-owner',status:initialStatus,calls:[],result:{pending:true},failure:null};
+ t.mock.method(cloud,'getActiveOwnerId',()=>state.owner);
+ t.mock.method(play,'playCatalog',async()=>({context:{productIds:['premium-from-server']},offers:[{formattedPrice:'Precio real de Play'}]}));
+ t.mock.method(play,'playSubscription',async()=>({status:state.status,expiresAt:'2030-01-01T00:00:00Z',acknowledged:true,autoRenew:state.status==='active'}));
+ t.mock.method(play,'watchPlayPurchases',async()=>({unregister:async()=>{}}));
+ t.mock.method(play,'buyPlayPremium',async owner=>{state.calls.push(['buy',owner]);if(state.failure)throw new Error(state.failure);return state.result;});
+ t.mock.method(play,'restorePlayPurchases',async owner=>{state.calls.push(['restore',owner]);return {pending:false};});
+ t.mock.method(play,'managePlaySubscription',async(owner,product)=>{state.calls.push(['manage',owner,product]);});
+ const {MobilePremium}=require('../components/mobile/billing/MobilePremium.tsx');
+ const previousWindow=global.window;global.window=new EventTarget();
+ const view=renderer(t,MobilePremium,{},false);view.html();view.effects();await flush();
+ t.after(()=>{view.dispose();global.window=previousWindow;});
+ return {state,view,button:label=>view.find(n=>n.type==='button'&&n.props.children===label)[0]};
+}
+test('Android Premium shows Play price, pending purchase and backend errors without granting locally',async t=>{
+ const {state,view,button}=await premiumView(t);
+ assert.match(view.html(),/Precio real de Play/);assert.doesNotMatch(view.html(),/Mercado Pago/);
+ button('Suscribirme con Google Play').props.onClick();await flush();assert.match(view.html(),/Compra pendiente/);assert.match(view.html(),/Plan Free/);
+ state.failure='No pudimos verificar la compra.';button('Suscribirme con Google Play').props.onClick();await flush();
+ assert.match(view.html(),/role="alert"/);assert.match(view.html(),/No pudimos verificar/);assert.match(view.html(),/Plan Free/);
+ assert.doesNotMatch(view.html(),/internal-play-owner|premium-from-server|purchaseToken/);
+});
+test('Android restore and management actions stay in Play and require the current internal owner',async t=>{
+ const {state,view,button}=await premiumView(t,'canceled');assert.match(view.html(),/está cancelada/);
+ button('Restaurar compras').props.onClick();await flush();assert.deepEqual(state.calls[0],['restore','internal-play-owner']);
+ assert.match(view.html(),/Verificación completada/);assert.match(view.html(),/Plan Free/);
+ button('Administrar suscripción').props.onClick();await flush();assert.deepEqual(state.calls[1],['manage','internal-play-owner','premium-from-server']);
+ state.owner='local';view.html();view.effects();await flush();assert.match(view.html(),/Iniciá sesión/);
+ assert.equal(view.find(n=>n.type==='button').length,0);
+});
+test('Android displays Play grace and hold states while access remains governed by verified entitlement',async t=>{
+ const {state,view}=await premiumView(t,'grace');assert.match(view.html(),/intentando recuperar el pago/);assert.match(view.html(),/Plan Free/);
+ state.status='hold';view.find(n=>n.type==='button'&&n.props.children==='Restaurar compras')[0].props.onClick();await flush();
+ assert.match(view.html(),/pago está suspendido/);assert.match(view.html(),/Plan Free/);
 });

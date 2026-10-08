@@ -68,6 +68,8 @@ from .supabase_auth import SupabaseAuthError, supabase_auth_enabled, verify_supa
 from .supabase_bootstrap import audit_link, bootstrap_user
 from . import device_sessions
 from . import account_deletion, account_lifecycle
+from . import billing_entitlements
+from . import google_play_billing
 from . import billing_subscriptions as subscriptions
 from . import mercadopago_billing as mp_billing
 
@@ -143,7 +145,7 @@ AUTH_NO_STORE_PATHS = {
 @app.middleware("http")
 async def auth_no_store_middleware(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith(("/auth/google/status/", "/auth/devices", "/account/delete/")):
+    if request.url.path in AUTH_NO_STORE_PATHS or request.url.path.startswith(("/auth/google/status/", "/auth/devices", "/account/delete/", "/billing/google-play")):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -156,6 +158,8 @@ async def safe_auth_validation_error(request: Request, exc: RequestValidationErr
         return JSONResponse(status_code=422, content={"detail": "Solicitud de Google invalida."})
     if request.url.path.startswith("/account/delete/"):
         return JSONResponse(status_code=422, content={"detail": {"code": "invalid_deletion_request", "message": "Solicitud de eliminación inválida."}})
+    if request.url.path.startswith("/billing/google-play"):
+        return JSONResponse(status_code=422, content={"detail": {"code": "invalid_google_play_request", "message": "Solicitud de compra inválida."}})
     if request.url.path.startswith("/auth/devices"):
         return JSONResponse(status_code=422, content={"detail": {"code": "invalid_device_request", "message": "Solicitud de verificación de dispositivo inválida."}})
     if request.url.path in AUTH_NO_STORE_PATHS:
@@ -1039,6 +1043,7 @@ def _admin_update_user_entitlements(
     if row is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
 
+    billing_entitlements.set_manual_grant(conn, row["id"], normalized_plan, normalized_status, expires_at, now)
     conn.execute(
         """
         UPDATE users
@@ -1047,6 +1052,7 @@ def _admin_update_user_entitlements(
         """,
         (normalized_plan, normalized_status, expires_at, now, row["id"]),
     )
+    billing_entitlements.project(conn, row["id"], now=now)
     updated = conn.execute(
         """
         SELECT id, email, plan, subscription_status, subscription_expires_at
@@ -1682,6 +1688,7 @@ def get_device_identity_user(authorization: str | None = Header(default=None)) -
 
 device_sessions.register_routes(app, get_device_identity_user, get_current_user, send_verification_email)
 account_deletion.register_routes(app, send_verification_email)
+google_play_billing.register_routes(app, get_current_user)
 
 
 @app.get("/health")

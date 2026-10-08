@@ -8,7 +8,7 @@
     "dev:desktop:concurrent": "node ../scripts/dev-desktop-concurrent.cjs",
     "build": "next build",
     "test:auth": "node --test tests/supabaseCloudAuth.test.cjs tests/deviceAuthorization.test.cjs tests/accountDeletion.test.cjs",
-    "test:billing": "node --test tests/premiumBilling.test.cjs",
+    "test:billing": "node --test tests/premiumBilling.test.cjs tests/googlePlayBilling.test.cjs tests/signedEntitlements.test.cjs tests/mobileEntitlementCache.test.cjs tests/mobilePremiumLifecycle.test.cjs",
     "test:updater": "node --test tests/appUpdater.test.cjs",
     "test:mobile": "node --test tests/mobileFinanceRepository.test.cjs tests/mobileUi.test.cjs tests/mobileDevConfig.test.cjs tests/mobileCloudPull.test.cjs tests/mobileCloudPush.test.cjs",
     "start": "next start -p 3000",

@@ -514,9 +514,29 @@ def _ensure_billing_subscription_schema(conn: CloudConnection) -> None:
     _ensure_column(conn, "billing_subscriptions", "payment_status", "TEXT")
     _ensure_column(conn, "billing_subscriptions", "payment_status_detail", "TEXT")
     _ensure_column(conn, "billing_subscriptions", "last_payment_at", "TEXT")
+    for name, kind in (
+        ("package_name","TEXT"),("product_id","TEXT"),("purchase_token_hash","TEXT"),
+        ("purchase_token_ciphertext","TEXT"),("account_binding","TEXT"),
+        ("auto_renew","INTEGER"),("acknowledged","INTEGER NOT NULL DEFAULT 0"),
+        ("superseded","INTEGER NOT NULL DEFAULT 0"),("provider_state","TEXT"),
+        ("last_rtdn_event_ms","BIGINT NOT NULL DEFAULT 0"),("provider_order_id","TEXT"),
+    ):
+        _ensure_column(conn, "billing_subscriptions", name, kind)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_google_play_token ON billing_subscriptions(purchase_token_hash) WHERE purchase_token_hash IS NOT NULL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS google_play_reconciliation_locks (
+        token_hash TEXT PRIMARY KEY,generation BIGINT NOT NULL,updated_at TEXT NOT NULL)""")
+    _ensure_column(conn,"google_play_reconciliation_locks","event_ms","BIGINT NOT NULL DEFAULT 0")
+    conn.execute("""CREATE TABLE IF NOT EXISTS google_play_account_bindings (
+        binding_hash TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id),deletion_ref TEXT)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_google_play_binding_user ON google_play_account_bindings(user_id)")
+    from .billing_entitlements import preserve_manual_grants
+    preserve_manual_grants(conn)
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_provider_subscription ON billing_subscriptions(provider, provider_subscription_id) WHERE provider_subscription_id IS NOT NULL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_billing_user ON billing_subscriptions(user_id)")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_one_open_per_user ON billing_subscriptions(user_id, provider) WHERE status IN ('creating', 'uncertain', 'pending', 'authorized', 'paused')")
+    # Preserve MP's single checkout constraint before replacing the legacy index.
+    # Play has independently verified tokens/products, including paused history.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_billing_mp_one_open_per_user ON billing_subscriptions(user_id, provider) WHERE provider = 'mercadopago' AND status IN ('creating', 'uncertain', 'pending', 'authorized', 'paused')")
+    conn.execute("DROP INDEX IF EXISTS idx_billing_one_open_per_user")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS billing_webhook_events (

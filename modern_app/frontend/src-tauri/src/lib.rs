@@ -1061,6 +1061,8 @@ pub fn run() {
   let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
   #[cfg(target_os = "android")]
   let builder = builder.plugin(tauri_plugin_mobile_secure_storage::init());
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_google_play_billing::init());
   #[cfg(mobile)]
   let builder = builder.plugin(
     tauri_plugin_sql::Builder::default()

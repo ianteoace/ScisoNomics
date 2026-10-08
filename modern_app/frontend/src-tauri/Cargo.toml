@@ -45,3 +45,4 @@ sqlx = { version = "=0.8.6", default-features = false, features = ["sqlite", "ru
 
 [target.'cfg(target_os = "android")'.dependencies]
 tauri-plugin-mobile-secure-storage = { path = "plugins/mobile-secure-storage" }
+tauri-plugin-google-play-billing = { path = "plugins/google-play-billing" }

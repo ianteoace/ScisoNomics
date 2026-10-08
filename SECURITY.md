@@ -176,6 +176,28 @@ Si se sospecha el robo de un secreto o una sesion:
 4. Notificar a los usuarios afectados y forzar un nuevo inicio de sesion.
 5. Conservar evidencia minimizada y documentar la causa y la correccion.
 
+## Google Play Billing (M10B)
+
+Android usa Billing Library 9.1.0 mediante un plugin nativo exclusivo de Android.
+Una compra local nunca concede Premium: el backend consulta Google, valida
+package/producto y ownership HMAC, y confirma el acknowledgement antes de
+proyectar el entitlement comun de Google, Mercado Pago y grants manuales.
+Los tokens de compra se almacenan cifrados con AES-GCM y hash unico; las
+credenciales administrativas permanecen exclusivamente en el servidor.
+
+RTDN exige OIDC de Pub/Sub, audience, cuenta de servicio y subscription exactos,
+y vuelve a consultar Google. Locks y generaciones impiden que respuestas viejas
+sobrescriban resultados nuevos. Las cuentas eliminadas solo conservan el archivo
+comercial minimizado y nunca se recrean mediante notificaciones.
+Android verifica la misma clave publica RSA de licencias que desktop; el cache
+firmado vence en un maximo de 24 horas y no permite conceder Premium offline.
+
+CI incluye las pruebas backend Google Play. Las pruebas locales tambien cubren
+ownership, estados, reconciliacion, borrado, cache firmado y bridge Android.
+La compra real y RTDN requieren configurar Play Console y staging; no se afirma
+que se hayan validado con el proveedor real.
+Ver [configuracion, amenazas y checklist](docs/GOOGLE_PLAY_BILLING.md).
+
 ## Reporte responsable
 
 No publiques vulnerabilidades con datos reales en un issue publico. Contacta al responsable del repositorio de forma privada e incluye pasos de reproduccion sin credenciales ni informacion financiera.

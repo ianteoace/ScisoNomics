@@ -1,5 +1,7 @@
 import { getActiveAccount, getActiveCloudSessionAsync, getActiveOwnerId, handleDeletedAccountResponse } from "./cloudAuth";
 import { API_URL, getLocalRequestHeaders } from "./http";
+import { getRuntimePlatformSync } from "./platform";
+import { verifyEntitlementToken } from "./signedEntitlements";
 
 export type PremiumFeatureKey = "budgets" | "saving_goals" | "fixed_expenses" | "planning";
 export type SubscriptionStatus = "active" | "trialing" | "past_due" | "canceled" | "expired";
@@ -14,6 +16,11 @@ export type BillingEntitlements = {
 
 const CLOUD_API_URL = (process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL || "").replace(/\/$/, "");
 const ENTITLEMENTS_STORAGE_KEY = "scisonomics_entitlements_by_owner_v1";
+const SIGNED_STORAGE_KEY = "scisonomics_signed_entitlements_by_owner_v1";
+const signedExpiry = new Map<string, number>();
+export const ENTITLEMENTS_CHANGED_EVENT = "scisonomics:entitlements-changed";
+const mobileRuntime = () => ["android", "ios"].includes(getRuntimePlatformSync());
+export const entitlementValidUntil = (ownerId:string) => signedExpiry.get(ownerId)||0;
 const DEFAULT_ENTITLEMENTS: BillingEntitlements = {
   plan: "free",
   status: "active",
@@ -80,6 +87,9 @@ function setCachedEntitlements(ownerId: string, entitlements: BillingEntitlement
 }
 
 export function getCachedEntitlements(ownerId = getActiveOwnerId()): BillingEntitlements {
+  if (mobileRuntime()) {
+    return (signedExpiry.get(ownerId) || 0) > Date.now() ? entitlementsCache.get(ownerId) || DEFAULT_ENTITLEMENTS : DEFAULT_ENTITLEMENTS;
+  }
   const cached = entitlementsCache.get(ownerId);
   if (cached) return cached;
   const stored = readStoredEntitlements()[ownerId];
@@ -94,6 +104,8 @@ export function forgetAccountEntitlements(ownerId: string) {
   if (ownerId === "local") return;
   entitlementsRequestVersion.set(ownerId, (entitlementsRequestVersion.get(ownerId) || 0) + 1);
   entitlementsCache.delete(ownerId);
+  signedExpiry.delete(ownerId);
+  try { const stored=JSON.parse(localStorage.getItem(SIGNED_STORAGE_KEY)||"{}");delete stored[ownerId];localStorage.setItem(SIGNED_STORAGE_KEY,JSON.stringify(stored)); } catch { /* Untrusted cache cannot prevent logout. */ }
   const stored = readStoredEntitlements();
   delete stored[ownerId];
   writeStoredEntitlements(stored);
@@ -120,15 +132,23 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
   const ownerId = options.ownerId || getActiveOwnerId();
   if (!options.force) {
     const cached = entitlementsCache.get(ownerId);
-    if (cached) return cached;
+    if (cached && (!mobileRuntime() || (signedExpiry.get(ownerId)||0)>Date.now())) return cached;
   }
   if (ownerId === "local") return DEFAULT_ENTITLEMENTS;
+  const requestVersion = (entitlementsRequestVersion.get(ownerId) || 0) + 1;
+  entitlementsRequestVersion.set(ownerId, requestVersion);
+  const isCurrent = () => getActiveOwnerId() === ownerId && entitlementsRequestVersion.get(ownerId) === requestVersion;
+  if (mobileRuntime()) {
+    try {
+      const token=JSON.parse(localStorage.getItem(SIGNED_STORAGE_KEY)||"{}")[ownerId];
+      if(token){const verified=await verifyEntitlementToken(token,ownerId);if(isCurrent()){entitlementsCache.set(ownerId,verified.entitlements);signedExpiry.set(ownerId,verified.validUntil);}}
+    } catch { if(isCurrent()){signedExpiry.delete(ownerId);entitlementsCache.delete(ownerId);} }
+  }
+  if (!isCurrent()) return getCachedEntitlements(ownerId);
   const account = getActiveAccount();
   if (!account || account.user.id !== ownerId) return getCachedEntitlements(ownerId);
   const session = await getActiveCloudSessionAsync();
-  if (!session?.token || session.user.id !== ownerId || getActiveOwnerId() !== ownerId || !CLOUD_API_URL) return getCachedEntitlements(ownerId);
-  const requestVersion = (entitlementsRequestVersion.get(ownerId) || 0) + 1;
-  entitlementsRequestVersion.set(ownerId, requestVersion);
+  if (!session?.token || session.user.id !== ownerId || !isCurrent() || !CLOUD_API_URL) return getCachedEntitlements(ownerId);
 
   try {
     const response = await fetch(`${CLOUD_API_URL}/billing/entitlements`, {
@@ -145,10 +165,15 @@ export async function loadEntitlements(options: { force?: boolean; ownerId?: str
       }
       throw new Error(`HTTP ${response.status}`);
     }
-    const entitlements = normalizeEntitlements(await response.json());
+    const payload=await response.json();
+    const verified=mobileRuntime()?await verifyEntitlementToken(payload.entitlement_token,ownerId):null;
+    const entitlements = verified?.entitlements || normalizeEntitlements(payload);
     if (getActiveOwnerId() !== ownerId || getActiveAccount()?.user.id !== ownerId || entitlementsRequestVersion.get(ownerId) !== requestVersion) return getCachedEntitlements(ownerId);
-    setCachedEntitlements(ownerId, entitlements);
-    await cacheLocalEntitlements(ownerId);
+    if(verified){
+      entitlementsCache.set(ownerId,entitlements);signedExpiry.set(ownerId,verified.validUntil);
+      try { const stored=JSON.parse(localStorage.getItem(SIGNED_STORAGE_KEY)||"{}");stored[ownerId]=payload.entitlement_token;localStorage.setItem(SIGNED_STORAGE_KEY,JSON.stringify(stored)); } catch { /* Memory only remains bounded by expiry. */ }
+    }else{setCachedEntitlements(ownerId, entitlements);await cacheLocalEntitlements(ownerId);}
+    if(typeof window!=="undefined")window.dispatchEvent(new CustomEvent(ENTITLEMENTS_CHANGED_EVENT));
     return entitlements;
   } catch {
     return getCachedEntitlements(ownerId);

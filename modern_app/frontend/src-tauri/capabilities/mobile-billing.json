@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-billing",
+  "description": "Google Play Billing exclusivamente Android, sin acceso administrativo.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "google-play-billing:allow-query-products",
+    "google-play-billing:allow-purchase",
+    "google-play-billing:allow-query-purchases",
+    "google-play-billing:allow-manage-subscription",
+    "google-play-billing:allow-registerListener",
+    "google-play-billing:allow-remove-listener"
+  ]
+}
