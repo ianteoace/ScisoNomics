@@ -176,14 +176,15 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   }
 
   return (
-    <aside className="sticky top-0 z-40 h-screen border-r p-3" style={{ borderColor: "rgb(var(--line))", background: "rgb(var(--panel))" }}>
-      <div className="mb-6 space-y-3 px-1">
-        <div className={`flex gap-2 ${collapsed ? "flex-col items-center" : "items-center"}`}>
+    <aside className="desktop-sidebar sticky top-0 z-40 flex h-screen min-w-0 flex-col border-r p-3" style={{ borderColor: "rgb(var(--line))", background: "rgb(var(--panel))" }}>
+      <div className="mb-6 shrink-0 space-y-3 px-1">
+        <div className={`flex flex-col items-center gap-2 ${collapsed ? "" : "lg:flex-row"}`}>
           <div className="relative min-w-0 flex-1" ref={accountMenuRef}>
             <button
-              className={`flex w-full min-w-0 items-center gap-2 rounded-2xl border px-3 py-2 text-left text-sm transition hover:bg-slate-800 ${collapsed ? "justify-center px-2" : ""}`}
+              className={`flex w-full min-w-0 items-center justify-center gap-2 rounded-2xl border px-2 py-2 text-left text-sm transition hover:bg-slate-800 ${collapsed ? "" : "lg:justify-start lg:px-3"}`}
               style={{ borderColor: "rgb(var(--line))", color: "rgb(var(--muted))" }}
               title={accountLabel}
+              aria-label={accountLabel}
               onClick={() => setAccountMenuOpen((value) => !value)}
               aria-haspopup="menu"
               aria-expanded={accountMenuOpen}
@@ -191,21 +192,17 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               <CircleUserRound size={18} className="shrink-0" style={{ color: "rgb(var(--aqua))" }} />
               {!collapsed ? (
                 <>
-                  <span className="min-w-0 flex-1">
+                  <span className="hidden min-w-0 flex-1 lg:block">
                     <span className="block truncate font-semibold text-slate-100">{accountLabel}</span>
                     <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">{accountSubtitle}</span>
                   </span>
-                  <ChevronDown size={14} className={`shrink-0 transition ${accountMenuOpen ? "rotate-180" : ""}`} />
+                  <ChevronDown size={14} className={`hidden shrink-0 transition lg:block ${accountMenuOpen ? "rotate-180" : ""}`} />
                 </>
               ) : null}
             </button>
             {accountMenuOpen ? (
               <div
-                className={`z-[90] max-h-80 overflow-y-auto rounded-2xl border bg-slate-950 p-2 text-sm shadow-xl shadow-black/30 ${
-                  collapsed
-                    ? "fixed left-[92px] top-3 w-64"
-                    : "absolute left-0 mt-2 w-full min-w-64"
-                }`}
+                className={`fixed left-[92px] top-3 z-[90] max-h-80 w-64 max-w-[calc(100vw-100px)] overflow-y-auto rounded-2xl border bg-slate-950 p-2 text-sm shadow-xl shadow-black/30 ${collapsed ? "" : "lg:absolute lg:left-0 lg:top-auto lg:mt-2 lg:w-full lg:min-w-64"}`}
                 style={{ borderColor: "rgb(var(--line))" }}
                 role="menu"
               >
@@ -270,7 +267,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               </div>
             ) : null}
           </div>
-          <button className="btn-secondary p-2" onClick={onToggle} aria-label={collapsed ? "Expandir menu lateral" : "Colapsar menu lateral"}>
+          <button className="btn-secondary hidden p-2 lg:inline-flex" onClick={onToggle} aria-label={collapsed ? "Expandir menu lateral" : "Colapsar menu lateral"}>
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
           </button>
         </div>
@@ -286,7 +283,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           setAccounts(getStoredAccounts());
         }}
       />
-      <nav className="space-y-2 pt-2">
+      <nav className="min-h-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto pt-2" aria-label="Navegación principal">
         {items.map((item) => {
           const Icon = item.icon;
           const isActive = pathname === item.href || !!pathname?.startsWith(`${item.href}/`);
@@ -294,13 +291,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             <motion.div key={item.href} whileHover={{ x: 2 }}>
               <Link
                 href={item.href}
-                className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm transition"
+                className={`flex w-full min-w-0 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm transition ${collapsed ? "" : "lg:justify-start"}`}
                 style={isActive ? { background: "rgba(56,189,248,.18)", color: "rgb(var(--aqua))" } : { color: "rgb(var(--muted))" }}
                 title={item.label}
+                aria-label={item.label}
               >
-                <Icon size={16} />
+                <Icon size={16} className="shrink-0" />
                 {!collapsed ? (
-                  <span className="flex min-w-0 items-center gap-2">
+                  <span className="hidden min-w-0 items-center gap-2 lg:flex">
                     <span>{item.label}</span>
                     {item.premium && !hasPremiumAccess ? <span className="rounded-full border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Premium</span> : null}
                   </span>

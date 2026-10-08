@@ -966,8 +966,8 @@ export default function ConfiguracionPage() {
       {loading && !info ? <LoadingSkeleton rows={5} /> : null}
       {loadError ? <ErrorState title="No se pudieron cargar los datos de configuración." description={loadError} onRetry={load} /> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="card h-fit p-3">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="card h-fit min-w-0 p-3">
           <div className="mb-3 px-2">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Secciones</p>
           </div>
@@ -993,7 +993,7 @@ export default function ConfiguracionPage() {
           </nav>
         </aside>
 
-        <main className="card min-h-[520px] p-5">
+        <main className="card min-h-[520px] min-w-0 p-5">
           <div className="mb-5 border-b border-line pb-4">
             <div>
               <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Sección activa</p>

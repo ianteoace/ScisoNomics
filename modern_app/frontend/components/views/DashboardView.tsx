@@ -97,9 +97,9 @@ export function DashboardView({
     Number(summary.gasto || 0) === 0;
 
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 space-y-5 break-words">
       <section className="relative overflow-hidden rounded-3xl border border-line bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.20),transparent_32%),linear-gradient(135deg,rgba(15,23,42,0.96),rgba(2,6,23,0.92))] p-5 text-white shadow-2xl shadow-slate-950/20 dark:border-slate-800 md:p-7">
-        <div className="relative z-10 grid gap-5 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
+        <div className="relative z-10 grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] lg:items-end">
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-cyan-200/80">Inicio</p>
             <h2 className="mt-2 text-3xl font-black tracking-tight md:text-4xl">Resumen financiero</h2>
@@ -137,14 +137,14 @@ export function DashboardView({
         </section>
       ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
         <div className="relative overflow-hidden rounded-3xl border border-cyan-300/10 bg-gradient-to-br from-slate-950 via-slate-900 to-cyan-950/80 p-5 shadow-sm shadow-cyan-900/5 md:p-6">
           <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-cyan-400/20 blur-3xl dark:bg-cyan-300/10" />
           <div className="pointer-events-none absolute -bottom-24 left-1/3 h-48 w-72 rounded-full bg-sky-500/10 blur-3xl dark:bg-sky-400/10" />
           <div className="relative z-10">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-300">Saldo actual</p>
-            <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-              <div>
+            <div className="mt-3 flex flex-col gap-3 md:flex-row md:flex-wrap md:items-end md:justify-between">
+              <div className="min-w-0">
                 <p className="text-4xl font-black tracking-tight text-cyan-100 md:text-5xl">{money(saldoActual)}</p>
                 <p className="mt-2 text-sm text-slate-300">Saldo del mes anterior: {money(summary.saldo_inicial)}</p>
               </div>
@@ -330,8 +330,8 @@ export function DashboardView({
             {recentMovements.map((mov) => (
               <div key={mov.id} className="rounded-lg border border-line p-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{mov.descripcion || "Sin descripción"}</span>
-                  <strong className={mov.tipo === "ingreso" ? "text-emerald-300" : "text-rose-300"}>{money(mov.monto)}</strong>
+                  <span className="min-w-0 break-words font-medium">{mov.descripcion || "Sin descripción"}</span>
+                  <strong className={`shrink-0 ${mov.tipo === "ingreso" ? "text-emerald-300" : "text-rose-300"}`}>{money(mov.monto)}</strong>
                 </div>
                 <div className="text-xs text-slate-400">{mov.fecha} - {mov.categoria} - {mov.tipo}</div>
               </div>
