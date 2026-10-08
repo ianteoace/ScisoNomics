@@ -1,7 +1,7 @@
 # M10A — eliminación de cuenta y preparación legal
 
-Estado: M10A técnico validado en QA aislado; sin deploy, commit ni push.
-La eliminación externa y las decisiones legales pendientes se detallan abajo.
+Estado: M10A técnico validado en QA aislado y versionado en `feature/mobile-android`; sin deploy a producción.
+La eliminación externa de Supabase sigue pendiente de credencial administrativa server-side. Las decisiones de retención y política comercial cerradas para publicación se resumen en `STORE_LEGAL_ROADMAP.md`.
 
 ## Mapa de datos auditado
 
@@ -208,7 +208,11 @@ No se encontró un repo de web pública dentro de este proyecto. El contrato par
 `/delete-account` está en [PUBLIC_ACCOUNT_DELETION_PAGE.md](PUBLIC_ACCOUNT_DELETION_PAGE.md).
 No se inventa URL publicada ni se despliega la página de la app como sitio público.
 
-Requieren decisión/revisión externa: plazos y base de retención comercial/seguridad,
-eliminación en backups del operador, solicitudes sin app, identidad y tiempos de
-soporte, reembolso/cobros remotos, jurisdicción/domicilio y wording legal definitivo.
-Los TTL técnicos de OTP/proof/recibo no son plazos legales de retención.
+Quedan como pendientes externos antes de producción: configurar la credencial
+administrativa server-side para completar el borrado Supabase, publicar el recurso
+web de eliminación de cuenta, validar con asesoría profesional las obligaciones
+fiscales/comerciales que correspondan y revisar el wording legal final. La política
+operativa adoptada usa hasta 90 días para logs técnicos ordinarios, hasta 180 días
+para registros de seguridad salvo incidente abierto y objetivo máximo de 30 días
+para purga de futuros backups cloud. Los TTL técnicos de OTP/proof/recibo no son
+plazos legales de retención.
