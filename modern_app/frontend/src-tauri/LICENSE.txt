@@ -120,9 +120,11 @@ ScisoNomics podrá modificar precios o condiciones comerciales en el futuro. En 
 
 ScisoNomics utiliza actualmente Mercado Pago como proveedor externo para procesar y gestionar determinadas suscripciones Premium en Windows. En Android, ScisoNomics podrá utilizar Google Play Billing cuando la compra Premium esté habilitada en esa plataforma. En futuras versiones para plataformas Apple, podrá utilizarse el sistema de compras de Apple.
 
-El checkout, los medios de pago disponibles y el procesamiento de los datos financieros necesarios para completar la operación son gestionados por Mercado Pago conforme a sus propios términos, políticas de privacidad, procesos de validación, medidas de seguridad y disponibilidad.
+El checkout, los medios de pago disponibles y el procesamiento de los datos financieros necesarios para completar la operación son gestionados por el proveedor de compra correspondiente conforme a sus propios términos, políticas de privacidad, procesos de validación, medidas de seguridad y disponibilidad.
 
-ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el pago es procesado mediante Mercado Pago.
+En Windows, determinadas suscripciones Premium pueden ser gestionadas mediante Mercado Pago. En Android, cuando la compra Premium esté habilitada, las compras y suscripciones pueden ser gestionadas mediante Google Play Billing. En futuras versiones para plataformas Apple, podrá utilizarse el sistema de compras de Apple.
+
+ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el pago es procesado por esos proveedores, ni credenciales completas del medio de pago administradas por Google Play, Mercado Pago u otros proveedores de compra.
 
 ScisoNomics podrá recibir y almacenar información limitada necesaria para gestionar el acceso Premium, incluyendo, según corresponda:
 
@@ -256,9 +258,10 @@ Actualmente pueden intervenir, entre otros:
 
 a. Supabase, para servicios asociados a autenticación de cuentas;
 b. Railway, para infraestructura y ejecución de servicios cloud de ScisoNomics;
-c. Mercado Pago, para procesamiento y gestión de determinadas suscripciones y pagos Premium;
-d. GitHub, para distribución de releases y actualizaciones de la aplicación de escritorio para Windows;
-e. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
+c. Mercado Pago, para procesamiento y gestión de determinadas suscripciones y pagos Premium en Windows;
+d. Google Play, para distribución de la aplicación Android y, cuando corresponda, procesamiento y gestión de compras y suscripciones Premium mediante Google Play Billing;
+e. GitHub, para distribución de releases y actualizaciones de la aplicación de escritorio para Windows;
+f. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
 
 También podrán utilizarse librerías, servicios del sistema operativo, infraestructura técnica u otros proveedores necesarios para el funcionamiento, seguridad, distribución o mantenimiento del servicio.
 
@@ -420,7 +423,9 @@ ScisoNomics utiliza actualmente Mercado Pago para gestionar determinadas suscrip
 
 Los datos necesarios para procesar el medio de pago son tratados por el proveedor de compra correspondiente conforme a sus propias políticas, términos y medidas de seguridad.
 
-ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el procesamiento es realizado por esos proveedores.
+En Windows, determinadas suscripciones pueden ser gestionadas mediante Mercado Pago. En Android, cuando la compra Premium esté habilitada, las compras y suscripciones pueden ser gestionadas mediante Google Play Billing. En futuras versiones para plataformas Apple, podrá utilizarse el sistema de compras de Apple.
+
+ScisoNomics no recibe ni almacena números completos de tarjetas de crédito o débito cuando el procesamiento es realizado por esos proveedores. Tampoco recibe credenciales completas del medio de pago gestionadas por Google Play, Mercado Pago u otros proveedores de compra.
 
 ScisoNomics puede recibir, consultar y almacenar información limitada relacionada con la operación y el estado de la suscripción, incluyendo:
 
@@ -581,9 +586,10 @@ Actualmente pueden intervenir, entre otros:
 
 a. Supabase, para servicios asociados a autenticación y gestión técnica de cuentas;
 b. Railway, como infraestructura utilizada para ejecutar servicios backend y funciones cloud de ScisoNomics;
-c. Mercado Pago, para procesamiento y gestión de pagos y suscripciones Premium;
-d. GitHub, para distribución de versiones y actualizaciones de la aplicación de escritorio para Windows;
-e. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
+c. Mercado Pago, para procesamiento y gestión de determinadas suscripciones y pagos Premium en Windows;
+d. Google Play, para distribución de la aplicación Android y, cuando corresponda, procesamiento y gestión de compras y suscripciones Premium mediante Google Play Billing;
+e. GitHub, para distribución de versiones y actualizaciones de la aplicación de escritorio para Windows;
+f. Resend, para el envío de correos de verificación y códigos OTP cuando se utiliza ese proveedor.
 
 Estos proveedores podrán tratar información únicamente en la medida necesaria para prestar los servicios utilizados por ScisoNomics y conforme a sus propias políticas y condiciones aplicables.
 
