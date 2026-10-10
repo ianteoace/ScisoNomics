@@ -361,7 +361,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
 
   function formatDate(value?: string | null) {
     if (!value) return "Sin datos";
-    return new Date(value).toLocaleString();
+    return new Date(value).toLocaleString("es-AR");
   }
 
   function tableLabel(table: string) {
@@ -534,10 +534,10 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
                   <p className="font-semibold">Sincronización</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
                     {syncing ? "Sincronizando..." : autoSyncEnabled ? "Sincronización automática activada" : syncMessage}
-                    {lastSyncAt ? ` · Última sincronización: ${new Date(lastSyncAt).toLocaleString()}` : ""}
+                    {lastSyncAt ? ` · Última sincronización: ${new Date(lastSyncAt).toLocaleString("es-AR")}` : ""}
                   </p>
                   {syncSummary ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{syncSummary}</p> : null}
-                  {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Última sincronización automática: {new Date(lastAutoSyncAt).toLocaleString()}</p> : null}
+                  {lastAutoSyncAt ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Última sincronización automática: {new Date(lastAutoSyncAt).toLocaleString("es-AR")}</p> : null}
                   {lastSyncError ? <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">Último intento fallido: {lastSyncError}</p> : null}
                   {syncOverview?.sync_error_total ? (
                     <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
