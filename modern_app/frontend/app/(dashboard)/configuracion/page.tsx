@@ -53,14 +53,16 @@ const ONBOARDING_SECTION_KEYS = [
 ] as const;
 
 const SETTINGS_SECTIONS = [
-  { id: "general", label: "General", hint: "Estado y accesos" },
-  { id: "cuenta", label: "Cuenta", hint: "Multicuentas" },
-  { id: "sync", label: "Sincronización", hint: "Manual y automática" },
-  { id: "datos", label: "Datos y backups", hint: "Datos locales y copias" },
-  { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
-  { id: "actualizaciones", label: "Actualizaciones", hint: "Buscar e instalar" },
-  { id: "acerca", label: "Acerca de", hint: "Versión y novedades" },
+  { id: "general", label: "General", hint: "Estado y accesos", group: "Aplicación" },
+  { id: "cuenta", label: "Cuenta", hint: "Inicio de sesión y multicuentas", group: "Cuenta y nube" },
+  { id: "sync", label: "Sincronización", hint: "Manual y automática", group: "Cuenta y nube" },
+  { id: "datos", label: "Datos y backups", hint: "Datos locales y copias", group: "Datos y seguridad" },
+  { id: "diagnostico", label: "Integridad y seguridad", hint: "Diagnóstico y protección", group: "Datos y seguridad" },
+  { id: "actualizaciones", label: "Actualizaciones", hint: "Buscar e instalar", group: "Aplicación" },
+  { id: "acerca", label: "Acerca de", hint: "Versión y novedades", group: "Aplicación" },
 ] as const;
+
+const SETTINGS_GROUPS = ["Cuenta y nube", "Datos y seguridad", "Aplicación"] as const;
 
 type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 
@@ -971,25 +973,32 @@ export default function ConfiguracionPage() {
           <div className="mb-3 px-2">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Secciones</p>
           </div>
-          <nav className="flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible" aria-label="Secciones de configuración">
-            {SETTINGS_SECTIONS.map((section) => {
-              const active = section.id === activeSection;
-              return (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={`min-w-44 rounded-2xl border px-3 py-2 text-left transition lg:w-full ${
-                    active
-                      ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-100"
-                      : "border-transparent text-slate-400 hover:border-line hover:bg-slate-950/40 hover:text-slate-100"
-                  }`}
-                  onClick={() => selectSection(section.id)}
-                >
-                  <span className="block text-sm font-semibold">{section.label}</span>
-                  <span className="mt-0.5 block text-xs opacity-70">{section.hint}</span>
-                </button>
-              );
-            })}
+          <nav className="space-y-4" aria-label="Secciones de configuración">
+            {SETTINGS_GROUPS.map((group) => (
+              <div key={group}>
+                <p className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{group}</p>
+                <div className="flex gap-2 overflow-x-auto pb-1 lg:block lg:space-y-1 lg:overflow-visible lg:pb-0">
+                  {SETTINGS_SECTIONS.filter((section) => section.group === group).map((section) => {
+                    const active = section.id === activeSection;
+                    return (
+                      <button
+                        key={section.id}
+                        type="button"
+                        className={`min-w-44 rounded-2xl border px-3 py-2 text-left transition lg:w-full ${
+                          active
+                            ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-100"
+                            : "border-transparent text-slate-400 hover:border-line hover:bg-slate-950/40 hover:text-slate-100"
+                        }`}
+                        onClick={() => selectSection(section.id)}
+                      >
+                        <span className="block text-sm font-semibold">{section.label}</span>
+                        <span className="mt-0.5 block text-xs opacity-70">{section.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </nav>
         </aside>
 
