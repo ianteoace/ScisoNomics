@@ -109,7 +109,11 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     };
   }, []);
 
-  const accountLabel = activeOwnerId === "local" ? "Modo local" : accountUser?.display_name || accountUser?.email || "Cuenta";
+  const accountLabel = activeOwnerId === "local" && accounts.length === 0
+    ? "Iniciar sesión"
+    : activeOwnerId === "local"
+      ? "Modo local"
+      : accountUser?.display_name || accountUser?.email || "Cuenta";
   const accountSubtitle = activeOwnerId === "local"
     ? getAuthUIState("local").subtitle
     : getAuthUIState(accountAvailability).subtitle;
@@ -250,7 +254,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                   role="menuitem"
                 >
                   <Plus size={16} />
-                  Agregar cuenta
+                  {accounts.length === 0 ? "Iniciar sesión" : "Agregar cuenta"}
                 </button>
                 <button
                   type="button"
