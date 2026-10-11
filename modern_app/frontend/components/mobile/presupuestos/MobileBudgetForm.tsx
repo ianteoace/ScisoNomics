@@ -1,5 +1,6 @@
 "use client";
 
+import { SpanishMonthInput } from "../../ui/SpanishDateInput";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { Categoria, Presupuesto } from "../../../types/domain";
@@ -29,7 +30,7 @@ export function MobileBudgetForm({ categories, rows, row, period, busy, error, o
   return <PlanningForm title={row ? "Editar presupuesto" : "Crear presupuesto"} busy={busy} error={validationError || error} onClose={onClose} onSubmit={submit} saveLabel="Guardar presupuesto">
     <label className="grid gap-2 text-sm">Categoría<select className="input min-h-12" autoFocus required disabled={!!row} value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
     {!available.length ? <p className="text-sm text-amber-200">Primero creá una categoría de gasto en Categorías.</p> : null}
-    <label className="grid gap-2 text-sm">Período<input className="input min-h-12" type="month" required disabled={!!row} value={selectedPeriod} onChange={(e) => setSelectedPeriod(e.target.value)} /></label>
+    <div className="grid gap-2 text-sm"><p>Período</p><SpanishMonthInput label="Período del presupuesto" className="input min-h-12" required disabled={!!row} value={selectedPeriod} onChange={setSelectedPeriod} /></div>
     <label className="grid gap-2 text-sm">Monto presupuestado<input className="input min-h-12" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
     {row ? <p className="text-sm text-slate-300">Para otra categoría o período, creá otro presupuesto.</p> : duplicate ? <p className="text-sm text-amber-200">Ya existe para este período. Se actualizará el límite al guardar.</p> : null}
   </PlanningForm>;

@@ -84,7 +84,14 @@ const { getLocalDateInputValue } = require("../lib/date.ts");
 
 function renderer(t, Component, props = {}, nativeRefs = true) {
   const slots = new Map(); let current, pending = [], shown = 0, closed = 0, restored = 0;
-  const oldDocument = global.document;
+  const oldDocument = global.document, oldWindow = global.window;
+  if (!global.window) {
+    global.window = new EventTarget();
+    const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }; };
+    window.sessionStorage = storage(); window.localStorage = storage();
+    window.location = { href: 'http://localhost/configuracion', search: '' };
+    window.history = { replaceState: (_state, _title, href) => { const url = new URL(href, window.location.href); window.location = { href: url.href, search: url.search }; } };
+  }
   global.document = { body: { style: { overflow: "scroll" } },
     activeElement: { isConnected: true, focus: () => { restored++; } }, getElementById: () => ({ focus: () => { restored++; } }) };
   t.mock.method(React, "useState", (initial) => {
@@ -129,8 +136,13 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     if (!React.isValidElement(node)) return [];
     return [...(predicate(node) ? [node] : []), ...all(node.props.children, predicate)];
   }
-  function dispose() { for (const instance of slots.values()) for (const value of instance.values) { value?.cleanup?.(); if (value?.cleanup) value.cleanup = undefined; } }
-  t.after(() => { dispose(); global.document = oldDocument; });
+  const fixtureWindow = global.window;
+  function dispose() {
+    const currentWindow = global.window; global.window = fixtureWindow;
+    try { for (const instance of slots.values()) for (const value of instance.values) { value?.cleanup?.(); if (value?.cleanup) value.cleanup = undefined; } }
+    finally { global.window = currentWindow; }
+  }
+  t.after(() => { dispose(); global.document = oldDocument; if (!oldWindow) global.window = oldWindow; });
   return { tree, html: () => renderToStaticMarkup(tree()), find: (predicate) => all(tree(), predicate),
     effects: () => { const callbacks = pending; pending = []; callbacks.forEach((callback) => callback()); },
     dispose, counts: () => ({ shown, closed, restored }) };
@@ -162,7 +174,7 @@ test("hamburger opens drawer with desktop-consistent links; X closes it", (t) =>
   const html = view.html();
   assert.match(html, /<dialog/); assert.match(html, /aria-modal="true"/); assert.match(html, /aria-labelledby="dialog-title"/);
   assert.match(html, /aria-expanded="true"/); assert.match(html, /aria-current="page"/);
-  assert.deepEqual(view.find((node) => node.type === "a").map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]);
+  assert.deepEqual(view.find((node) => node.type === "a" && !node.props.href.includes('?')).map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]);
   view.find((node) => node.props["aria-label"] === "Cerrar")[0].props.onClick({ currentTarget: { focus() {} } });
   assert.doesNotMatch(view.html(), /<dialog/);
 });
@@ -499,7 +511,8 @@ test("budget editing keeps category and period while changing the limit", async 
   const row = { id: 1, categoria_id: 2, categoria: "Servicios", mes: 10, anio: 2026, monto_presupuestado: 2000 };
   const view = renderer(t, MobileBudgetForm, { row, rows: [row], categories: [{ id: 2, nombre: "Servicios", tipo: "gasto" }], period: "2026-11", busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
   assert.equal(view.find((n) => n.type === "select")[0].props.disabled, true);
-  assert.equal(view.find((n) => n.props.type === "month")[0].props.disabled, true);
+  const periodControls = view.find(n => n.props['aria-label']?.startsWith('Período del presupuesto:'));
+  assert.equal(periodControls.length, 2); assert.ok(periodControls.every(n => n.props.disabled));
   await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
   assert.deepEqual(saved, { categoria_id: 2, mes: 10, anio: 2026, monto: 2000 });
 });
@@ -526,8 +539,8 @@ test("savings form sends an explicit goal assignment; other movement types clear
     movement: { id: 1, tipo: "ahorro", fecha: "2026-10-04", categoria_id: 2, descripcion: "Aporte", monto: 100, meta_id: 3 }, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
   assert.match(view.html(), /Meta de ahorro \(opcional\)/);
   await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, 3);
-  view.find((n) => n.type === "select")[0].props.onChange({ target: { value: "ingreso" } });
-  view.find((n) => n.type === "select")[1].props.onChange({ target: { value: "4" } });
+  view.find((n) => n.type === "select" && n.props.autoFocus)[0].props.onChange({ target: { value: "ingreso" } });
+  view.find((n) => n.type === "select" && n.props.value === "")[0].props.onChange({ target: { value: "4" } });
   await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, null);
 });
 
@@ -667,9 +680,11 @@ test('analytics ignore stale periods, load only selected report and refetch once
 
 test("settings show real version and Premium features from the drawer metadata", (t) => {
   pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  selectSettings(view, 'Acerca de');
   assert.match(view.html(), new RegExp(`Versión ${require("../package.json").version}`));
   const { mobileSections } = require("../components/mobile/MobileSidebar.tsx");
   const expected = mobileSections.filter(section => section.premium).map(section => section.label);
+  selectSettings(view, 'ScisoNomics Premium');
   assert.deepEqual(view.find(node => node.type === "li").map(node => node.props.children), expected);
   assert.deepEqual(mobileSections.filter(section => section.premium).map(section => section.feature).sort(), ["budgets", "fixed_expenses", "planning", "saving_goals"]);
 });
@@ -677,11 +692,103 @@ test("settings show real version and Premium features from the drawer metadata",
 test("local settings have no cloud pull action, checkout or Windows updater", (t) => {
   pathname = "/configuracion"; const view = renderer(t, MobileApp);
   view.html(); assert.equal(financeEnabled, false);
-  assert.deepEqual(view.find(node => node.type === "button").map(node => node.props.children), [view.find(node => node.props["aria-label"] === "Abrir menú")[0].props.children, "Iniciar sesión o crear cuenta"]);
+  assert.equal(view.find(node => node.type === 'details').length, 4);
+  assert.equal(view.find(node => node.type === 'button' && node.props.children === 'Volver a mostrar guías').length, 1);
   assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
   assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Crear backup|Continuar con Google|localhost/);
+  selectSettings(view, 'Acerca de');
   assert.match(view.html(), /scisoftwareco@gmail.com/);
-  assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/movimientos", "/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
+  assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
+});
+
+function selectSettings(view, label) {
+  const button = view.find(n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children[0]?.props?.children === label)[0];
+  assert.ok(button, `Missing section ${label}`); button.props.onClick();
+}
+
+test('settings groups and old deep links select one pane, without duplicate device or sync controls', t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const { settingsSectionFromUrl } = require('../lib/settings.ts');
+  for (const id of ['general','cuenta','sync','datos','diagnostico','actualizaciones','acerca','suscripcion','dispositivos']) assert.equal(settingsSectionFromUrl('?section='+id), id);
+  assert.equal(settingsSectionFromUrl('?panel=cuenta'), 'cuenta');
+  assert.equal(settingsSectionFromUrl('?section=invalid'), 'general');
+  const view = renderer(t, MobileSettings); window.location.search = '?panel=cuenta'; view.html(); view.effects();
+  assert.match(view.html(), /Iniciar sesión o crear cuenta/);
+  assert.doesNotMatch(view.html(), /Descargar cambios cloud|<section>Dispositivos/);
+  assert.deepEqual(view.find(n=>n.type==='summary').map(n=>n.props.children), ['Cuenta y nube','Datos y seguridad','Suscripción','Aplicación']);
+  selectSettings(view, 'Datos y backups'); assert.match(window.location.search, /section=datos/);
+  assert.match(view.html(), /Desinstalar la app/); assert.doesNotMatch(view.html(), /Iniciar sesión o crear cuenta/);
+  selectSettings(view, 'General'); view.find(n=>n.type==='button'&&n.props.children==='Volver a mostrar guías')[0].props.onClick();
+  assert.match(view.html(), /Guía de ScisoNomics/);
+});
+
+test('mobile sidebar opens actual shared login directly, closes drawer and keeps OTP host across owner switch', t => {
+  const service = require('../services/supabaseCloudAuth.ts');
+  t.mock.method(service, 'isSupabaseCloudAuthConfigured', ()=>true);
+  const view = renderer(t, MobileApp, {}, false); pathname='/dashboard';
+  view.html(); window.navigator = {userAgent:'Android'}; window.__TAURI_INTERNALS__={}; view.effects();
+  view.find(n=>n.props['aria-label']==='Abrir menú')[0].props.onClick({currentTarget:{focus(){}}}); view.html();
+  view.find(n=>n.type==='button'&&Array.isArray(n.props.children)&&n.props.children.includes('Iniciar sesión'))[0].props.onClick();
+  assert.equal(pathname, '/dashboard'); assert.match(view.html(), /autocomplete="current-password"/i);
+  assert.match(view.html(), /¿Olvidaste tu contraseña/); assert.doesNotMatch(view.html(), /Cambiar cuenta|Continuar con Google/);
+  const previous = mobileAccountState; t.after(()=>{mobileAccountState=previous;});
+  mobileAccountState={...previous,financialContext:{ownerId:'internal-owner',isCurrent:()=>true},financialReady:false};
+  assert.match(view.html(), /autocomplete="current-password"/i);
+});
+
+test('mobile sidebar distinguishes switching internal owner, adding and managing accounts', t => {
+  const cloud=require('../services/cloudAuth.ts'),{MobileSidebarAccount}=require('../components/mobile/account/MobileSidebarAccount.tsx');
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  const accounts=[{user:{id:'internal-one',email:'one@example.test',display_name:'QA uno'}},{user:{id:'internal-two',email:'two@example.test'}}];
+  mobileAccountState={...previous,session:accounts[0],financialAccount:accounts[0]};
+  t.mock.method(cloud,'getStoredAccounts',()=>accounts);let switched,closed=0;
+  t.mock.method(cloud,'switchActiveOwner',id=>{switched=id;});
+  const view=renderer(t,MobileSidebarAccount,{onClose:()=>closed++});view.html();let action;
+  window.addEventListener('scisonomics:open-add-account-modal',event=>{action=event.detail.action;});
+  const select=view.find(n=>n.type==='select')[0];assert.equal(select.props.value,'internal-one');
+  assert.deepEqual(view.find(n=>n.type==='option').map(n=>n.props.value),['local','internal-one','internal-two']);
+  select.props.onChange({target:{value:'internal-two'}});assert.equal(switched,'internal-two');
+  view.find(n=>n.type==='button')[0].props.onClick();assert.equal(action,'add');assert.equal(closed,2);
+  assert.match(view.html(), /QA uno/);assert.match(view.html(), /configuracion\?panel=cuenta/);assert.doesNotMatch(view.html(), /Iniciar sesión/);
+});
+
+test('desktop guest sidebar opens shared login immediately rather than settings', t => {
+  const auth=require('../services/supabaseCloudAuth.ts');t.mock.method(auth,'isSupabaseCloudAuthConfigured',()=>true);
+  const motionId=require.resolve('framer-motion'),originalMotion=require.cache[motionId];
+  stub('framer-motion',{motion:{div:({children})=>React.createElement('div',{},children)}});
+  t.after(()=>{require.cache[motionId]=originalMotion;});
+  const modal=require('../components/ui/Modal.tsx');
+  t.mock.method(modal,'Modal',({open,title,children})=>open?React.createElement('section',{'aria-label':title},children):null);
+  const {Sidebar}=require('../components/layout/Sidebar.tsx');
+  pathname='/dashboard';const view=renderer(t,Sidebar,{collapsed:false,onToggle(){}},false);
+  const button=view.find(n=>n.type==='button'&&n.props['aria-label']==='Iniciar sesión')[0];
+  assert.equal(button.props['aria-haspopup'],'dialog');button.props.onClick();
+  assert.equal(pathname,'/dashboard');assert.match(view.html(),/autocomplete="current-password"/i);
+  assert.doesNotMatch(view.html(),/role="menu"/);assert.equal(button.props['aria-expanded'],false);
+});
+
+test('Spanish dates retain ISO values, clamp month/year changes and allow clearing an optional date', t => {
+  const {SpanishDateInput}=require('../components/ui/SpanishDateInput.tsx');let value='2028-01-31';
+  function DateField(){return React.createElement(SpanishDateInput,{value,onChange:next=>value=next});}
+  const view=renderer(t,DateField);
+  const names=require('../lib/format.ts').monthName;
+  assert.deepEqual(view.find(n=>n.type==='select')[1].props.children.flat().filter(React.isValidElement).map(n=>n.props.children),Array.from({length:12},(_,i)=>names(i+1)));
+  view.find(n=>n.props['aria-label']==='Fecha: mes')[0].props.onChange({target:{value:'2'}});assert.equal(value,'2028-02-29');
+  view.find(n=>n.type==='input')[0].props.onChange({target:{value:'2027'}});assert.equal(value,'2027-02-28');
+  view.find(n=>n.type==='input')[0].props.onChange({target:{value:'20'}});assert.equal(value,'2027-02-28');
+  view.find(n=>n.type==='button')[0].props.onClick();assert.equal(value,'');
+  assert.doesNotMatch(view.html(), /type="date"|January|February/);
+});
+
+test('Spanish month picker retains numeric period and formatters always request es-AR', t=>{
+  const {SpanishMonthInput}=require('../components/ui/SpanishDateInput.tsx');let value='2026-12';
+  function MonthField(){return React.createElement(SpanishMonthInput,{value,onChange:next=>value=next});}
+  const view=renderer(t,MonthField);view.find(n=>n.type==='input')[0].props.onChange({target:{value:'2027'}});
+  view.find(n=>n.type==='select')[0].props.onChange({target:{value:'1'}});assert.equal(value,'2027-01');
+  const {formatDate,formatDateTime}=require('../lib/format.ts');assert.match(formatDate('2026-10-01'),/octubre/);assert.match(formatDateTime('2026-10-01T12:00:00Z'),/oct/);
+  const real=Intl.DateTimeFormat,locales=[];t.mock.method(Intl,'DateTimeFormat',function(locale,options){locales.push(locale);return new real(locale,options);});
+  formatDate('2026-01-01');formatDateTime('2026-01-01T12:00:00Z');assert.deepEqual(locales,['es-AR','es-AR']);
+  assert.equal(formatDate('invalid'),'Fecha no disponible');
 });
 
 test("legal route keeps mobile shell and renders the existing single legal source verbatim", (t) => {

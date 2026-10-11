@@ -8,9 +8,10 @@ const React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),
 const root=path.resolve(__dirname,'../..');
 for(const ext of ['.ts','.tsx'])require.extensions[ext]=(module,file)=>module._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true},fileName:file}).outputText,file);
 const pass=({children})=>children;
+require.extensions['.css']=module=>{module.exports={dialog:'dialog',drawer:'drawer'};};
 function stub(name,exports){const id=name.startsWith('.')?path.resolve(root,name):require.resolve(name);require.cache[id]={id,filename:id,loaded:true,exports};}
 stub('next/navigation',{usePathname:()=>'/dashboard',useSearchParams:()=>new URLSearchParams(),useRouter:()=>({push(){},replace(){}})});
-stub('next/link',{__esModule:true,default:({href,children,...props})=>React.createElement('a',{...props,href},children)});
+stub('next/link',{__esModule:true,default:({href,children,prefetch,...props})=>React.createElement('a',{...props,href},children)});
 stub('sonner',{Toaster:()=>null});
 stub('./components/app/BackendStartupGate.tsx',{BackendStartupGate:pass});
 stub('./components/app/AppUpdateProvider.tsx',{AppUpdateProvider:pass,AppUpdateBanner:()=>null});
@@ -20,7 +21,7 @@ stub('./components/account/AddAccountModal.tsx',{AddAccountModal:()=>null});
 stub('./components/account/AccountPanel.tsx',{AccountPanel:()=>null});
 stub('./components/ui/Modal.tsx',{Modal:()=>null});
 stub('./hooks/useDashboardUi.tsx',{DashboardUiProvider:pass,useDashboardUi:()=>({month:10,year:2026})});
-stub('./services/cloudAuth.ts',{getAuthUIState:()=>({subtitle:'Sin sincronización'}),getActiveOwnerId:()=> 'local',getActiveAccount:()=>null,getStoredAccounts:()=>[],isCloudAuthConfigured:()=>false});
+stub('./services/cloudAuth.ts',{CloudAuthRequestError:class extends Error {},getAuthUIState:()=>({subtitle:'Sin sincronización'}),getActiveOwnerId:()=> 'local',getActiveAccount:()=>null,getStoredAccounts:()=>[],isCloudAuthConfigured:()=>false});
 stub('./services/entitlements.ts',{});
 stub('./services/api.ts',{api:{}});
 const Layout=require('../../app/(dashboard)/layout.tsx').default;
@@ -67,6 +68,9 @@ async function chromium(){
   // Only the fresh OS-temp profile created here; never repo tmp or a user profile.
   const target=path.resolve(profile),base=path.resolve(os.tmpdir());
   if(path.dirname(target)!==base||!path.basename(target).startsWith('scisonomics-layout-'))throw new Error('Unexpected profile path');
+  // Optional local debugging: preserve only this synthetic profile for review
+  // or deferred cleanup when Windows still holds a Chromium file lock.
+  if(process.env.SCISONOMICS_LAYOUT_KEEP_PROFILE==='1')return;
   fs.rmSync(target,{recursive:true,force:true,maxRetries:5,retryDelay:100});
  }
 }

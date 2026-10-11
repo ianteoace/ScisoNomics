@@ -10,6 +10,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { LoadingSkeleton } from "../ui/LoadingSkeleton";
 import { Modal } from "../ui/Modal";
 import { SectionHeader } from "../ui/SectionHeader";
+import { SpanishDateInput } from "../ui/SpanishDateInput";
 
 type Props = {
   rows: Movimiento[];
@@ -157,7 +158,7 @@ export function MovimientosView({ rows, categories, metas, loading, openCreateSi
       <Modal open={open} title={editing ? "Editar movimiento" : "Nuevo movimiento"} onClose={() => setOpen(false)}>
         <form className="grid gap-2" onSubmit={submit}>
           <label className="text-xs text-slate-400">Fecha</label>
-          <input className="input" type="date" value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} required />
+          <SpanishDateInput label="Fecha del movimiento" value={form.fecha} onChange={fecha => setForm({ ...form, fecha })} required />
           <label className="text-xs text-slate-400">Tipo</label>
           <select className="input" value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value, categoria_id: null })}>
             <option value="ingreso">Ingreso</option>

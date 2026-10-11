@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { SpanishDateInput } from "../../../components/ui/SpanishDateInput";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -315,7 +316,7 @@ export default function MetasPage() {
           <input className="input" type="text" inputMode="decimal" placeholder="Opcional" value={form.monto_inicial} onChange={(e) => setForm({ ...form, monto_inicial: e.target.value })} />
 
           <label className="text-xs text-muted">Fecha objetivo (opcional)</label>
-          <input className="input" type="date" value={form.fecha_objetivo} onChange={(e) => setForm({ ...form, fecha_objetivo: e.target.value })} />
+          <SpanishDateInput label="Fecha objetivo" value={form.fecha_objetivo} onChange={fecha_objetivo => setForm({ ...form, fecha_objetivo })} />
 
           <label className="text-xs text-muted">Descripción (opcional)</label>
           <textarea className="input min-h-20" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />

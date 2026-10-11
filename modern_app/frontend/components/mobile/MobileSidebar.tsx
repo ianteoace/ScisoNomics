@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { LayoutDashboard, List, Tags, CreditCard, Wallet, Flag, CalendarClock, BarChart3, Settings } from "lucide-react";
 import { MobileDialog } from "./MobileDialog";
+import { MobileSidebarAccount } from "./account/MobileSidebarAccount";
 
 // Add future implemented modules here; never link to desktop-only pages.
 export const mobileSections = [
@@ -21,7 +22,7 @@ export const mobileSections = [
 
 export function MobileSidebar({ pathname, onClose }: { pathname: string; onClose: () => void }) {
   return <MobileDialog id="mobile-sidebar" title="ScisoNomics" drawer onClose={onClose}>
-    <p className="mb-5 text-sm text-slate-400">Tus finanzas en este dispositivo</p>
+    <MobileSidebarAccount onClose={onClose} />
     <nav aria-label="Secciones de ScisoNomics" className="grid gap-2">
       {mobileSections.map(({ href, label, icon: Icon }) => <Link key={href} href={href} prefetch={false} onClick={onClose}
         aria-current={pathname === href ? "page" : undefined}

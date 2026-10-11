@@ -8,7 +8,7 @@ import { useMobileAccount } from "./MobileAccountProvider";
 import { MobileCloudPull } from "./MobileCloudPull";
 import { AccountDeletionDialog } from "../../account/AccountDeletionDialog";
 
-export function MobileAccount() {
+export function MobileAccount({ showSync = true, showDevices = true }: { showSync?: boolean; showDevices?: boolean }) {
   const { session, financialAccount, financialContext, checking, error, refresh } = useMobileAccount();
   const account = financialAccount;
   const [formOpen, setFormOpen] = useState(false);
@@ -37,8 +37,8 @@ export function MobileAccount() {
       <p className="font-semibold text-emerald-300">Cuenta sincronizada</p>
       {account.user.display_name ? <p className="break-words">{account.user.display_name}</p> : null}
       <p className="break-all">{account.user.email}</p>
-      {session ? <AccountDevices key={account.user.id} ownerId={account.user.id} /> : null}
-      <MobileCloudPull key={`pull:${financialContext.ownerId}`} ownerId={financialContext.ownerId} isCurrent={financialContext.isCurrent} />
+      {session && showDevices ? <AccountDevices key={account.user.id} ownerId={account.user.id} /> : null}
+      {showSync ? <MobileCloudPull key={`pull:${financialContext.ownerId}`} ownerId={financialContext.ownerId} isCurrent={financialContext.isCurrent} /> : null}
       <button className="btn-secondary min-h-12" disabled={busy || checking} onClick={() => { void logout(); }}>{busy ? "Cerrando sesión…" : "Cerrar sesión"}</button>
       <AccountDeletionDialog key={`delete:${financialContext.ownerId}`} ownerId={financialContext.ownerId} />
     </> : <>

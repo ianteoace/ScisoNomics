@@ -32,6 +32,8 @@ import { MobileReport } from "./reporte/MobileReport";
 import { MobileSettings } from "./configuracion/MobileSettings";
 import { useMobilePremium } from "./useMobilePremium";
 import { canUseFeature } from "../../services/entitlements";
+import { SpanishMonthInput } from "../ui/SpanishDateInput";
+import { MobileAccountLogin } from "./account/MobileAccountLogin";
 
 type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
 type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement"; row: FinanceMovimiento } | { kind: "category"; row: Categoria } | { kind: "fixed"; row: GastoFijo } | { kind: "budget"; row: Presupuesto } | { kind: "goal"; row: MetaAhorro };
@@ -39,11 +41,11 @@ const removalTitles = { scheduled: "planificación", movement: "movimiento", cat
 
 export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
   const { financialContext, financialReady, error, refresh } = useMobileAccount();
-  if (!financialReady) return <div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
+  if (!financialReady) return <><MobileAccountLogin /><div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
     <p role="alert">{error}</p><button className="btn mt-3" onClick={() => void refresh(true)}>Reintentar sesión</button>
     <button className="btn-secondary mt-3" onClick={switchToLocalMode}>Continuar con datos locales</button>
-  </> : null}</div>;
-  return <MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} />;
+  </> : null}</div></>;
+  return <><MobileAccountLogin /><MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} /></>;
 }
 
 function MobileFinancialApp({ context, legalContent }: { context: MobileFinancialContext; legalContent?: React.ReactNode }) {
@@ -66,7 +68,7 @@ function MobilePremiumGate({title,pathname,router}:{title:string;pathname:string
     <MobileHeader title={title} menuOpen={menuOpen} onOpenMenu={()=>setMenuOpen(true)} />
     {menuOpen?<MobileSidebar pathname={pathname} onClose={()=>setMenuOpen(false)} />:null}
     <main className="grid gap-4 p-5"><p>Esta función requiere Premium vigente en tu cuenta.</p>
-      <button className="btn min-h-12" onClick={()=>router.push("/configuracion")}>Ver Premium y cuenta</button>
+      <button className="btn min-h-12" onClick={()=>router.push("/configuracion?section=suscripcion")}>Ver Premium y cuenta</button>
       <button className="btn-secondary min-h-12" onClick={()=>router.push("/dashboard")}>Volver a Inicio</button></main>
   </div>;
 }
@@ -101,7 +103,7 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
       {pathname === "/reporte" ? <MobileReport /> : null}
       {pathname === "/configuracion" ? <MobileSettings /> : null}
       {legal ? legalContent : null}
-      {["/dashboard", "/movimientos", "/presupuestos", "/planificacion"].includes(pathname) ? <label className="grid gap-2 text-sm">{pathname === "/presupuestos" ? "Mes del presupuesto" : pathname === "/planificacion" ? "Mes de la proyección" : "Mes de los movimientos"}<input className="input min-h-12" type="month" value={finance.period} disabled={busy} onChange={(event) => { if (event.target.value) finance.setPeriod(event.target.value); }} /></label> : null}
+      {["/dashboard", "/movimientos", "/presupuestos", "/planificacion"].includes(pathname) ? <div className="grid gap-2 text-sm"><p>{pathname === "/presupuestos" ? "Mes del presupuesto" : pathname === "/planificacion" ? "Mes de la proyección" : "Mes de los movimientos"}</p><SpanishMonthInput className="input min-h-12" label="Mes seleccionado" value={finance.period} disabled={busy} onChange={finance.setPeriod} /></div> : null}
       {finance.notice ? <p role="status" className="break-words text-sm text-emerald-300">{finance.notice}</p> : null}
       {error && !editor && !removal && !payment ? <div className="card p-4"><p role="alert" className="break-words text-red-300">{error}</p><button className="btn-secondary mt-3 min-h-11" disabled={loading} onClick={finance.reload}>Reintentar</button></div> : null}
       {loading ? <p role="status" className="p-4 text-slate-300">Cargando tus datos…</p> : null}

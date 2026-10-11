@@ -49,7 +49,7 @@ import { SupabaseAccountForm } from "./SupabaseAccountForm";
 
 const ignoreFormBusy = () => {};
 
-export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { showHeader?: boolean; hideSyncCenter?: boolean }) {
+export function AccountPanel({ showHeader = true, hideSyncCenter = false, hideDevices = false }: { showHeader?: boolean; hideSyncCenter?: boolean; hideDevices?: boolean }) {
   const configured = isCloudAuthConfigured();
   const { showError, showSuccess } = useToast();
   const [loadingSession, setLoadingSession] = useState(true);
@@ -730,7 +730,7 @@ export function AccountPanel({ showHeader = true, hideSyncCenter = false }: { sh
               </div>
             </div>
           ) : null}
-          <AccountDevices key={user.id} ownerId={user.id} />
+          {!hideDevices ? <AccountDevices key={user.id} ownerId={user.id} /> : null}
           {sessionAvailable ? <div className="mt-5"><AccountDeletionDialog key={`delete:${user.id}`} ownerId={user.id} /></div> : null}
           <div className="mt-5 flex justify-end">
             <button className="btn-secondary" onClick={handleLogout}>Cerrar sesión</button>

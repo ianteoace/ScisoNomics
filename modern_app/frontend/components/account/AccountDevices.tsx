@@ -5,6 +5,7 @@ import { getValidAccessToken } from "../../services/cloudAuth";
 import { listAccountDevices, manageAccountDevice, type AccountDevice } from "../../services/deviceAuthorization";
 import { signOut } from "../../services/supabaseCloudAuth";
 import { MobileDialog } from "../mobile/MobileDialog";
+import { formatDateTime } from "../../lib/format";
 
 export function AccountDevices({ ownerId }: { ownerId: string }) {
   const [devices, setDevices] = useState<AccountDevice[]>([]);
@@ -45,7 +46,7 @@ export function AccountDevices({ ownerId }: { ownerId: string }) {
     {devices.map((device) => <div className="grid gap-2 rounded-lg bg-slate-900 p-3 text-sm" key={device.device_id}>
       <p className="break-words font-medium">{device.device_name}{device.current ? " · Este dispositivo" : ""}</p>
       <p>{device.platform === "android" ? "Android" : device.platform === "ios" ? "iOS" : "Desktop"} · {device.status === "trusted" ? "Autorizado" : "Revocado"}</p>
-      <p className="text-xs text-slate-400">Último acceso: {new Date(device.last_seen_at).toLocaleString()}</p>
+      <p className="text-xs text-slate-400">Último acceso: {formatDateTime(device.last_seen_at)}</p>
       <div className="flex flex-wrap gap-2">
         <button className="btn-secondary min-h-11" disabled={busy} onClick={() => { setAction({ device, rename: true }); setName(device.device_name); }}>Renombrar</button>
         {device.status === "trusted" ? <button className="btn-secondary min-h-11" disabled={busy} onClick={() => setAction({ device, rename: false })}>Revocar</button> : null}

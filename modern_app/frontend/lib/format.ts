@@ -1,3 +1,14 @@
+export const APP_LOCALE = "es-AR";
+export function formatDateTime(value?: string | null) {
+  if (!value) return "Sin registrar";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Fecha no disponible" : new Intl.DateTimeFormat(APP_LOCALE, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+export function formatDate(value?: string | null) {
+  if (!value) return "Sin registrar";
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date(value);
+  return Number.isNaN(date.getTime()) ? "Fecha no disponible" : new Intl.DateTimeFormat(APP_LOCALE, { dateStyle: "long" }).format(date);
+}
 export function money(value: number) {
   return new Intl.NumberFormat("es-AR", {
     style: "currency",

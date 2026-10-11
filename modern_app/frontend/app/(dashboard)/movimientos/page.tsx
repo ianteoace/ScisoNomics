@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { SpanishDateInput } from "../../../components/ui/SpanishDateInput";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { invoke } from "@tauri-apps/api/core";
@@ -174,11 +175,11 @@ export default function MovimientosPage() {
       <div className="panel grid gap-2 p-3 md:grid-cols-12">
         <div className="space-y-1 md:col-span-3">
           <label className="text-xs text-slate-500 dark:text-slate-400">Desde</label>
-          <input className="input" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+          <SpanishDateInput label="Desde" value={desde} onChange={setDesde} />
         </div>
         <div className="space-y-1 md:col-span-3">
           <label className="text-xs text-slate-500 dark:text-slate-400">Hasta</label>
-          <input className="input" type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+          <SpanishDateInput label="Hasta" value={hasta} onChange={setHasta} />
         </div>
         <select className="input md:col-span-3 md:self-end" value={tipo} onChange={(e) => setTipo(e.target.value)}><option value="todos">Todos</option><option value="ingreso">Ingresos</option><option value="gasto">Gastos</option><option value="ahorro">Ahorro</option><option value="inversion">Inversión</option></select>
         <select className="input md:col-span-3 md:self-end" value={categoria} onChange={(e) => setCategoria(e.target.value)}>

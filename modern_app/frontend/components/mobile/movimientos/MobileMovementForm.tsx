@@ -1,5 +1,6 @@
 "use client";
 
+import { SpanishDateInput } from "../../ui/SpanishDateInput";
 import Link from "next/link";
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -41,7 +42,7 @@ export function MobileMovementForm({ categories, goals = [], movement, busy, err
         <label className="grid gap-2 text-sm">Tipo de movimiento<select className="input min-h-12" autoFocus value={tipo} onChange={(event) => { setTipo(event.target.value as MoveType); setCategoryId(""); setMetaId(""); }}>{movementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
         <label className="grid gap-2 text-sm">Monto<input className="input min-h-12" inputMode="decimal" value={monto} required onChange={(event) => setMonto(event.target.value)} placeholder="0,00" /></label>
         <label className="grid gap-2 text-sm">Descripción<input className="input min-h-12" value={descripcion} maxLength={500} onChange={(event) => setDescripcion(event.target.value)} /></label>
-        <label className="grid gap-2 text-sm">Fecha<input className="input min-h-12" type="date" required value={fecha} onChange={(event) => setFecha(event.target.value)} /></label>
+        <div className="grid gap-2 text-sm"><p>Fecha</p><SpanishDateInput label="Fecha del movimiento" className="input min-h-12" required value={fecha} onChange={setFecha} /></div>
         <label className="grid gap-2 text-sm">Categoría<select className="input min-h-12" value={categoryId} required onChange={(event) => setCategoryId(event.target.value)}><option value="">Elegí una categoría</option>{available.map((category) => <option key={category.id} value={category.id}>{category.nombre}</option>)}</select></label>
         {!available.length ? <p className="text-sm text-amber-200">Creá una categoría de este tipo antes de guardar. {!cloudContext ? <Link className="underline" href="/categorias" prefetch={false} onClick={onClose}>Ir a Categorías</Link> : null}</p> : null}
         {!cloudContext && tipo === "ahorro" ? <label className="grid gap-2 text-sm">Meta de ahorro (opcional)<select className="input min-h-12" value={metaId} onChange={(e) => setMetaId(e.target.value)}><option value="">Sin asignar</option>{goals.map((g) => <option key={g.id} value={g.id}>{g.nombre}</option>)}</select></label> : null}

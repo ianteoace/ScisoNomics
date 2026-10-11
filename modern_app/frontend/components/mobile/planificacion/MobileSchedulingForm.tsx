@@ -1,5 +1,6 @@
 "use client";
 
+import { SpanishDateInput } from "../../ui/SpanishDateInput";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { Categoria, GastoProgramado } from "../../../types/domain";
@@ -35,7 +36,7 @@ export function MobileSchedulingForm({ categories, row, busy, error, onClose, on
     <label className="grid gap-2 text-sm">Categoría<select className="input min-h-12" required value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
     {!available.length ? <p className="text-sm text-amber-200">Primero creá una categoría de gasto en Categorías.</p> : null}
     <label className="grid gap-2 text-sm">Monto estimado<input className="input min-h-12" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Fecha de vencimiento<input className="input min-h-12" type="date" required value={date} onChange={(e) => setDate(e.target.value)} /></label>
+    <div className="grid gap-2 text-sm"><p>Fecha de vencimiento</p><SpanishDateInput label="Fecha de vencimiento" className="input min-h-12" required value={date} onChange={setDate} /></div>
     <label className="grid gap-2 text-sm">Estado<select className="input min-h-12" value={state} onChange={(e) => setState(e.target.value as GastoProgramado["estado"])}><option value="pendiente">Pendiente</option><option value="pagado">Pagado</option><option value="cancelado">Cancelado</option></select></label>
     <p className="text-xs text-slate-300">Cambiar el estado aquí no registra un movimiento. Usá Marcar pagado para registrar el gasto real.</p>
     <label className="flex min-h-12 items-center gap-3 text-sm"><input type="checkbox" className="h-6 w-6" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />Gasto recurrente</label>
