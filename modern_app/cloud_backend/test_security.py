@@ -13,6 +13,7 @@ from uuid import uuid4
 
 TEST_DB = Path(__file__).resolve().parents[2] / "tmp" / f"security-tests-{uuid4().hex}.db"
 os.environ["SCISONOMICS_ENV"] = "development"
+os.environ["SCISONOMICS_DEVICE_VERIFICATION_MODE"] = "off"  # Legacy compatibility fixture.
 os.environ["SCISONOMICS_JWT_SECRET"] = "test-secret-with-at-least-thirty-two-characters"
 os.environ["SCISONOMICS_CLOUD_DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 
