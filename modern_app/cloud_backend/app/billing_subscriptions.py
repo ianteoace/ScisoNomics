@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from . import mercadopago_billing as mp
+from . import account_lifecycle
 
 
 OPEN_STATUSES = {"creating", "uncertain", "pending", "authorized", "paused"}
@@ -91,50 +92,13 @@ def public_status(conn, user_id: str) -> dict:
 
 
 def expire_entitlement_if_due(conn, user_id: str, *, now: str) -> None:
-    user = conn.execute(
-        "SELECT plan,billing_source,subscription_expires_at FROM users WHERE id = ?",
-        (user_id,),
-    ).fetchone()
-    if user is None or user["billing_source"] != "mercadopago" or user["plan"] != "premium":
-        return
-    expires = _parse_date(user["subscription_expires_at"])
-    if expires is None or expires > datetime.now(timezone.utc):
-        return
-    latest = _row(conn, user_id)
-    status = "canceled" if latest and latest["status"] == "canceled" else "expired"
-    conn.execute(
-        "UPDATE users SET plan = 'free', subscription_status = ?, subscription_expires_at = NULL, updated_at = ? WHERE id = ? AND billing_source = 'mercadopago'",
-        (status, now, user_id),
-    )
+    from .billing_entitlements import project
+    project(conn, user_id, now=now)
 
 
 def _set_effective_entitlement(conn, row, *, now: str) -> None:
-    latest = _row(conn, row["user_id"])
-    if latest is None or latest["id"] != row["id"]:
-        return
-    user = conn.execute(
-        "SELECT id, plan, subscription_status, subscription_expires_at, billing_source FROM users WHERE id = ?",
-        (row["user_id"],),
-    ).fetchone()
-    if user is None:
-        raise BillingConflict("user_missing")
-    source = str(user["billing_source"] or "")
-    # Existing/manual Premium and subsequent admin grants have priority.
-    if source != "mercadopago" and str(user["plan"] or "").lower() == "premium":
-        return
-    paid_until = _parse_date(row["paid_until"])
-    entitled = paid_until is not None and paid_until > datetime.now(timezone.utc)
-    if entitled:
-        conn.execute(
-            "UPDATE users SET plan = 'premium', subscription_status = 'active', subscription_expires_at = ?, billing_source = 'mercadopago', updated_at = ? WHERE id = ?",
-            (paid_until.isoformat(), now, row["user_id"]),
-        )
-    elif source == "mercadopago":
-        status = "canceled" if row["status"] == "canceled" else "expired"
-        conn.execute(
-            "UPDATE users SET plan = 'free', subscription_status = ?, subscription_expires_at = NULL, billing_source = 'mercadopago', updated_at = ? WHERE id = ?",
-            (status, now, row["user_id"]),
-        )
+    from .billing_entitlements import project
+    project(conn, row["user_id"], now=now)
 
 
 def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice: dict | None = None, payment_invoice: dict | None = None, expected_subscription_id: str | None = None) -> dict:
@@ -146,6 +110,20 @@ def reconcile_subscription(conn, *, provider_id: str, now: str, approved_invoice
     row = conn.execute("SELECT * FROM billing_subscriptions WHERE provider_subscription_id = ? AND provider = 'mercadopago'", (provider_id,)).fetchone()
     if row is None:
         row = conn.execute("SELECT * FROM billing_subscriptions WHERE external_reference = ? AND provider = 'mercadopago'", (reference,)).fetchone()
+    if row is None:
+        retained = conn.execute("SELECT 1 FROM retained_billing_subscriptions WHERE provider='mercadopago' AND (provider_subscription_id=? OR external_reference_hash=?)", (provider_id, account_lifecycle.reference(reference))).fetchone()
+        if retained:
+            return {"status":"account_deleted"}
+    if row is not None:
+        # Same lock order as close: user first, then commercial/financial rows.
+        # Re-read after waiting; the account might have closed in the meantime.
+        try:
+            account_lifecycle.lock_active_user(conn, row["user_id"])
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 410:
+                return {"status":"account_deleted"}
+            raise
+        row = conn.execute("SELECT * FROM billing_subscriptions WHERE id=?", (row["id"],)).fetchone()
     if row is None or (reference and reference != row["external_reference"]) or (expected_subscription_id is not None and row["id"] != expected_subscription_id) or (row["provider_subscription_id"] and row["provider_subscription_id"] != provider_id):
         raise BillingConflict("subscription_not_owned")
     if row["provider_plan_id"] and str(provider.get("preapproval_plan_id") or "") != row["provider_plan_id"]:

@@ -80,10 +80,8 @@ def normalize_name(value):
 
 
 def lock(conn, user_id):
-    if conn.engine == "sqlite":
-        conn.execute("BEGIN IMMEDIATE")
-    else:
-        conn.execute("SELECT id FROM users WHERE id = ? FOR UPDATE", (user_id,))
+    from .account_lifecycle import lock_active_user
+    lock_active_user(conn, user_id)
 
 
 def binding(conn, user_id):
@@ -176,6 +174,8 @@ def authorize_access(token: str):
         if payload.get("type") != "access" or payload.get("device_authorized") is not True:
             raise ValueError()
         with connect() as conn:
+            from .account_lifecycle import deleted_user, closed
+            if deleted_user(conn, payload["sub"]): raise closed()
             active_family(conn, payload["sub"], payload["device_id"], payload["family_id"])
         return payload
     except (ValueError, KeyError):
