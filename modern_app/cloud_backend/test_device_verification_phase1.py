@@ -116,16 +116,19 @@ class DeviceProofFixtureTests(unittest.TestCase):
 
 
 class DeviceVerificationModeTests(unittest.TestCase):
-    def test_mode_defaults_to_off(self) -> None:
-        self.assertEqual(parse_device_verification_mode(None), DeviceVerificationMode.OFF)
-        self.assertEqual(parse_device_verification_mode(""), DeviceVerificationMode.OFF)
+    def test_mode_defaults_to_enforce(self) -> None:
+        self.assertEqual(parse_device_verification_mode(None), DeviceVerificationMode.ENFORCE)
+        self.assertEqual(parse_device_verification_mode(""), DeviceVerificationMode.ENFORCE)
         self.assertEqual(parse_device_verification_mode("off"), DeviceVerificationMode.OFF)
 
     def test_unimplemented_modes_abort_with_stable_code(self) -> None:
-        for mode in ("observe", "enforce"):
+        for mode in ("observe",):
             with self.subTest(mode=mode):
                 with self.assertRaisesRegex(RuntimeError, "^device_mode_not_implemented$"):
                     parse_device_verification_mode(mode)
+
+    def test_enforce_is_now_implemented(self) -> None:
+        self.assertEqual(parse_device_verification_mode("enforce"), DeviceVerificationMode.ENFORCE)
 
     def test_invalid_explicit_mode_fails_with_stable_code(self) -> None:
         for mode in ("enabled", "true", "0", "OFF", "Observe", "Enforce", " off "):
@@ -134,7 +137,7 @@ class DeviceVerificationModeTests(unittest.TestCase):
                     parse_device_verification_mode(mode)
 
     def test_real_asgi_startup_rejects_unimplemented_modes(self) -> None:
-        for mode in ("observe", "enforce"):
+        for mode in ("observe",):
             with self.subTest(mode=mode), patch.dict(
                 os.environ,
                 {"SCISONOMICS_DEVICE_VERIFICATION_MODE": mode},

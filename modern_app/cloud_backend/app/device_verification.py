@@ -34,10 +34,13 @@ class DeviceProofPurpose(int, Enum):
 
 
 def parse_device_verification_mode(raw: str | None) -> DeviceVerificationMode:
-    value = raw or ""
-    if not value or value == DeviceVerificationMode.OFF.value:
+    # Phase 2: no implicit downgrade. Off is an explicit operator rollback.
+    value = raw or DeviceVerificationMode.ENFORCE.value
+    if value == DeviceVerificationMode.OFF.value:
         return DeviceVerificationMode.OFF
-    if value in {DeviceVerificationMode.OBSERVE.value, DeviceVerificationMode.ENFORCE.value}:
+    if value == DeviceVerificationMode.ENFORCE.value:
+        return DeviceVerificationMode.ENFORCE
+    if value == DeviceVerificationMode.OBSERVE.value:
         raise RuntimeError("device_mode_not_implemented")
     raise RuntimeError("invalid_device_verification_mode")
 
