@@ -1,4 +1,5 @@
 import { getRuntimePlatformSync } from "./platform";
+import { assertMobileRecoveryMetadataWritable, blockMobileRecoveryStorage, currentCloudEnvironment, quarantineMobileAccounts } from "./mobileRecoveryState";
 
 export type CloudUser = {
   id: string;
@@ -30,6 +31,7 @@ export type CloudAuthRegisterOrLoginResponse = CloudAuthResponse | EmailVerifica
 
 export type StoredCloudAccount = {
   authProvider?: "legacy" | "supabase";
+  authEnvironment?: string;
   user: CloudUser;
   addedAt: string;
   lastUsedAt: string;
@@ -414,6 +416,7 @@ function readJsonState(storage: Storage, key: string): StoredAuthState | null {
             .map((account) => ({
               user: account.user,
               authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
+              authEnvironment: typeof account.authEnvironment === "string" ? account.authEnvironment : undefined,
               storage: account.storage === "session" ? "session" : "persistent",
               addedAt: account.addedAt || nowIso(),
               lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
@@ -441,6 +444,7 @@ function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
     accounts: state.accounts.map((account) => ({
       user: account.user,
       authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
+      authEnvironment: account.authEnvironment,
       storage: account.storage,
       addedAt: account.addedAt,
       lastUsedAt: account.lastUsedAt,
@@ -799,7 +803,9 @@ function readStoredAuthStateSnapshot(): StoredAuthState {
   const localState = readJsonState(window.localStorage, AUTH_STATE_KEY) || emptyAuthState();
   const sessionState = readJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY) || emptyAuthState();
   const preferredActive = sessionState.activeOwnerId !== LOCAL_OWNER_ID ? sessionState.activeOwnerId : localState.activeOwnerId;
-  const merged = normalizeState({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] });
+  let merged: StoredAuthState;
+  try { merged = normalizeState(quarantineMobileAccounts({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] })); }
+  catch { blockMobileRecoveryStorage(); return emptyAuthState(); } // Preserve originals; recovery fails closed.
   const originalCount = (sessionState.accounts.length || 0) + (localState.accounts.length || 0);
   if (merged.activeOwnerId !== preferredActive || merged.accounts.length !== originalCount) saveSplitState(merged);
   const metadataDetails = {
@@ -976,6 +982,7 @@ export function getCloudAuthHydrationState(): CloudAuthHydrationState {
 }
 
 export function saveStoredAuthState(state: StoredAuthState, options: { notify?: boolean } = {}) {
+  assertMobileRecoveryMetadataWritable();
   const normalized = normalizeState(state);
   saveSplitState(normalized);
   authStateRevision += 1;
@@ -1770,6 +1777,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
   const storage: "persistent" | "session" = requestedStorage;
   const account: StoredCloudAccount = {
     authProvider: options.authProvider || "legacy",
+    authEnvironment: options.authProvider === "supabase" ? currentCloudEnvironment() || undefined : undefined,
     user: session.user,
     storage,
     addedAt: existing?.addedAt || nowIso(),

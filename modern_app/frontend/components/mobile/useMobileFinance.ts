@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getLocalDateInputValue } from "../../lib/date";
+import { MOBILE_RECOVERY_DATA_CHANGED } from "../../services/data/mobileAccountRecovery";
 import type { Categoria, GastoFijo, Presupuesto, MetaAhorro, GastoProgramado } from "../../types/domain";
 import { assertFinancialContext, LOCAL_FINANCIAL_CONTEXT, type MobileFinancialContext } from "../../services/data/mobileFinancialContext";
 import { getFinanceRepository } from "../../services/data/financeRepository";
@@ -20,6 +21,13 @@ export function useMobileFinance(enabled = true, context: MobileFinancialContext
   const mounted = useRef(false);
   const saving = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    const reload = (event: Event) => {
+      if ((event as CustomEvent<{ ownerId: string }>).detail?.ownerId === context.ownerId && context.isCurrent()) setRevision(value => value + 1);
+    };
+    window.addEventListener(MOBILE_RECOVERY_DATA_CHANGED, reload);
+    return () => window.removeEventListener(MOBILE_RECOVERY_DATA_CHANGED, reload);
+  }, [context.ownerId]);
   useEffect(() => {
     if (!enabled) { setLoading(false); setData(null); return; }
     let active = true;

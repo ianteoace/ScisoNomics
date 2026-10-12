@@ -43,6 +43,20 @@ function fixture(t) {
  return Object.assign(state,{db,pull,push,repo,row,create,remote,bucket});
 }
 test('no push without account or trusted device, local cannot be uploaded',async t=>{const s=fixture(t);await assert.rejects(s.push.pushMobileCloudNow('local'),{code:'invalid_owner'});await s.create();s.session=null;await assert.rejects(s.push.pushMobileCloudNow('owner-a'),{code:'session_required'});s.session={authProvider:'supabase',user:{id:'owner-a'},token:'grant-fixture'};s.trusted=false;await assert.rejects(s.push.pushMobileCloudNow('owner-a'),{code:'device_required'});assert.equal(s.calls.length,0);});
+test('recovery pending prevents actual push before any cloud call; resolved recovery permits normal manual push',async t=>{
+ const s=fixture(t),oldFlag=process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY;
+ process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY='1';t.after(()=>{if(oldFlag===undefined)delete process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY;else process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY=oldFlag;});
+ const values=new Map();window.localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)};window.dispatchEvent=()=>true;
+ const metadata=require('../services/mobileRecoveryState.ts');
+ // Fixture deliberately keeps real endpoints disabled; use the durable archive
+ // state to exercise the same fail-closed gate that the verified build enables.
+ values.set('scisonomics_mobile_account_recovery_v1',JSON.stringify({version:1,sources:[{ownerId:'previous-owner',email:'qa@example.test',environment:null,status:'pending'}]}));
+ const originalApi=process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL,originalIdentity=process.env.NEXT_PUBLIC_SUPABASE_URL;
+ process.env.NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL='https://api.example.test';process.env.NEXT_PUBLIC_SUPABASE_URL='https://identity.example.test';
+ t.after(()=>{for(const[key,value]of [['NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL',originalApi],['NEXT_PUBLIC_SUPABASE_URL',originalIdentity]]){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
+ await s.create();await assert.rejects(s.push.pushMobileCloudNow('owner-a'),/Revisá primero/);assert.equal(s.calls.length,0);
+ metadata.finishRecoverySource('previous-owner','separate');assert.equal((await s.push.pushMobileCloudNow('owner-a')).uploaded,2);assert.equal(s.calls.filter(call=>call.method==='POST').length,2);
+});
 test('normal account repository works offline; later push acknowledges the same identity exactly once',async t=>{
  const s=fixture(t),session=s.session;s.session=null;
  const created=await s.create('owner-a','prueba m9d offline');

@@ -34,6 +34,7 @@ import { useMobilePremium } from "./useMobilePremium";
 import { canUseFeature } from "../../services/entitlements";
 import { SpanishMonthInput } from "../ui/SpanishDateInput";
 import { MobileAccountLogin } from "./account/MobileAccountLogin";
+import { MobileAccountRecovery } from "./account/MobileAccountRecovery";
 
 type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
 type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement"; row: FinanceMovimiento } | { kind: "category"; row: Categoria } | { kind: "fixed"; row: GastoFijo } | { kind: "budget"; row: Presupuesto } | { kind: "goal"; row: MetaAhorro };
@@ -41,11 +42,11 @@ const removalTitles = { scheduled: "planificación", movement: "movimiento", cat
 
 export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
   const { financialContext, financialReady, error, refresh } = useMobileAccount();
-  if (!financialReady) return <><MobileAccountLogin /><div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
+  if (!financialReady) return <><MobileAccountLogin /><MobileAccountRecovery /><div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
     <p role="alert">{error}</p><button className="btn mt-3" onClick={() => void refresh(true)}>Reintentar sesión</button>
     <button className="btn-secondary mt-3" onClick={switchToLocalMode}>Continuar con datos locales</button>
   </> : null}</div></>;
-  return <><MobileAccountLogin /><MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} /></>;
+  return <><MobileAccountLogin /><MobileAccountRecovery /><MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} /></>;
 }
 
 function MobileFinancialApp({ context, legalContent }: { context: MobileFinancialContext; legalContent?: React.ReactNode }) {

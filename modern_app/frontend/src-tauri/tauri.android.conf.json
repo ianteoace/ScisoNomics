@@ -1,11 +1,13 @@
 {
   "identifier": "com.scisoftware.scisonomics",
   "build": {
-    "beforeDevCommand": "npm run dev:mobile"
+    "beforeDevCommand": "npm run dev:mobile",
+    "beforeBuildCommand": "npm run build:android:production"
   },
   "bundle": {
     "externalBin": [],
     "android": {
+      "versionCode": 3003002,
       "debugApplicationIdSuffix": ".debug"
     }
   }

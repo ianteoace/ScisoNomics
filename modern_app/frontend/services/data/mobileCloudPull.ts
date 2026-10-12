@@ -3,6 +3,7 @@ import { CloudAuthRequestError, cloudRequest, getActiveOwnerId } from "../cloudA
 import { getSession } from "../supabaseCloudAuth";
 import { getRuntimePlatformSync } from "../platform";
 import { getMobileDatabase } from "./mobileDatabase";
+import { assertMobileRecoverySyncAllowed } from "../mobileRecoveryState";
 import { validateDate } from "./mobileRepositorySupport";
 
 // Consumes the existing /sync/pull protocol. No desktop local API or push.
@@ -174,8 +175,10 @@ async function pull(ownerId: string) {
 
 export async function getMobileCloudSession(ownerId: string) {
   assertMobileCloudOwner(ownerId);
+  assertMobileRecoverySyncAllowed();
   if (getRuntimePlatformSync() !== "android") throw new MobilePullError("unsupported_platform", "La sincronización cloud está disponible en Android.");
   const session = await getSession(ownerId);
+  assertMobileRecoverySyncAllowed();
   if (!session || session.authProvider !== "supabase" || session.user.id !== ownerId || getActiveOwnerId() !== ownerId) {
     throw new MobilePullError("session_required", "Iniciá sesión y autorizá este dispositivo antes de sincronizar.");
   }

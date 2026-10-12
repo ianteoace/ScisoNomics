@@ -706,6 +706,31 @@ function selectSettings(view, label) {
   assert.ok(button, `Missing section ${label}`); button.props.onClick();
 }
 
+test('recovery UI waits for authorized session, shows only counts and needs explicit consent before migrating',async t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  const flags=require('../services/mobileRecoveryState.ts'),service=require('../services/data/mobileAccountRecovery.ts');
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true);t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{});let migrated=0;
+  t.mock.method(service,'findMobileRecovery',async()=>({sourceOwner:'source-internal-uuid',targetOwner:'target-internal-uuid',categories:2,movements:3,blocked:false}));
+  t.mock.method(service,'migrateMobileAccount',async(source,target)=>{assert.equal(source,'source-internal-uuid');assert.equal(target,'target-internal-uuid');migrated++;return{migrated:true};});
+  const {MobileAccountRecovery}=require('../components/mobile/account/MobileAccountRecovery.tsx');
+  mobileAccountState={...previous,session:null,checking:true};const view=renderer(t,MobileAccountRecovery,{},false);view.html();view.effects();await flush();assert.doesNotMatch(view.html(),/Conservar en mi cuenta actual/);
+  mobileAccountState={...previous,session:{user:{id:'target-internal-uuid'}},checking:false};view.html();view.effects();await flush();
+  assert.match(view.html(),/2 categorías.*3 movimientos/);assert.doesNotMatch(view.html(),/source-internal-uuid|target-internal-uuid/);assert.equal(migrated,0);
+  view.find(n=>n.type==='button'&&n.props.children==='Conservar en mi cuenta actual')[0].props.onClick();await flush();assert.equal(migrated,1);assert.match(view.html(),/sincronizarlos manualmente/);
+});
+
+test('recovery UI with a populated destination never offers merge and preserves the separate decision',async t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});mobileAccountState={...previous,session:{user:{id:'target'}},checking:false};
+  const flags=require('../services/mobileRecoveryState.ts'),service=require('../services/data/mobileAccountRecovery.ts');
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true);t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{});t.mock.method(service,'findMobileRecovery',async()=>({sourceOwner:'source',targetOwner:'target',categories:1,movements:2,blocked:true}));
+  let separate=0;t.mock.method(service,'keepMobileRecoverySeparate',async()=>separate++);
+  const {MobileAccountRecovery}=require('../components/mobile/account/MobileAccountRecovery.tsx'),view=renderer(t,MobileAccountRecovery,{},false);
+  view.html();view.effects();await flush();assert.match(view.html(),/revisión manual/);assert.doesNotMatch(view.html(),/Conservar en mi cuenta actual/);
+  view.find(n=>n.type==='button'&&n.props.children==='Mantener por separado, sin transferir')[0].props.onClick();await flush();assert.equal(separate,1);
+});
+
 test('settings groups and old deep links select one pane, without duplicate device or sync controls', t => {
   const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
   const { settingsSectionFromUrl } = require('../lib/settings.ts');

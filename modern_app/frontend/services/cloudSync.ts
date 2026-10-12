@@ -2159,5 +2159,6 @@ export async function runManualSync(userEmail?: string) {
 }
 
 export async function runAutoSync(userEmail?: string, reason: Exclude<SyncReason, "manual"> = "auto_remote_pull") {
+  (await import("./mobileRecoveryState")).assertMobileRecoverySyncAllowed();
   return runSyncWithReason(userEmail, "auto", reason);
 }
