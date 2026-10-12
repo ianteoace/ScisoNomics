@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from modern_app.cloud_backend import test_supabase_auth as fixtures
 from modern_app.cloud_backend.app import billing_subscriptions as subscriptions, db, mercadopago_billing as mp, security
+from modern_app.cloud_backend.app import billing_entitlements
 from modern_app.cloud_backend.app.auth import create_access_token
 from modern_app.cloud_backend.test_supabase_auth import INTERNAL_ID
 
@@ -387,7 +388,7 @@ class MercadoPagoBillingTests(unittest.TestCase):
         with patch.object(mp, "get_subscription", return_value=self.provider("canceled")), patch.object(mp, "request", return_value={"results": []}):
             self.assertEqual(self.webhook("subscription_preapproval", PROVIDER_ID, event_id=900).status_code, 200)
         after_expiry = datetime.fromisoformat(paid) + timedelta(seconds=1)
-        with patch.object(subscriptions, "datetime", wraps=datetime) as clock:
+        with patch.object(billing_entitlements, "datetime", wraps=datetime) as clock:
             clock.now.return_value = after_expiry
             entitlement = self.client.get("/billing/entitlements", headers=self.auth()).json()
         self.assertEqual((entitlement["plan"], entitlement["status"]), ("free", "canceled"))

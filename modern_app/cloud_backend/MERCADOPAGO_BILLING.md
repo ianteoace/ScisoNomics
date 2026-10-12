@@ -68,6 +68,19 @@ Se mantienen lectura, refresh y reconciliación de suscripciones remotas anterio
 
 Un timeout o respuesta inválida después del POST deja `uncertain`: el proveedor pudo haber creado una suscripción. El webhook puede recuperar la fila por referencia aun si no se guardó su ID remoto. Si el webhook falta, verificar la suscripción en Mercado Pago por referencia y realizar una reconciliación administrativa controlada; no resetear a `creating` ni repetir el POST antes de descartar un recurso remoto. No existe recuperación automática por email.
 
+## Entitlement multiproveedor (M10B)
+
+Windows conserva este checkout y la evidencia de pago de Mercado Pago. Android
+usa Google Play Billing; no muestra checkout Mercado Pago. La proyección común
+de Premium ahora elige el mayor período válido entre Mercado Pago, Google Play
+y grants manuales, conservando evidencia separada en `billing_subscriptions`.
+La cancelación MP mantiene su período pagado; el vencimiento de una fuente no
+quita acceso concedido válidamente por otra. `users.billing_source` identifica
+la fuente efectiva, sin borrar períodos del resto. Los usuarios siguen usando
+el mismo `users.id`, entitlements firmados y datos financieros.
+
+Ver [implementación y configuración Google Play](../../docs/GOOGLE_PLAY_BILLING.md).
+
 ## Validación manual pendiente
 
 1. Configurar credenciales, precio, comprador TEST y los dos tópicos de Webhooks en el entorno de prueba; no se hizo durante esta tarea.

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from .db import connect
+from .account_lifecycle import reject_deleted_identity
 
 
 _logger = logging.getLogger("scisonomics.cloud.auth")
@@ -46,6 +47,7 @@ def bootstrap_user(identity: dict, insert_with_namespace):
                 ).digest()[:8], "big", signed=True) for value in (subject, email)})
                 for key in keys:
                     conn.execute("SELECT pg_advisory_xact_lock(?)", (key,))
+            reject_deleted_identity(conn, "supabase", subject)
             row = conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE auth_provider_id = ?", (subject,)).fetchone()
             if row is not None:
                 # Provider email changes never move an established link.
@@ -70,9 +72,11 @@ def bootstrap_user(identity: dict, insert_with_namespace):
                 # Preserve legacy verification, credentials and entitlements.
                 event = "supabase_account_linked"
             else:
+                reject_deleted_identity(conn, "supabase", subject)
                 user_id = str(uuid4())
                 while user_id == subject:
-                    user_id = str(uuid4())
+                    reject_deleted_identity(conn, "supabase", subject)
+                user_id = str(uuid4())
                 insert_with_namespace(conn,
                     "INSERT INTO users (id, email, password_hash, password_auth_enabled, display_name, "
                     "auth_provider_id, auth_provider, email_verified, email_verified_at, plan, "
@@ -93,6 +97,7 @@ def bootstrap_user(identity: dict, insert_with_namespace):
             # /auth/me and legacy signup may race outside our locks. Re-read
             # after rollback; return only the same verified provider identity.
             with connect() as conn:
+                reject_deleted_identity(conn, "supabase", subject)
                 row = conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE auth_provider_id = ?", (subject,)).fetchone()
                 if row is not None:
                     return dict(row)
