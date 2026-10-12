@@ -577,7 +577,8 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
   if (value == null) return value;
   if (typeof value === "string") {
     const normalized = value.toLowerCase();
-    if (normalized.includes("bearer ") || normalized.includes("authorization") || normalized.includes("jwt")) return "[redacted]";
+    if (normalized.includes("bearer ") || normalized.includes("authorization") || normalized.includes("jwt")
+      || normalized.includes("://") || normalized.includes("code=")) return "[redacted]";
     return value;
   }
   if (typeof value !== "object") return value;
@@ -591,7 +592,11 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
       || normalizedKey === "refreshtoken"
       || normalizedKey === "authorization"
       || normalizedKey === "jwt"
-      || normalizedKey === "bearer";
+      || normalizedKey === "bearer"
+      || ["userid", "accountid", "ownerid", "email"].some(part => normalizedKey.includes(part))
+      || ["id", "userid", "accountid", "ownerid", "owneruserid", "email", "projecturl", "supabaseurl",
+        "publishablekey", "headers", "body", "response", "message", "stack", "state", "fingerprint",
+        "codeverifier", "codechallenge", "password", "signature"].includes(normalizedKey);
     if (isSensitiveKey) return [key, "[redacted]"];
     return [key, sanitizeAuthLogValue(nestedValue, keyPath ? `${keyPath}.${key}` : key)];
   });
@@ -599,6 +604,7 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
 }
 
 function logAuthLifecycle(stage: string, details?: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== "development") return;
   const safeDetails = sanitizeAuthLogValue(details || {}) as Record<string, unknown>;
   const payload = JSON.stringify(safeDetails);
   if (stage === "auth metadata loaded") {

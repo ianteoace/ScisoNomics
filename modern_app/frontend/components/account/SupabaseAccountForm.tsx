@@ -10,6 +10,7 @@ import { DeviceVerificationRequiredError } from "../../services/deviceAuthorizat
 import { PasswordInput } from "../ui/PasswordInput";
 import { isSupabaseSecureStorageAvailable } from "../../services/supabaseTokenStorage";
 import { CloudAuthRequestError } from "../../services/cloudAuth";
+import { getRuntimePlatformSync } from "../../services/platform";
 import {
   cancelGoogleSupabaseSignIn, dismissGoogleOAuthNotice, getGoogleOAuthServerState,
   getGoogleOAuthState, signInWithGoogleSupabase, subscribeGoogleOAuth,
@@ -50,7 +51,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange, allowGoogle
   }, [device.completionVersion, device.completedOwnerId, onAuthenticated]);
   const startedGoogleHere = useRef(false);
   const googleBusy = ["opening", "waiting", "processing"].includes(google.status);
-  const formBusy = busy || googleBusy;
+  const formBusy = busy || googleBusy || device.required;
   useEffect(() => {
     onBusyChange(formBusy);
     return () => onBusyChange(false);
@@ -242,7 +243,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange, allowGoogle
       <button className="btn w-full justify-center" type="submit" disabled={formBusy || !configured}>
         {busy ? "Procesando..." : mode === "register" ? "Crear cuenta" : verifyingSignup ? "Confirmar código" : mode === "recovery" ? recoverySent ? "Cambiar contraseña" : "Enviar código" : "Iniciar sesión"}
       </button>
-      {allowGoogle && (mode === "login" || mode === "register") ? <>
+      {allowGoogle && getRuntimePlatformSync() !== "ios" && !device.required && !googleBusy && (mode === "login" || mode === "register") ? <>
         <div className="my-4 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-slate-400" aria-hidden="true">
           <span className="h-px flex-1 bg-slate-700" />o<span className="h-px flex-1 bg-slate-700" />
         </div>
@@ -252,7 +253,7 @@ export function SupabaseAccountForm({ onAuthenticated, onBusyChange, allowGoogle
           setNotice("");
           void signInWithGoogleSupabase({ remember }).catch((failure) => setError(failure instanceof CloudAuthRequestError ? failure.message : "No pudimos iniciar Google. Volvé a intentar."));
         }}>Continuar con Google</button>
-        {!secureStorageAvailable ? <p className="text-xs text-slate-500 dark:text-slate-400">El acceso con Google requiere la app de escritorio.</p> : null}
+        {!secureStorageAvailable ? <p className="text-xs text-slate-500 dark:text-slate-400">El acceso con Google requiere almacenamiento seguro en la aplicación.</p> : null}
       </> : null}
       {googleBusy ? <p role="status" className="text-sm text-sky-700 dark:text-sky-200">
         {google.status === "opening" ? "Abriendo Google..." : google.status === "waiting" ? "Esperando confirmación..." : "Procesando inicio de sesión..."}

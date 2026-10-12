@@ -29,6 +29,15 @@ mod device_verification;
 mod local_api_token;
 mod supabase_tokens;
 mod supabase_oauth;
+#[cfg(any(target_os = "android", test))]
+mod google_oauth_log;
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn log_google_oauth_diagnostic(app: tauri::AppHandle, payload: serde_json::Value) -> Result<(), String> {
+  let payload = google_oauth_log::validate(payload).map_err(str::to_string)?;
+  tauri_plugin_mobile_secure_storage::google_oauth_diagnostic(&app, payload)
+}
 #[cfg(mobile)]
 mod mobile_sql_transaction;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
@@ -1099,6 +1108,8 @@ pub fn run() {
     .manage(app_close_sync_signal)
     .manage(Arc::clone(&backend_child))
     .invoke_handler(tauri::generate_handler![
+      #[cfg(target_os = "android")]
+      log_google_oauth_diagnostic,
       #[cfg(mobile)]
       mobile_sql_transaction::mobile_sql_transaction,
       save_binary_file,

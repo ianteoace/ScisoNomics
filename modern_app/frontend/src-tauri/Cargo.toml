@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "3.3.2"
+version = "3.3.3"
 description = "ScisoNomics - gestion financiera personal local-first"
 authors = ["ScisoNomics"]
 license = ""

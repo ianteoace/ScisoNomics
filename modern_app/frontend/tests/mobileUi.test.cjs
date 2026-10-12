@@ -425,7 +425,7 @@ test("mobile account displays connected identity without tokens or full IDs and 
   await flush(); assert.equal(signedOut, "internal-owner-private");
 });
 
-test("mobile opens the shared email/signup/recovery form without a partial Google entry", t => {
+test("mobile opens the shared email/signup/recovery form with Google", t => {
   const auth = require("../services/supabaseCloudAuth.ts");
   t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
   const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
@@ -433,9 +433,55 @@ test("mobile opens the shared email/signup/recovery form without a partial Googl
   view.find(node => node.type === "button" && node.props.children === "Iniciar sesión o crear cuenta")[0].props.onClick();
   const html = view.html();
   assert.match(html, /Email/); assert.match(html, /Contraseña/); assert.match(html, /Crear cuenta/);
-  assert.match(html, /Olvidaste tu contraseña/); assert.doesNotMatch(html, /Continuar con Google/);
+  assert.match(html, /Olvidaste tu contraseña/); assert.match(html, /Continuar con Google/);
   view.find(node => node.type === "button" && node.props.children === "Continuar en modo local")[0].props.onClick();
   assert.equal(view.find(node => node.type === "form").length, 0);
+});
+
+test("Android add-account shows Google; signup OTP, recovery, device OTP, callbacks and iOS hide it", async t => {
+  const auth = require("../services/supabaseCloudAuth.ts"), google = require("../services/supabaseGoogleAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  let deviceRequired = false, oauth = "idle";
+  t.mock.method(auth, "getPendingDeviceState", () => ({ required: deviceRequired, completionVersion: 0 }));
+  t.mock.method(google, "getGoogleOAuthState", () => ({ status: oauth }));
+  const { AddAccountModal } = require("../components/account/AddAccountModal.tsx");
+  const view = renderer(t, AddAccountModal, { open: true, onClose() {} }, false);
+  window.navigator = { userAgent: "Android" }; window.__TAURI_INTERNALS__ = {};
+  let button = view.find(n => n.type === "button" && n.props.children === "Continuar con Google")[0];
+  assert.ok(button); assert.equal(button.props.disabled, false);
+  deviceRequired = true; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  deviceRequired = false; oauth = "processing"; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  oauth = "idle";
+  view.find(n => n.type === "button" && n.props.children === "¿Olvidaste tu contraseña?")[0].props.onClick();
+  assert.doesNotMatch(view.html(), /Continuar con Google/);
+  view.find(n => n.type === "button" && n.props.children === "Volver al inicio de sesión")[0].props.onClick();
+  assert.match(view.html(), /Continuar con Google/);
+  window.navigator.userAgent = "iPhone"; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  window.navigator.userAgent = "Android";
+  t.mock.method(auth, "signUpWithPassword", async email => ({ status: "verification_required", email }));
+  view.find(n => n.type === "button" && n.props.children === "¿No tenés cuenta? Crear cuenta")[0].props.onClick();
+  view.find(n => n.type === "input" && n.props.type === "email")[0].props.onChange({ target: { value: "qa@example.test" } });
+  for (const input of view.find(n => n.type === "input" && n.props.type === "password")) input.props.onChange({ target: { value: "fixture-password-long" } });
+  view.find(n => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); await flush();
+  assert.match(view.html(), /Confirmar código/);
+  assert.doesNotMatch(view.html(), /Continuar con Google/);
+});
+
+test("OAuth form and listener show friendly failures without technical codes on Android and desktop", t => {
+  const auth = require("../services/supabaseCloudAuth.ts"), google = require("../services/supabaseGoogleAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  let diagnosticCode = "oauth_exchange_failed";
+  t.mock.method(google, "getGoogleOAuthState", () => ({ status: "error", message: "No se pudo completar el inicio de sesión.", diagnosticCode }));
+  const { SupabaseAccountForm } = require("../components/account/SupabaseAccountForm.tsx"), { SupabaseOAuthListener } = require("../components/account/SupabaseOAuthListener.tsx");
+  const Component = () => React.createElement(React.Fragment, {}, React.createElement(SupabaseAccountForm, { onAuthenticated() {}, onBusyChange() {} }), React.createElement(SupabaseOAuthListener));
+  const view = renderer(t, Component, {}, false);
+  window.navigator = { userAgent: "Android" }; window.__TAURI_INTERNALS__ = {};
+  assert.equal(view.find(n => n.props.role === "alert").length, 2);
+  assert.match(view.html(), /No se pudo completar el inicio de sesión/);
+  assert.doesNotMatch(view.html(), /Código:|oauth_exchange_failed/);
+  diagnosticCode = "fixture-secret"; assert.doesNotMatch(view.html(), /fixture-secret|Código:/);
+  diagnosticCode = "oauth_exchange_failed"; window.navigator.userAgent = "Windows NT";
+  assert.doesNotMatch(view.html(), /Código:|oauth_exchange_failed/);
 });
 
 test("mobile reports a partial secure logout and can retry deleting the saved session", async t => {
@@ -755,7 +801,8 @@ test('mobile sidebar opens actual shared login directly, closes drawer and keeps
   view.find(n=>n.props['aria-label']==='Abrir menú')[0].props.onClick({currentTarget:{focus(){}}}); view.html();
   view.find(n=>n.type==='button'&&Array.isArray(n.props.children)&&n.props.children.includes('Iniciar sesión'))[0].props.onClick();
   assert.equal(pathname, '/dashboard'); assert.match(view.html(), /autocomplete="current-password"/i);
-  assert.match(view.html(), /¿Olvidaste tu contraseña/); assert.doesNotMatch(view.html(), /Cambiar cuenta|Continuar con Google/);
+  assert.match(view.html(), /¿Olvidaste tu contraseña/); assert.doesNotMatch(view.html(), /Cambiar cuenta/);
+  assert.match(view.html(), /Continuar con Google/);
   const previous = mobileAccountState; t.after(()=>{mobileAccountState=previous;});
   mobileAccountState={...previous,financialContext:{ownerId:'internal-owner',isCurrent:()=>true},financialReady:false};
   assert.match(view.html(), /autocomplete="current-password"/i);

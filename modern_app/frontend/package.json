@@ -1,7 +1,7 @@
 {
   "name": "registro-finanzas-web",
   "private": true,
-  "version": "3.3.2",
+  "version": "3.3.3",
   "scripts": {
     "dev": "next dev --webpack -p 3000",
     "dev:mobile": "next dev --webpack -p 3000 --hostname 0.0.0.0",

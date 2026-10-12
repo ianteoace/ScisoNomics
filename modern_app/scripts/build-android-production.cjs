@@ -18,11 +18,26 @@ function verifyOutput(dir = output) {
  if(counts.stagingApi||counts.stagingSupabase||!counts.productionApi||!counts.productionSupabase) throw new Error('Export does not satisfy production isolation checks. No Android bundle should be built.');
  return counts;
 }
-function main(){
+async function validatePublishableKey(env, request = globalThis.fetch) {
+ validateEnvironment(env);
+ try {
+  const response = await request(`${required.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/settings`, {
+   method:'GET', headers:{apikey:env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}, redirect:'error', signal:AbortSignal.timeout(4000),
+  });
+  const accepted = response.status === 200;
+  // Never inspect, print or persist public settings or gateway error bodies.
+  try { void response.body?.cancel().catch(()=>{}); } catch { /* Status alone decides acceptance. */ }
+  if(!accepted) throw new Error('identity_check_failed');
+ } catch { throw new Error('Production identity key validation failed; Android build is blocked. Check configuration and connectivity.'); }
+}
+async function main(){
  if(!process.argv.includes('--verify-only')) {
   process.env.NODE_ENV='production';
   require(path.join(root,'node_modules/@next/env')).loadEnvConfig(root,false,{info(){},error(){throw new Error('Could not load local build environment.');}});
   validateEnvironment(process.env);
+  // Android production packaging is intentionally online/fail-closed. Regular
+  // npm build, CI tests and --verify-only remain offline and never send a key.
+  await validatePublishableKey(process.env);
   if(path.dirname(output)!==root||path.basename(output)!=='out'||(fs.existsSync(output)&&fs.lstatSync(output).isSymbolicLink()))throw new Error('Unsafe export path.');
   fs.rmSync(output,{recursive:true,force:true});
   const result=spawnSync(process.execPath,[path.join(root,'node_modules/next/dist/bin/next'),'build'],{cwd:root,env:{...process.env,NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY:'1'},stdio:'inherit'});
@@ -30,5 +45,5 @@ function main(){
  }
  console.info('Production export isolation OK:',JSON.stringify(verifyOutput()));
 }
-module.exports={validateEnvironment,verifyOutput};
-if(require.main===module){try{main();}catch(error){console.error(error.message);process.exitCode=1;}}
+module.exports={validateEnvironment,validatePublishableKey,verifyOutput};
+if(require.main===module){main().catch(error=>{console.error(error.message);process.exitCode=1;});}

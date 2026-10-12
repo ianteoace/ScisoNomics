@@ -11,19 +11,22 @@ import {
   type CloudUser, type StoredCloudSession,
 } from "./cloudAuth";
 import { deleteSupabaseRefreshToken, isSupabaseSecureStorageAvailable, loadSupabaseRefreshToken, saveSupabaseRefreshToken } from "./supabaseTokenStorage";
+import type { GoogleOAuthTrace, GoogleOAuthDiagnosticEvent } from "./googleOAuthDiagnostics";
+import { retainGoogleOAuthAuthError } from "./googleOAuthDiagnostics";
+import { getRuntimePlatformSync } from "./platform";
 
 type SupabaseIdentityClient = ReturnType<typeof createSupabaseAuthClient>;
 type MemorySession = { client: SupabaseIdentityClient; session: Session | null; refreshToken: string; persistent: boolean };
 const sessions = new Map<string, MemorySession>();
 const refreshes = new Map<string, Promise<StoredCloudSession | null>>();
-type PendingDevice = { client: SupabaseIdentityClient; session: Session; user: CloudUser; remember: boolean; context: DeviceContext; enrollment: Enrollment; timer?: ReturnType<typeof setTimeout> };
+type PendingDevice = { client: SupabaseIdentityClient; session: Session; user: CloudUser; remember: boolean; context: DeviceContext; enrollment: Enrollment; timer?: ReturnType<typeof setTimeout>; trace?: GoogleOAuthTrace };
 let pendingDevice: PendingDevice | null = null;
 let completingDevice = false;
 const deviceListeners = new Set<() => void>();
 const NO_DEVICE = { required: false as boolean, resendAt: 0, expiresAt: 0, completionVersion: 0, completedOwnerId: "" };
-let deviceState = NO_DEVICE;
+let deviceState: typeof NO_DEVICE & { diagnosticCode?: GoogleOAuthDiagnosticEvent } = NO_DEVICE;
 export const getPendingDeviceState = () => deviceState;
-export const getPendingDeviceServerState = () => NO_DEVICE;
+export const getPendingDeviceServerState = (): typeof deviceState => NO_DEVICE;
 export function subscribePendingDevice(listener: () => void) { deviceListeners.add(listener); return () => { deviceListeners.delete(listener); }; }
 function publishPendingDevice(value: PendingDevice | null) {
   deviceState = value ? { required: true, resendAt: Date.now() + value.enrollment.resendAvailableIn * 1000, expiresAt: Date.now() + value.enrollment.expiresIn * 1000, completionVersion: deviceState.completionVersion, completedOwnerId: "" } : { ...NO_DEVICE, completionVersion: deviceState.completionVersion };
@@ -49,15 +52,25 @@ export async function verifyNewDeviceCode(code: string) {
   const value = pendingDevice;
   if (!value || completingDevice) throw new DeviceVerificationRequiredError();
   completingDevice = true;
+  if (value.trace) value.trace.failure = undefined;
   try {
-    const grant = await completeDeviceEnrollment(value.session.access_token, value.context, value.enrollment, code);
+    const authorize = () => completeDeviceEnrollment(value.session.access_token, value.context, value.enrollment, code);
+    const grant = value.trace ? await value.trace.step("oauth_device_auth_failed", authorize) : await authorize();
     if (pendingDevice !== value) throw new DeviceVerificationRequiredError();
-    const user = await acceptAuthorizedSession(value.client, value.session, grant, value.remember);
+    const store = () => acceptAuthorizedSession(value.client, value.session, grant, value.remember);
+    const user = value.trace ? await value.trace.step("oauth_session_store_failed", store) : await store();
     if (value.timer) clearTimeout(value.timer);
     pendingDevice = null;
     deviceState = { ...NO_DEVICE, completionVersion: deviceState.completionVersion + 1, completedOwnerId: user.id };
     deviceListeners.forEach((listener) => listener());
     return user;
+  } catch (failure) {
+    if (!value.trace?.failure) value.trace?.fail("oauth_device_auth_failed", failure);
+    if (value.trace?.failure && getRuntimePlatformSync() === "android") {
+      deviceState = { ...deviceState, diagnosticCode: value.trace.failure };
+      deviceListeners.forEach((listener) => listener());
+    }
+    throw failure;
   } finally { completingDevice = false; }
 }
 
@@ -136,20 +149,26 @@ async function storeSession(user: CloudUser, session: Session, makeActive: boole
   } }, { authProvider: "supabase", remember: persistent, makeActive, externalPersistenceVerified: persistent });
 }
 
-async function acceptSession(client: SupabaseIdentityClient, session: Session | null, remember = isSupabaseSecureStorageAvailable()): Promise<CloudUser> {
+async function acceptSession(client: SupabaseIdentityClient, session: Session | null, remember = isSupabaseSecureStorageAvailable(), trace?: GoogleOAuthTrace): Promise<CloudUser> {
   if (!session?.access_token || !session.refresh_token) {
+    trace?.fail("oauth_session_invalid", { code: "supabase_session_missing" });
     throw new CloudAuthRequestError("No recibimos una sesión válida.", { code: "supabase_session_missing", kind: "auth" });
   }
-  const user = await resolveInternalUser(session.access_token, true);
-  await cancelDeviceVerification();
-  const result = await beginDeviceLogin(session.access_token, user);
+  const bootstrap = () => resolveInternalUser(session.access_token, true);
+  const user = trace ? await trace.step("oauth_bootstrap_failed", bootstrap) : await bootstrap();
+  const authorize = async () => {
+    await cancelDeviceVerification();
+    return beginDeviceLogin(session.access_token, user);
+  };
+  const result = trace ? await trace.step("oauth_device_auth_failed", authorize) : await authorize();
   if (result.enrollment) {
-    const value: PendingDevice = { client, session, user, remember, context: result.context, enrollment: result.enrollment };
+    const value: PendingDevice = { client, session, user, remember, context: result.context, enrollment: result.enrollment, trace };
     pendingDevice = value; publishPendingDevice(value);
     value.timer = setTimeout(() => { if (pendingDevice === value) void cancelDeviceVerification(); }, result.enrollment.expiresIn * 1000);
     throw new DeviceVerificationRequiredError();
   }
-  return acceptAuthorizedSession(client, session, result.grant!, remember);
+  const store = () => acceptAuthorizedSession(client, session, result.grant!, remember);
+  return trace ? trace.step("oauth_session_store_failed", store) : store();
 }
 
 async function acceptAuthorizedSession(client: SupabaseIdentityClient, session: Session, grant: DeviceGrant, remember: boolean): Promise<CloudUser> {
@@ -188,13 +207,22 @@ export async function signInWithPassword(email: string, password: string, option
   });
 }
 
-export async function completeGoogleSupabaseSignIn(client: SupabaseIdentityClient, code: string, remember: boolean) {
-  const { data, error } = await client.auth.exchangeCodeForSession(code);
-  if (error) throw providerError(error);
+export async function completeGoogleSupabaseSignIn(client: SupabaseIdentityClient, code: string, remember: boolean, trace?: GoogleOAuthTrace) {
+  const exchange = async () => {
+    const result = await client.auth.exchangeCodeForSession(code);
+    if (result.error) {
+      const friendly = providerError(result.error);
+      retainGoogleOAuthAuthError(friendly, result.error);
+      throw friendly;
+    }
+    return result;
+  };
+  const { data } = trace ? await trace.step("oauth_exchange_failed", exchange) : await exchange();
   if (!data.session?.user.email || !data.session.user.email_confirmed_at) {
+    trace?.fail("oauth_session_invalid", { code: "supabase_email_unconfirmed" });
     throw new CloudAuthRequestError("Google no devolvió un email confirmado. Volvé a iniciar sesión.", { code: "supabase_email_unconfirmed", kind: "auth" });
   }
-  return acceptSession(client, data.session, remember);
+  return acceptSession(client, data.session, remember, trace);
 }
 
 export async function disposeUnusedSupabaseClient(client: SupabaseIdentityClient) {

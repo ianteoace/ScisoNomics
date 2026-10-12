@@ -27,8 +27,75 @@ class TokenArgs {
     var token: String? = null
 }
 
+@InvokeArg
+class GoogleOAuthDiagnosticArgs {
+    var event: String = ""
+    var mode: String = ""
+    var origin: String = ""
+    var durationMs: Double? = null
+    var httpStatus: Int? = null
+    var errorCode: String? = null
+    var authErrorCode: String? = null
+}
+
 @TauriPlugin
 class SecureStoragePlugin(private val activity: Activity) : Plugin(activity) {
+    // Rust-only bridge: not exposed by this plugin's JS command dispatcher.
+    // Release logging cannot rely on Wry's debug-only console forwarding.
+    @Command
+    fun googleOAuthDiagnostic(invoke: Invoke) {
+        try {
+            require(invoke.getRawArgs().toByteArray(Charsets.UTF_8).size <= 768)
+            val raw = invoke.getArgs()
+            val fields = setOf("event", "mode", "origin", "durationMs", "httpStatus", "errorCode", "authErrorCode")
+            require(raw.keys().asSequence().all { it in fields })
+            require(listOf("event", "mode", "origin").all { raw.has(it) && raw.get(it) is String })
+            for (field in listOf("durationMs", "httpStatus")) if (raw.has(field) && !raw.isNull(field)) {
+                val number = raw.get(field)
+                require(number is Number)
+                val value = number.toDouble()
+                require(value.isFinite() && value % 1.0 == 0.0)
+                require(if (field == "durationMs") value in 0.0..86400000.0 else value in 100.0..599.0)
+            }
+            for (field in listOf("errorCode", "authErrorCode")) require(!raw.has(field) || raw.isNull(field) || raw.get(field) is String)
+            val args = invoke.parseArgs(GoogleOAuthDiagnosticArgs::class.java)
+            val events = setOf(
+                "oauth_callback_invalid", "oauth_pending_missing", "oauth_pending_expired", "oauth_pending_invalid",
+                "oauth_pending_delete_failed", "oauth_exchange_failed", "oauth_session_invalid", "oauth_bootstrap_failed",
+                "oauth_device_auth_failed", "oauth_session_store_failed"
+            )
+            val errors = setOf(
+                "unknown", "pkce_verifier_missing", "pkce_verifier_mismatch", "flow_state_expired", "flow_state_not_found",
+                "invalid_grant", "invalid_credentials", "over_request_rate_limit", "supabase_auth_failed",
+                "supabase_oauth_storage_failed", "supabase_secure_storage_failed", "supabase_secure_unavailable",
+                "supabase_not_configured", "supabase_session_missing", "identity_unconfirmed",
+                "internal_account_required", "internal_identity_invalid", "internal_identity_mismatch", "account_deleted",
+                "auth_provider_conflict", "device_storage_failed", "device_storage_unavailable", "device_revoked",
+                "device_verification_unavailable", "device_verification_required", "device_otp_invalid", "supabase_login_replaced"
+            )
+            require(args.event in events && args.mode in setOf("warm", "cold") && args.origin in setOf("onOpenUrl", "getCurrent"))
+            val authCodes = setOf(
+                "bad_code_verifier", "bad_oauth_callback", "bad_oauth_state", "bad_jwt",
+                "invalid_credentials", "validation_failed", "unexpected_failure", "flow_state_expired", "flow_state_not_found", "other"
+            )
+            require(args.errorCode == null || args.errorCode in errors)
+            require(args.authErrorCode == null || (args.event == "oauth_exchange_failed" && args.errorCode == "supabase_auth_failed" && args.authErrorCode in authCodes))
+            val row = JSObject().apply {
+                put("event", args.event); put("platform", "android"); put("mode", args.mode); put("origin", args.origin)
+                args.durationMs?.takeIf { it.isFinite() && it >= 0 }?.let { put("duration_ms", it) }
+                args.httpStatus?.takeIf { it in 100..599 }?.let { put("http_status", it) }
+                args.errorCode?.let { put("error_code", it) }
+                if (args.event == "oauth_exchange_failed") args.authErrorCode?.let {
+                    put("auth_error_code", it)
+                    put("error_code", "supabase_auth_failed")
+                }
+            }
+            if ((activity.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+                Log.i("ScisoOAuth", "[google-oauth] $row")
+            }
+            invoke.resolve(JSObject().apply { put("ok", true) })
+        } catch (_: Exception) { invoke.reject("oauth_diagnostic_unavailable") }
+    }
     // A serialized worker avoids blocking the UI, key-creation races and late writes.
     private val worker = Executors.newSingleThreadExecutor()
     private val alias = "scisonomics.supabase.refresh.v1"

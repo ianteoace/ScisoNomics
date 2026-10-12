@@ -18,7 +18,7 @@ export function AddAccountModal({ open, onClose, onAccountAdded, title = "Inicia
 
   const platform = getRuntimePlatformSync();
   const mobile = platform === "android" || platform === "ios";
-  const form = open ? <SupabaseAccountForm allowGoogle={!mobile} onBusyChange={setBusy} onAuthenticated={() => {
+  const form = open ? <SupabaseAccountForm allowGoogle={platform !== "ios"} onBusyChange={setBusy} onAuthenticated={() => {
         setBusy(false);
         onClose();
         onAccountAdded?.();

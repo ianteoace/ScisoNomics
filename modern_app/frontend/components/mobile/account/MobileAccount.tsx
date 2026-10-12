@@ -44,7 +44,7 @@ export function MobileAccount({ showSync = true, showDevices = true }: { showSyn
     </> : <>
       <p className="font-semibold">Datos locales</p>
       {formOpen ? <>
-        <SupabaseAccountForm allowGoogle={false} onBusyChange={setBusy} onAuthenticated={() => { setFormOpen(false); void refresh(); }} />
+        <SupabaseAccountForm onBusyChange={setBusy} onAuthenticated={() => { setFormOpen(false); void refresh(); }} />
         <button className="btn-secondary min-h-12" disabled={busy} onClick={() => setFormOpen(false)}>Continuar en modo local</button>
       </> : <button className="btn min-h-12" disabled={checking || busy} onClick={() => { setActionError(""); setFormOpen(true); }}>Iniciar sesión o crear cuenta</button>}
     </>}
@@ -56,6 +56,5 @@ export function MobileAccount({ showSync = true, showDevices = true }: { showSyn
         if (result.ok) { setCleanupOwner(null); setActionError(""); }
       }).finally(() => setBusy(false));
     }}>Reintentar borrar sesión</button> : null}
-    <p className="text-xs text-slate-400">Google estará disponible próximamente en Mobile.</p>
   </div>;
 }

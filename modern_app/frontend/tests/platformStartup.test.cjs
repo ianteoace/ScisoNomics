@@ -24,7 +24,8 @@ function stub(filename, exports) {
 }
 stub("./services/cloudAuth.ts", { getActiveOwnerId: () => { ownerReads++; return "internal-owner"; } });
 stub("next/navigation", { useRouter: () => ({ replace: () => {} }), usePathname: () => "/dashboard" });
-stub("./components/account/SupabaseOAuthListener.tsx", { SupabaseOAuthListener: () => { throw new Error("Mobile mounted desktop OAuth"); } });
+let oauthMounts = 0;
+stub("./components/account/SupabaseOAuthListener.tsx", { SupabaseOAuthListener: () => { oauthMounts++; return null; } });
 stub("./components/account/DeviceVerificationDialog.tsx", { DeviceVerificationDialog: () => null });
 let initializeMobile = async () => ({});
 stub("./services/data/mobileDatabase.ts", { getMobileDatabase: () => initializeMobile() });
@@ -114,10 +115,10 @@ test("SSR returns browser synchronously and preserves static startup markup", (t
   assert.doesNotMatch(view.render(), /financial page/);
 });
 
-for (const agent of ["Mozilla/5.0 Windows NT 10.0 Chrome/130", "Android", "iPhone"]) {
-  test(`a browser without Tauri stays browser: ${agent}`, (t) => {
+for (const [agent, expected] of [["Mozilla/5.0 Windows NT 10.0 Chrome/130", "browser"], ["Android", "android"], ["iPhone", "ios"]]) {
+  test(`startup identifies ${expected} before the native bridge is injected: ${agent}`, (t) => {
     runtime(t, "browser", agent);
-    assert.equal(getRuntimePlatformSync(), "browser");
+    assert.equal(getRuntimePlatformSync(), expected);
   });
 }
 
@@ -175,6 +176,7 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
   test(`${os} startup opens SQLite before its app without health, ready or desktop children`, async (t) => {
     runtime(t, os, agent);
     let resolveDatabase, opens = 0;
+    oauthMounts = 0;
     initializeMobile = () => { opens++; return new Promise((resolve) => { resolveDatabase = resolve; }); };
     t.after(() => { initializeMobile = async () => ({}); });
     t.mock.method(global, "fetch", () => { throw new Error("Unexpected request"); });
@@ -183,6 +185,7 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
     const view = renderer(t, Providers, { children: React.createElement(BackendStartupGate, {}, React.createElement(FinancialPage)) });
     const initial = view.render();
     assert.match(initial, /Preparando ScisoNomics Mobile/);
+    assert.equal(oauthMounts, 0);
     assert.doesNotMatch(initial, /Iniciando ScisoNomics/);
     view.effects();
     assert.equal(opens, 1);
@@ -190,6 +193,7 @@ for (const [os, agent] of [["android", "Android"], ["ios", "iPhone"]]) {
     resolveDatabase({}); await new Promise(setImmediate);
     const html = view.render();
     assert.match(html, /App mobile: almacenamiento local listo/);
+    assert.equal(oauthMounts, 1, "one shared OAuth listener after SQLite is ready");
     assert.doesNotMatch(html, /financial page|animate-spin/);
     assert.equal(childMounts, 0);
     assert.equal(global.fetch.mock.callCount(), 0);

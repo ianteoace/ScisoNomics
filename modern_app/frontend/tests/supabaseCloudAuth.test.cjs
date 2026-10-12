@@ -57,7 +57,10 @@ function loadServices() {
       if (user.id !== owner) throw new cloud.CloudAuthRequestError("Wrong owner", { code:"internal_identity_mismatch", kind:"auth" });
       return grant(token,user);
     },
-    rememberDeviceGrant() {}, forgetDeviceGrant() {}, listAccountDevices: async () => [],
+    rememberDeviceGrant(owner) { deviceTestContext.trustedOwners.add(owner); },
+    forgetDeviceGrant(owner) { deviceTestContext.trustedOwners.delete(owner); },
+    hasCachedDeviceGrant(owner) { return deviceTestContext.trustedOwners.has(owner); },
+    listAccountDevices: async () => [],
   } };
   return {
     cloud: require("../services/cloudAuth.ts"),
@@ -80,6 +83,11 @@ function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
   browser.localStorage = new MemoryStorage();
   browser.sessionStorage = new MemoryStorage();
   if (tauri) browser.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+    if (command === "log_google_oauth_diagnostic") {
+      if (ctx.nativeDiagnosticError) throw new Error("fixture-secret");
+      (ctx.nativeDiagnostics ||= []).push(args.payload);
+      return;
+    }
     if (command === "plugin:opener|open_url") {
       if (ctx.openerError) throw new Error("Sensitive opener URL must not leak");
       ctx.openedUrls.push(new URL(args.url));
@@ -96,8 +104,14 @@ function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
     if (command.includes("supabase") || command.startsWith("plugin:mobile-secure-storage|")) {
       ctx.nativeCalls.push({ command, accountId: args.accountId });
       if (ctx.nativeError) throw new Error("Native failure with secret details");
+      if (ctx.refreshSaveError && command === "plugin:mobile-secure-storage|save" && !args.accountId.endsWith("::pending_google")) throw new Error("Sensitive native refresh failure");
+      if (ctx.pendingDeleteError && command === "plugin:mobile-secure-storage|delete" && args.accountId.endsWith("::pending_google")) throw new Error("Sensitive native deletion failure");
       const key = `supabase:${args.accountId}`;
       const operation = command.startsWith("plugin:mobile-secure-storage|") ? `${command.split("|")[1]}_persistent_supabase_refresh_token` : command;
+      if (command === "plugin:mobile-secure-storage|save" && args.accountId.endsWith("::pending_google")) {
+        assert.match(args.accountId, /^[a-f0-9]{64}::[A-Za-z0-9_-]{1,120}$/);
+        assert.ok(args.token.length > 0 && args.token.length <= 4096 && !/\s/.test(args.token), "native token-slot contract");
+      }
       if (operation === "save_persistent_supabase_refresh_token") {
         if (ctx.pauseSave) await ctx.pauseSave;
         credentials.set(key, args.token);
@@ -198,6 +212,7 @@ function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
     throw new Error(`Unexpected cloud API: ${url.pathname}`);
   });
   deviceTestContext = ctx;
+  ctx.trustedOwners = new Set();
   Object.assign(ctx, loadServices());
   t.after(() => ctx.external.cancelDeviceVerification());
   return ctx;
@@ -209,8 +224,365 @@ function setupGoogle(t, options = {}) {
   return ctx;
 }
 
-test("Google URL uses fixed native callback and PKCE S256, with pending verifier only in secure storage", async (t) => {
+function decodePending(payload, mobile) { return JSON.parse(mobile ? Buffer.from(payload, "base64url").toString("utf8") : payload); }
+function encodePending(value, mobile) { const payload = JSON.stringify(value); return mobile ? Buffer.from(payload).toString("base64url") : payload; }
+
+function diagnosticEvents() {
+  return console.info.mock.calls.map(call => call.arguments)
+    .filter(args => typeof args[0] === "string" && args[0].startsWith("[google-oauth] "))
+    .map(args => { assert.equal(args.length, 1); return JSON.parse(args[0].slice("[google-oauth] ".length)); });
+}
+
+test("production Google login emits no shared auth lifecycle or identity logs", async t => {
+  const before = process.env.NODE_ENV; process.env.NODE_ENV = "production";
+  t.after(() => { if (before === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = before; });
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  const lines = console.info.mock.calls.map(call => JSON.stringify(call.arguments));
+  assert.ok(!lines.some(line => line.includes('[auth]')));
+  for (const value of ["alice@example.com", "sciso-A", "supabase-access", "supabase-refresh", "google-alice-code"]) assert.ok(!lines.some(line => line.includes(value)), "identity or token leaked into production logs");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+});
+
+test("development auth lifecycle also redacts internal owners, identities and URLs", async t => {
+  const before = process.env.NODE_ENV; process.env.NODE_ENV = "development";
+  t.after(() => { if (before === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = before; });
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  const lines = console.info.mock.calls.filter(call => String(call.arguments[0]).startsWith('[auth]')).map(call => JSON.stringify(call.arguments));
+  assert.ok(lines.length > 0);
+  for (const value of ["alice@example.com", "sciso-A", "https://identity.test", "supabase-access", "supabase-refresh", "google-alice-code"]) assert.ok(!lines.some(line => line.includes(value)), "private auth metadata leaked into development logs");
+});
+function assertSafeDiagnostics(ctx) {
+  const logs = diagnosticEvents(), text = JSON.stringify(logs);
+  // Only auth_error_code may contain the public name bad_code_verifier;
+  // no verifier value or similarly named free-form field is permitted.
+  assert.doesNotMatch(JSON.stringify(logs.map(({ auth_error_code, ...row }) => row)), /code=|access_token|refresh_token|code_verifier|email|scisonomics:\/\/|https?:\/\//);
+  for (const secret of ["google-alice-code", "supabase-access", "supabase-refresh", "Sensitive", "fixture-secret"]) assert.ok(!text.includes(secret), "secret leaked into diagnostics");
+  for (const row of logs) {
+    assert.ok(require("../services/googleOAuthDiagnostics.ts").GOOGLE_OAUTH_FAILURE_EVENTS.includes(row.event), "only failures belong in operational logs");
+    assert.ok(Object.keys(row).every(key => ["event", "platform", "mode", "origin", "duration_ms", "http_status", "error_code", "auth_error_code"].includes(key)));
+    if (row.auth_error_code !== undefined) {
+      assert.equal(row.event, "oauth_exchange_failed"); assert.equal(row.error_code, "supabase_auth_failed");
+      assert.ok([...require("../services/googleOAuthDiagnostics.ts").GOOGLE_OAUTH_AUTH_ERROR_CODES, "other"].includes(row.auth_error_code));
+    }
+    assert.equal(row.platform, "android");
+    assert.ok(["warm", "cold"].includes(row.mode)); assert.ok(["onOpenUrl", "getCurrent"].includes(row.origin));
+  }
+  return logs;
+}
+
+for (const kind of ["missing", "expired", "invalid", "native-read"]) test(`Android diagnostics distinguish pending ${kind}`, async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  if (kind !== "missing") {
+    await ctx.google.signInWithGoogleSupabase();
+    const [key, payload] = [...ctx.credentials.entries()][0];
+    await ctx.google.cancelGoogleSupabaseSignIn();
+    const value = decodePending(payload, true);
+    if (kind === "expired") value.expiresAt = Date.now() - 1;
+    if (kind === "invalid") value.storage = { access_token: "fixture-secret" };
+    ctx.credentials.set(key, encodePending(value, true));
+    Object.assign(ctx, loadServices());
+    if (kind === "native-read") ctx.nativeError = true;
+  }
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "getCurrent");
+  const expected = kind === "native-read" ? "oauth_pending_invalid" : `oauth_pending_${kind}`;
+  assert.equal(ctx.google.getGoogleOAuthState().diagnosticCode, expected);
+  const logs = assertSafeDiagnostics(ctx);
+  assert.ok(logs.some(row => row.event === expected && row.mode === "cold" && row.origin === "getCurrent"));
+  if (kind === "native-read") assert.ok(logs.some(row => row.error_code === "supabase_oauth_storage_failed"));
+  assert.equal(ctx.calls.length, 0);
+  ctx.nativeError = false;
+});
+
+for (const kind of ["exchange", "bootstrap", "device", "store", "delete", "invalid-session"]) test(`Android OAuth diagnostics identify ${kind} failure`, async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  if (kind === "exchange") ctx.exchangeError = true;
+  if (kind === "bootstrap") ctx.backendError = { status: 409, detail: { code: "internal_account_required" } };
+  if (kind === "device") t.mock.method(require("../services/deviceAuthorization.ts"), "beginDeviceLogin", async () => { throw new ctx.cloud.CloudAuthRequestError("No pudimos autorizar el dispositivo.", { code: "device_verification_unavailable", statusCode: 503 }); });
+  if (kind === "store") ctx.refreshSaveError = true;
+  if (kind === "delete") ctx.pendingDeleteError = true;
+  if (kind === "invalid-session") ctx.oauthUnconfirmed = true;
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  const expected = { exchange: "oauth_exchange_failed", bootstrap: "oauth_bootstrap_failed", device: "oauth_device_auth_failed", store: "oauth_session_store_failed", delete: "oauth_pending_delete_failed", "invalid-session": "oauth_session_invalid" }[kind];
+  assert.equal(ctx.google.getGoogleOAuthState().diagnosticCode, expected);
+  const logs = assertSafeDiagnostics(ctx);
+  assert.ok(logs.some(row => row.event === expected));
+  if (kind === "exchange") assert.ok(logs.some(row => row.event === expected && row.http_status === 400 && row.error_code === "supabase_auth_failed" && row.auth_error_code === "flow_state_expired"));
+  if (kind === "bootstrap") assert.ok(logs.some(row => row.event === expected && row.http_status === 409));
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  ctx.pendingDeleteError = false;
+});
+
+test("Android duplicates remain deduplicated and successful callbacks are silent", async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  let resolveExchange; ctx.pauseExchange = new Promise(resolve => { resolveExchange = resolve; });
+  const first = ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "onOpenUrl");
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "getCurrent");
+  resolveExchange(); await first;
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "getCurrent");
+  const logs = assertSafeDiagnostics(ctx);
+  assert.deepEqual(logs, [], "successful and duplicate callbacks emit no operational noise");
+  assert.equal(ctx.google.getGoogleOAuthState().status, "succeeded");
+  assert.equal(ctx.calls.filter(call => call.url.pathname.endsWith("/token")).length, 1);
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  await new Promise(setImmediate);
+  assert.equal((ctx.nativeDiagnostics || []).length, 0);
+  assert.doesNotMatch(JSON.stringify(ctx.nativeDiagnostics || []), /code=|access_token|refresh_token|code_verifier|email|scisonomics:\/\/|https?:\/\//);
+  for (const row of ctx.nativeDiagnostics || []) assert.ok(Object.keys(row).every(key => ["event", "platform", "mode", "origin", "duration_ms", "http_status", "error_code", "auth_error_code"].includes(key)));
+});
+
+test("Android diagnostic transport failure never changes the completed Google session", async t => {
+  const ctx = setupGoogle(t, { mobile: true }); ctx.nativeDiagnosticError = true;
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  await new Promise(setImmediate);
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(ctx.google.getGoogleOAuthState().status, "succeeded");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  assert.ok(!assertSafeDiagnostics(ctx).some(row => row.event === "oauth_completed"));
+});
+
+for (const code of ["bad_code_verifier", "bad_oauth_callback", "bad_oauth_state", "bad_jwt", "invalid_credentials", "validation_failed", "unexpected_failure", "flow_state_expired", "flow_state_not_found", "fixture-secret", undefined]) {
+  test(`exchange AuthApiError diagnostics: ${code === "fixture-secret" ? "unknown" : code || "no code"}`, async t => {
+    const ctx = setupGoogle(t, { mobile: true });
+    await ctx.google.signInWithGoogleSupabase();
+    const { AuthApiError } = require("@supabase/supabase-js");
+    const error = new AuthApiError("fixture-secret", 401, code);
+    for (const name of ["message", "body", "response", "headers", "error_description", "stack", "url", "access_token", "refresh_token", "code_verifier", "state"]) {
+      Object.defineProperty(error, name, { configurable: true, get() { throw new Error("Sensitive field read by diagnostic"); } });
+    }
+    const create = ctx.config.createSupabaseAuthClient;
+    t.mock.method(ctx.config, "createSupabaseAuthClient", (...args) => {
+      const client = create(...args);
+      t.mock.method(client.auth, "exchangeCodeForSession", async () => ({ data: { session: null, user: null }, error }));
+      return client;
+    });
+    // Cold reconstruction ensures the actual exchange -> friendly mapping ->
+    // diagnostic trace path observes the original SDK AuthApiError.
+    const [key, payload] = [...ctx.credentials.entries()][0];
+    await ctx.google.cancelGoogleSupabaseSignIn(); ctx.credentials.set(key, payload);
+    await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "getCurrent");
+    await new Promise(setImmediate);
+    const row = assertSafeDiagnostics(ctx).find(row => row.event === "oauth_exchange_failed");
+    const allowed = require("../services/googleOAuthDiagnostics.ts").GOOGLE_OAUTH_AUTH_ERROR_CODES;
+    assert.equal(row.auth_error_code, allowed.includes(code) ? code : "other");
+    assert.equal(row.error_code, "supabase_auth_failed"); assert.equal(row.http_status, 401);
+    assert.ok(Number.isFinite(row.duration_ms));
+    assert.ok(ctx.nativeDiagnostics.some(native => native.auth_error_code === row.auth_error_code));
+    assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  });
+}
+
+test("non-AuthApiError has no auth_error_code even when it exposes a known code", t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  const diagnostics = require("../services/googleOAuthDiagnostics.ts");
+  const trace = diagnostics.createGoogleOAuthTrace({ mode: "warm", origin: "onOpenUrl" });
+  const error = { code: "bad_jwt", status: 401, name: "Error" };
+  for (const name of ["message", "body", "response", "headers", "stack", "code_verifier", "access_token"]) Object.defineProperty(error, name, { get() { throw new Error("Sensitive field read"); } });
+  trace.fail("oauth_exchange_failed", error, 12);
+  const row = assertSafeDiagnostics(ctx)[0];
+  assert.equal(row.auth_error_code, undefined); assert.equal(row.http_status, 401);
+  diagnostics.logGoogleOAuthDiagnostic("oauth_completed", { mode: "warm", origin: "onOpenUrl", authErrorCode: "bad_jwt" });
+  assert.equal(assertSafeDiagnostics(ctx).length, 1);
+});
+
+test("SDK verifier missing is diagnosed before HTTP without inventing a provider status", async t => {
+  const ctx = setupGoogle(t, { mobile: true }), create = ctx.config.createSupabaseAuthClient;
+  let discardVerifier = false;
+  t.mock.method(ctx.config, "createSupabaseAuthClient", (storage, key) => create({
+    ...storage, getItem: name => discardVerifier && name.endsWith("-code-verifier") ? null : storage.getItem(name),
+  }, key));
+  await ctx.google.signInWithGoogleSupabase(); discardVerifier = true;
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  const row = assertSafeDiagnostics(ctx).find(row => row.event === "oauth_exchange_failed");
+  assert.equal(row.error_code, "pkce_verifier_missing");
+  assert.equal(row.http_status, undefined);
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.google.getGoogleOAuthState().diagnosticCode, "oauth_exchange_failed");
+});
+
+test("late Android callback retains expired diagnosis after the existing timeout removed pending", async t => {
+  const ctx = setupGoogle(t, { mobile: true }), timeout = global.setTimeout, now = Date.now;
+  let expire;
+  t.mock.method(global, "setTimeout", (fn, delay, ...args) => {
+    if (delay > 290000 && delay <= 300000) expire = fn;
+    return timeout(fn, delay, ...args);
+  });
+  await ctx.google.signInWithGoogleSupabase(); assert.ok(expire);
+  t.mock.method(Date, "now", () => now() + 300001);
+  const cancelled = new Promise(resolve => {
+    const stop = ctx.google.subscribeGoogleOAuth(() => {
+      if (ctx.google.getGoogleOAuthState().diagnosticCode === "oauth_pending_expired") { stop(); resolve(); }
+    });
+  });
+  expire(); await cancelled;
+  assert.equal(ctx.credentials.size, 0);
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  assert.equal(ctx.google.getGoogleOAuthState().diagnosticCode, "oauth_pending_expired");
+  assert.ok(assertSafeDiagnostics(ctx).some(row => row.event === "oauth_pending_expired" && row.mode === "warm"));
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("Android cold success remains functional and emits no verifier or success logs", async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  const [key, payload] = [...ctx.credentials.entries()][0], verifierValues = Object.values(decodePending(payload, true).storage);
+  await ctx.google.cancelGoogleSupabaseSignIn(); ctx.credentials.set(key, payload); Object.assign(ctx, loadServices());
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code", "getCurrent");
+  const logs = assertSafeDiagnostics(ctx);
+  assert.deepEqual(logs, []);
+  assert.equal(ctx.google.getGoogleOAuthState().status, "succeeded");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  for (const verifier of verifierValues) assert.ok(!JSON.stringify(logs).includes(verifier), "verifier leaked into diagnostics");
+});
+
+test("Android invalid callback logs only its diagnostic event and never exchanges", async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?access_token=fixture-secret");
+  assert.equal(ctx.google.getGoogleOAuthState().diagnosticCode, "oauth_callback_invalid");
+  assert.deepEqual(assertSafeDiagnostics(ctx).map(row => row.event), ["oauth_callback_invalid"]);
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("Google diagnostic logger discards unknown events, fields and error codes; desktop is silent", t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  const diagnostics = require("../services/googleOAuthDiagnostics.ts");
+  const hostile = { mode: "warm", origin: "onOpenUrl", durationMs: 1.4, httpStatus: 400, errorCode: "fixture-secret", callback: "scisonomics://auth/callback?code=fixture-secret", email: "qa@example.test", access_token: "fixture-secret", refresh_token: "fixture-secret", code_verifier: "fixture-secret", stack: "fixture-secret" };
+  diagnostics.logGoogleOAuthDiagnostic("oauth_exchange_failed", hostile);
+  diagnostics.logGoogleOAuthDiagnostic("oauth_exchange_failed", { ...hostile, httpStatus: 999, durationMs: Infinity, errorCode: "pkce_code_verifier_not_found" });
+  diagnostics.logGoogleOAuthDiagnostic("fixture-secret", hostile);
+  const logs = assertSafeDiagnostics(ctx); assert.equal(logs.length, 2);
+  assert.equal(logs[0].error_code, "unknown"); assert.equal(logs[0].duration_ms, 1);
+  assert.equal(logs[1].error_code, "pkce_verifier_missing"); assert.equal(logs[1].http_status, undefined);
+  ctx.browser.navigator.userAgent = "Windows NT";
+  diagnostics.logGoogleOAuthDiagnostic("oauth_exchange_failed", hostile);
+  assert.equal(diagnosticEvents().length, 2);
+});
+
+test("Android Google diagnostic context survives device OTP and reports final session-store failure", async t => {
+  const ctx = setupGoogle(t, { mobile: true }); ctx.devicePending = true;
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  assert.equal(ctx.external.getPendingDeviceState().required, true);
+  assert.deepEqual(assertSafeDiagnostics(ctx), []);
+  ctx.refreshSaveError = true;
+  await assert.rejects(ctx.external.verifyNewDeviceCode("444444"));
+  assert.equal(ctx.external.getPendingDeviceState().diagnosticCode, "oauth_session_store_failed");
+  assert.ok(assertSafeDiagnostics(ctx).some(row => row.event === "oauth_session_store_failed"));
+  ctx.refreshSaveError = false;
+  await ctx.external.verifyNewDeviceCode("444444");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  assert.ok(!assertSafeDiagnostics(ctx).some(row => row.event === "oauth_completed"));
+  assert.equal(ctx.external.getPendingDeviceState().diagnosticCode, undefined);
+});
+
+test("iOS Google is disabled even with a Tauri bridge", async t => {
   const ctx = setupGoogle(t);
+  ctx.browser.navigator.userAgent = "iPhone";
+  await assert.rejects(ctx.google.signInWithGoogleSupabase(), e => e.code === "supabase_oauth_mobile_pending");
+  assert.equal(ctx.nativeCalls.length, 0);
+  assert.equal(ctx.openedUrls.length, 0);
+});
+
+test("Android source declares a restricted OAuth intent without changing desktop registration", () => {
+  const android = JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.android.conf.json"), "utf8"));
+  const desktop = JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
+  assert.deepEqual(android.plugins["deep-link"].mobile, [{ scheme: ["scisonomics"], host: "auth", path: ["/callback"], appLink: false }]);
+  assert.deepEqual(desktop.plugins["deep-link"].desktop, { schemes: ["scisonomics"] });
+  assert.equal(desktop.plugins["deep-link"].mobile, undefined);
+});
+
+test("Android without native secure storage never starts Google or writes web secrets", async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  delete ctx.browser.__TAURI_INTERNALS__;
+  await assert.rejects(ctx.google.signInWithGoogleSupabase(), e => e.code === "supabase_oauth_desktop_required");
+  assert.equal(ctx.nativeCalls.length, 0);
+  assert.equal(ctx.openedUrls.length, 0);
+  assert.equal(ctx.credentials.size, 0);
+});
+
+test("Android rejects token-bearing pending snapshots before any native save", async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  const storage = require("../services/supabaseOAuthStorage.ts");
+  await ctx.google.signInWithGoogleSupabase();
+  const value = decodePending([...ctx.credentials.values()][0], true), calls = ctx.nativeCalls.length;
+  await assert.rejects(storage.savePendingGoogleOAuth({ ...value, refresh_token: "fixture-secret" }), e => e.code === "supabase_oauth_storage_failed");
+  await assert.rejects(storage.savePendingGoogleOAuth({ ...value, storage: { ...value.storage, access_token: "fixture-secret" } }), e => e.code === "supabase_oauth_storage_failed");
+  assert.equal(ctx.nativeCalls.length, calls);
+});
+
+for (const mutation of ["plain", "foreign-origin", "wrong-redirect", "duplicate-challenge"]) test(`Android refuses unsafe authorize URL: ${mutation}`, async t => {
+  const ctx = setupGoogle(t, { mobile: true });
+  const create = ctx.config.createSupabaseAuthClient;
+  t.mock.method(ctx.config, "createSupabaseAuthClient", (...args) => {
+    const client = create(...args), start = client.auth.signInWithOAuth.bind(client.auth);
+    t.mock.method(client.auth, "signInWithOAuth", async options => {
+      const result = await start(options), url = new URL(result.data.url);
+      if (mutation === "plain") url.searchParams.set("code_challenge_method", "plain");
+      if (mutation === "foreign-origin") url.hostname = "evil.example.test";
+      if (mutation === "wrong-redirect") url.searchParams.set("redirect_to", "scisonomics://evil/callback");
+      if (mutation === "duplicate-challenge") url.searchParams.append("code_challenge", "invalid");
+      return { ...result, data: { ...result.data, url: url.href } };
+    });
+    return client;
+  });
+  await ctx.google.signInWithGoogleSupabase();
+  assert.equal(ctx.google.getGoogleOAuthState().status, "error");
+  assert.equal(ctx.openedUrls.length, 0);
+  assert.equal(ctx.credentials.size, 0);
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("Android Google keeps matching archived owner behind recovery until an explicit decision", async t => {
+  const oldFlag = process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY;
+  process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY = "1";
+  t.after(() => { if (oldFlag === undefined) delete process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY; else process.env.NEXT_PUBLIC_SCISONOMICS_MOBILE_ACCOUNT_RECOVERY = oldFlag; });
+  const ctx = setupGoogle(t, { mobile: true });
+  const recovery = require("../services/mobileRecoveryState.ts");
+  recovery.quarantineMobileAccounts({ activeOwnerId: "previous-owner", accounts: [{ authProvider: "supabase", storage: "persistent", user: { id: "previous-owner", email: " ALICE@EXAMPLE.COM " } }] });
+  ctx.devicePending = true;
+  await ctx.google.signInWithGoogleSupabase();
+  await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "local");
+  assert.equal(recovery.isMobileRecoveryBlocked(), true);
+  await ctx.external.verifyNewDeviceCode("444444");
+  assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
+  assert.equal(ctx.cloud.getActiveAccount().authEnvironment, recovery.currentCloudEnvironment());
+  assert.equal(recovery.recoverySources()[0].email, recovery.normalizeRecoveryEmail(ctx.cloud.getActiveAccount().user.email));
+  assert.equal(recovery.recoverySources()[0].ownerId, "previous-owner");
+  assert.equal(recovery.isMobileRecoveryBlocked(), true);
+  const core = require("@tauri-apps/api/core"), invoke = core.invoke;
+  t.mock.method(core, "invoke", async (command, args) => {
+    if (command !== "mobile_sql_transaction") return invoke(command, args);
+    assert.ok(args.statements.every(s => s.sql.startsWith("CREATE TABLE IF NOT EXISTS mobile_account_recovery")));
+    return [];
+  });
+  t.mock.method(require("../services/data/mobileDatabase.ts"), "getMobileDatabase", async () => ({ select: async (sql, owners) => {
+    if (sql.startsWith("SELECT target_owner")) return [];
+    assert.ok(sql.includes("count(*)"), "inventory only");
+    return [{ categories: owners[0] === "previous-owner" ? 1 : 0, movements: owners[0] === "previous-owner" ? 2 : 0 }];
+  } }));
+  assert.deepEqual(await require("../services/data/mobileAccountRecovery.ts").findMobileRecovery("sciso-A"), {
+    sourceOwner: "previous-owner", targetOwner: "sciso-A", categories: 1, movements: 2, blocked: false,
+  });
+  const calls = ctx.calls.length;
+  await assert.rejects(require("../services/data/mobileCloudPull.ts").getMobileCloudSession("sciso-A"), /Revisá primero/);
+  assert.equal(ctx.calls.length, calls);
+  assert.doesNotMatch(ctx.browser.localStorage.dump() + ctx.browser.sessionStorage.dump(), /supabase-access|supabase-refresh|code-verifier|google-alice-code/);
+  recovery.finishRecoverySource("previous-owner", "separate");
+  assert.equal(recovery.isMobileRecoveryBlocked(), false);
+});
+
+for (const mobile of [false, true]) {
+const googleTest = (name, fn) => test(`${mobile ? "Android" : "Desktop"}: ${name}`, fn);
+googleTest("Google URL uses fixed native callback and PKCE S256, with pending verifier only in secure storage", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase({ remember: true });
   assert.equal(ctx.google.getGoogleOAuthState().status, "waiting");
   assert.equal(ctx.openedUrls.length, 1);
@@ -224,13 +596,13 @@ test("Google URL uses fixed native callback and PKCE S256, with pending verifier
   assert.ok(url.searchParams.get("code_challenge"));
   assert.equal(ctx.cloud.getActiveOwnerId(), "local");
   assert.equal(ctx.credentials.size, 1);
-  const payload = JSON.parse([...ctx.credentials.values()][0]);
+  const payload = decodePending([...ctx.credentials.values()][0], mobile);
   assert.ok(Object.keys(payload.storage).every((key) => key.endsWith("-code-verifier")));
   assert.doesNotMatch(ctx.browser.localStorage.dump() + ctx.browser.sessionStorage.dump(), /code-verifier|pkce|google-alice-code/);
 });
 
-test("Google callback exchanges PKCE, bootstraps the internal owner and remembers refresh in WinCred", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("Google callback exchanges PKCE, bootstraps the internal owner and remembers refresh in WinCred", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase({ remember: true });
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
   assert.deepEqual(ctx.google.getGoogleOAuthState(), { status: "succeeded", ownerId: "sciso-A" });
@@ -241,14 +613,14 @@ test("Google callback exchanges PKCE, bootstraps the internal owner and remember
   assert.ok([...ctx.credentials.keys()][0].endsWith("::sciso-A"));
   assert.equal(ctx.calls[0].url.searchParams.get("grant_type"), "pkce");
   assert.equal(ctx.calls[1].url.pathname, "/auth/supabase/bootstrap");
-  assert.ok(ctx.nativeCalls.findIndex((call) => call.command === "delete_pending_supabase_oauth")
-    < ctx.nativeCalls.findIndex((call) => call.command === "save_persistent_supabase_refresh_token"));
+  assert.ok(ctx.nativeCalls.findIndex((call) => call.command === "delete_pending_supabase_oauth" || (call.command === "plugin:mobile-secure-storage|delete" && call.accountId.endsWith("::pending_google")))
+    < ctx.nativeCalls.findIndex((call) => call.command === "save_persistent_supabase_refresh_token" || (call.command === "plugin:mobile-secure-storage|save" && !call.accountId.endsWith("::pending_google"))));
   assert.doesNotMatch(ctx.browser.localStorage.dump(), /google-alice-code|supabase-access|supabase-refresh|code-verifier/);
   assert.doesNotMatch(ctx.browser.sessionStorage.dump(), /google-alice-code|supabase-refresh|code-verifier/);
 });
 
-test("Google temporary session keeps refresh out of WinCred and browser persistence", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("Google temporary session keeps refresh out of WinCred and browser persistence", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase({ remember: false });
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-bob-code");
   assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-B");
@@ -256,8 +628,8 @@ test("Google temporary session keeps refresh out of WinCred and browser persiste
   assert.equal(ctx.credentials.size, 0);
 });
 
-test("Google callback missing code requires a fresh attempt without activating any account", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("Google callback missing code requires a fresh attempt without activating any account", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?error_code=missing_code");
   assert.equal(ctx.google.getGoogleOAuthState().status, "error");
@@ -268,8 +640,8 @@ test("Google callback missing code requires a fresh attempt without activating a
   assert.equal(ctx.cloud.getActiveOwnerId(), "sciso-A");
 });
 
-test("concurrent and repeated Google callbacks exchange/bootstrap once", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("concurrent and repeated Google callbacks exchange/bootstrap once", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   const url = "scisonomics://auth/callback?code=google-alice-code";
   await Promise.all([ctx.google.handleSupabaseGoogleCallback(url), ctx.google.handleSupabaseGoogleCallback(url)]);
@@ -280,8 +652,8 @@ test("concurrent and repeated Google callbacks exchange/bootstrap once", async (
 });
 
 for (const reason of ["exchange", "bootstrap", "unconfirmed email"]) {
-  test(`Google ${reason} failure never activates an account or saves refresh`, async (t) => {
-    const ctx = setupGoogle(t);
+  googleTest(`Google ${reason} failure never activates an account or saves refresh`, async (t) => {
+    const ctx = setupGoogle(t, { mobile });
     ctx.exchangeError = reason === "exchange";
     ctx.oauthUnconfirmed = reason === "unconfirmed email";
     if (reason === "bootstrap") ctx.backendError = { status: 409, detail: { code: "internal_account_required" } };
@@ -295,8 +667,8 @@ for (const reason of ["exchange", "bootstrap", "unconfirmed email"]) {
   });
 }
 
-test("cancelled Google and unsolicited startup callbacks cannot activate local mode", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("cancelled Google and unsolicited startup callbacks cannot activate local mode", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   await ctx.google.cancelGoogleSupabaseSignIn();
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
@@ -305,8 +677,8 @@ test("cancelled Google and unsolicited startup callbacks cannot activate local m
   assert.equal(ctx.credentials.size, 0);
 });
 
-test("denied Google consent cleans pending state without exchanging a code", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("denied Google consent cleans pending state without exchanging a code", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?error=access_denied&error_description=Sensitive");
   assert.equal(ctx.google.getGoogleOAuthState().status, "error");
@@ -315,8 +687,8 @@ test("denied Google consent cleans pending state without exchanging a code", asy
   assert.equal(ctx.credentials.size, 0);
 });
 
-test("cold startup restores only the secure PKCE verifier, consumes it and bootstraps internal identity", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("cold startup restores only the secure PKCE verifier, consumes it and bootstraps internal identity", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   const saved = [...ctx.credentials.entries()][0];
   // Simulate process termination: memory/timers disappear, native entry stays.
@@ -329,12 +701,12 @@ test("cold startup restores only the secure PKCE verifier, consumes it and boots
   assert.ok(!ctx.credentials.has(saved[0]));
 });
 
-test("expired native PKCE attempt is removed and requires a new Google login", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("expired native PKCE attempt is removed and requires a new Google login", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   const [key, payload] = [...ctx.credentials.entries()][0];
   await ctx.google.cancelGoogleSupabaseSignIn();
-  ctx.credentials.set(key, JSON.stringify({ ...JSON.parse(payload), expiresAt: Date.now() - 1 }));
+  ctx.credentials.set(key, encodePending({ ...decodePending(payload, mobile), expiresAt: Date.now() - 1 }, mobile));
   const cold = loadServices();
   await cold.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
   assert.equal(cold.google.getGoogleOAuthState().status, "error");
@@ -342,8 +714,8 @@ test("expired native PKCE attempt is removed and requires a new Google login", a
   assert.equal(ctx.calls.length, 0);
 });
 
-test("deep-link bridge subscribes before getCurrent and handles runtime/startup delivery once", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("deep-link bridge subscribes before getCurrent and handles runtime/startup delivery once", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
   let handler, stopped = false;
   const url = "scisonomics://auth/callback?code=google-alice-code";
@@ -362,7 +734,7 @@ test("deep-link bridge subscribes before getCurrent and handles runtime/startup 
   assert.equal(stopped, true);
 });
 
-test("callback parser rejects unexpected schemes, paths, duplicate/unknown params and implicit credentials", (t) => {
+googleTest("callback parser rejects unexpected schemes, paths, duplicate/unknown params and implicit credentials", (t) => {
   const { callback } = setup(t);
   for (const raw of ["https://auth/callback?code=x", "scisonomics://evil/callback?code=x", "scisonomics://auth/other?code=x",
     "scisonomics://auth/callback/../callback?code=x", "scisonomics://auth/callback?code=a&code=b", "scisonomics://auth/callback?code=x&redirectTo=https://evil.test",
@@ -373,21 +745,21 @@ test("callback parser rejects unexpected schemes, paths, duplicate/unknown param
   assert.deepEqual(callback.parseSupabaseOAuthCallback("scisonomics://auth/callback?code=abc-123"), { code: "abc-123" });
 });
 
-test("Google requires desktop/configuration and leaves local mode intact", async (t) => {
+googleTest("Google requires desktop/configuration and leaves local mode intact", async (t) => {
   const ctx = setup(t, { configured: false });
   await assert.rejects(ctx.google.signInWithGoogleSupabase(), (error) => error.code === "supabase_oauth_desktop_required");
   assert.equal(ctx.cloud.getActiveOwnerId(), "local");
   assert.equal(ctx.calls.length, 0);
 });
 
-test("two Google accounts isolate SDK storage/verifiers and keep distinct internal owners and secure refresh", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("two Google accounts isolate SDK storage/verifiers and keep distinct internal owners and secure refresh", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   await ctx.google.signInWithGoogleSupabase();
-  const firstKey = JSON.parse([...ctx.credentials.values()][0]).storageKey;
+  const firstKey = decodePending([...ctx.credentials.values()][0], mobile).storageKey;
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
   await ctx.google.signInWithGoogleSupabase();
-  const pending = [...ctx.credentials.entries()].find(([key]) => key.startsWith("pkce:"));
-  assert.notEqual(JSON.parse(pending[1]).storageKey, firstKey);
+  const pending = [...ctx.credentials.entries()].find(([key]) => key.startsWith("pkce:") || key.endsWith("::pending_google"));
+  assert.notEqual(decodePending(pending[1], mobile).storageKey, firstKey);
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
   assert.equal(ctx.google.getGoogleOAuthState().status, "waiting"); // Old callback cannot consume the new attempt.
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-bob-code");
@@ -397,16 +769,16 @@ test("two Google accounts isolate SDK storage/verifiers and keep distinct intern
   assert.ok([...ctx.credentials.keys()].every((key) => /::sciso-[AB]$/.test(key)));
 });
 
-test("Google rejects missing configuration inside Tauri without affecting local mode", async (t) => {
-  const ctx = setupGoogle(t, { configured: false });
+googleTest("Google rejects missing configuration inside Tauri without affecting local mode", async (t) => {
+  const ctx = setupGoogle(t, { mobile, configured: false });
   await assert.rejects(ctx.google.signInWithGoogleSupabase(), (error) => error.code === "supabase_not_configured");
   assert.equal(ctx.google.getGoogleOAuthState().status, "idle");
   assert.equal(ctx.cloud.getActiveOwnerId(), "local");
   assert.equal(ctx.openedUrls.length, 0);
 });
 
-test("Google refuses PKCE without WebCrypto instead of opening an implicit or plain flow", async (t) => {
-  const ctx = setupGoogle(t);
+googleTest("Google refuses PKCE without WebCrypto instead of opening an implicit or plain flow", async (t) => {
+  const ctx = setupGoogle(t, { mobile });
   // The guard runs before the first await. Restore the builtin immediately:
   // Node's test runner itself uses WebCrypto while completing a test.
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
@@ -422,8 +794,8 @@ test("Google refuses PKCE without WebCrypto instead of opening an implicit or pl
 });
 
 for (const reason of ["secure storage", "external opener"]) {
-  test(`Google ${reason} failure is explicit and never falls back to browser persistence`, async (t) => {
-    const ctx = setupGoogle(t);
+  googleTest(`Google ${reason} failure is explicit and never falls back to browser persistence`, async (t) => {
+    const ctx = setupGoogle(t, { mobile });
     ctx.nativeError = reason === "secure storage";
     ctx.openerError = reason === "external opener";
     await ctx.google.signInWithGoogleSupabase();
@@ -434,6 +806,8 @@ for (const reason of ["secure storage", "external opener"]) {
     assert.doesNotMatch(ctx.browser.localStorage.dump() + ctx.browser.sessionStorage.dump(), /pkce|code-verifier/);
     ctx.nativeError = false;
   });
+}
+
 }
 
 test("Supabase login bootstraps the internal account and stores only the internal owner", async (t) => {
@@ -1063,14 +1437,14 @@ test("Android secure-storage failure cannot activate a remembered account or fal
   assert.doesNotMatch(ctx.browser.localStorage.dump()+ctx.browser.sessionStorage.dump(),/supabase-refresh|supabase-access/);
 });
 
-test("Android signup OTP reuses the shared provider and Google cannot start a partial mobile flow",async t=>{
-  const ctx=setup(t,{tauri:true,mobile:true});
+test("Android signup OTP and Google both use the shared provider",async t=>{
+  const ctx=setupGoogle(t,{mobile:true});
   assert.equal((await ctx.external.signUpWithPassword("alice@example.com","correct")).status,"verification_required");
   await ctx.external.verifyEmailCode("alice@example.com","123456");
   assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
-  const count=ctx.calls.length;
-  await assert.rejects(ctx.google.signInWithGoogleSupabase(),e=>e.code==="supabase_oauth_mobile_pending");
-  assert.equal(ctx.calls.length,count);assert.equal(ctx.openedUrls.length,0);
+  await ctx.google.signInWithGoogleSupabase();
+  assert.equal(ctx.google.getGoogleOAuthState().status,"waiting");
+  assert.equal(ctx.openedUrls.length,1);
 });
 
 test("unsupported storage does not invoke native or provide an insecure fallback",t=>{
@@ -1115,8 +1489,9 @@ for (const mobile of [false, true]) test(`${mobile ? "Android" : "Windows"} new 
   assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id,"sciso-A");
 });
 
-test("Google new device preserves pending client after consuming PKCE, without persisting refresh", async t=>{
-  const ctx=setupGoogle(t);ctx.devicePending=true;
+for (const mobile of [false, true]) {
+test(`${mobile ? "Android" : "Desktop"} Google device OTP preserves pending client after consuming PKCE`, async t=>{
+  const ctx=setupGoogle(t, { mobile });ctx.devicePending=true;
   await ctx.google.signInWithGoogleSupabase({remember:true});
   await ctx.google.handleSupabaseGoogleCallback("scisonomics://auth/callback?code=google-alice-code");
   assert.equal(ctx.google.getGoogleOAuthState().status,"idle");
@@ -1127,6 +1502,8 @@ test("Google new device preserves pending client after consuming PKCE, without p
   assert.equal(ctx.cloud.getActiveOwnerId(),"sciso-A");
   assert.equal(ctx.credentials.size,1);
 });
+
+}
 
 test("revoked device clears refresh and account; fresh login requires verification again",async t=>{
   const ctx=setup(t,{tauri:true,mobile:true});

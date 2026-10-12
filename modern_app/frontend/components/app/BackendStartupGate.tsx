@@ -8,6 +8,7 @@ import { getRuntimePlatformSync } from "../../services/platform";
 import { getMobileDatabase } from "../../services/data/mobileDatabase";
 import { MobileApp } from "../mobile/MobileApp";
 import { MobileAccountProvider } from "../mobile/account/MobileAccountProvider";
+import { SupabaseOAuthListener } from "../account/SupabaseOAuthListener";
 import packageJson from "../../package.json";
 
 type HealthResponse = {
@@ -83,7 +84,7 @@ export function MobileStartupGate({ children }: { children?: React.ReactNode } =
     return () => { active = false; };
   }, [attempt]);
 
-  if (ready) return <MobileAccountProvider><MobileApp legalContent={children} /></MobileAccountProvider>;
+  if (ready) return <MobileAccountProvider><SupabaseOAuthListener /><MobileApp legalContent={children} /></MobileAccountProvider>;
   return <StartupScreen
     title={failed ? "No se pudo abrir ScisoNomics Mobile" : "Preparando ScisoNomics Mobile"}
     description={failed ? "No se pudo abrir el almacenamiento local. Reintentá sin borrar los datos de la app." : ""}

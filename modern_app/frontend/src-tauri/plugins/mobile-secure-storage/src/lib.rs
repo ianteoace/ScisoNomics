@@ -3,6 +3,19 @@ use tauri::{plugin::{Builder, PluginHandle, TauriPlugin}, AppHandle, Manager, Ru
 
 struct SecureStorage<R: Runtime>(PluginHandle<R>);
 
+// Diagnostics only. No access to identities, token records or Keystore keys.
+pub fn google_oauth_diagnostic<R: Runtime>(app: &AppHandle<R>, payload: Value) -> Result<(), String> {
+    let args = json!({
+        "event": payload.get("event"), "mode": payload.get("mode"), "origin": payload.get("origin"),
+        "durationMs": payload.get("duration_ms"), "httpStatus": payload.get("http_status"),
+        "errorCode": payload.get("error_code"), "authErrorCode": payload.get("auth_error_code")
+    });
+    let state = app.try_state::<SecureStorage<R>>().ok_or_else(|| "oauth_diagnostic_unavailable".to_string())?;
+    let _: Value = state.0.run_mobile_plugin("googleOAuthDiagnostic", args)
+        .map_err(|_| "oauth_diagnostic_unavailable".to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn save<R: Runtime>(_app: AppHandle<R>, state: State<'_, SecureStorage<R>>, account_id: String, token: String) -> Result<Value, String> {
     state.0.run_mobile_plugin("save", json!({ "accountId": account_id, "token": token }))
