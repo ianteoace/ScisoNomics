@@ -11,7 +11,7 @@ for (const extension of [".ts", ".tsx"]) require.extensions[extension] = (module
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true }, fileName: filename,
   }).outputText, filename);
 };
-require.extensions[".css"] = (module) => { module.exports = { dialog: "dialog", drawer: "drawer" }; };
+require.extensions[".css"] = (module) => { module.exports = { dialog: "dialog", drawer: "drawer", mobile: "mobile", content: "content", header: "header" }; };
 function stub(filename, exports) {
   const resolved = filename.startsWith(".") ? path.resolve(root, filename) : require.resolve(filename);
   require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
@@ -83,7 +83,7 @@ const { compatibleCategories, formatMobileDate } = require("../components/mobile
 const { getLocalDateInputValue } = require("../lib/date.ts");
 
 function renderer(t, Component, props = {}, nativeRefs = true) {
-  const slots = new Map(); let current, pending = [], shown = 0, closed = 0, restored = 0;
+  const slots = new Map(), viewportStyles = {}; let current, pending = [], shown = 0, closed = 0, restored = 0;
   const oldDocument = global.document, oldWindow = global.window;
   if (!global.window) {
     global.window = new EventTarget();
@@ -100,7 +100,7 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     return [instance.values[index], (value) => { instance.values[index] = typeof value === "function" ? value(instance.values[index]) : value; }];
   });
   t.mock.method(React, "useRef", (initial) => {
-    if (nativeRefs) return { current: { showModal: () => { shown++; }, close: () => { closed++; } } };
+    if (nativeRefs) return { current: { style: { setProperty: (name, value) => { viewportStyles[name] = value; } }, showModal: () => { shown++; }, close: () => { closed++; } } };
     const instance = current, index = instance.cursor++;
     if (!(index in instance.values)) instance.values[index] = { current: initial };
     return instance.values[index];
@@ -145,8 +145,40 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
   t.after(() => { dispose(); global.document = oldDocument; if (!oldWindow) global.window = oldWindow; });
   return { tree, html: () => renderToStaticMarkup(tree()), find: (predicate) => all(tree(), predicate),
     effects: () => { const callbacks = pending; pending = []; callbacks.forEach((callback) => callback()); },
-    dispose, counts: () => ({ shown, closed, restored }) };
+    dispose, viewportStyles, counts: () => ({ shown, closed, restored }) };
 }
+
+test("mobile dialog follows the keyboard viewport and cleans up without losing focus or scroll", t => {
+  t.mock.method(require('../services/platform.ts'), 'getRuntimePlatformSync', () => 'android');
+  const view = renderer(t, MobileDialog, { title: 'Verificar dispositivo', onClose() {} });
+  const viewport = new EventTarget(); viewport.height = 300; viewport.offsetTop = 20;
+  window.visualViewport = viewport;
+  view.html(); view.effects();
+  const node = view.find(n => n.type === 'dialog')[0];
+  assert.equal(node.props['data-mobile-ui'], ''); assert.match(node.props.className, /mobile/);
+  assert.equal(view.find(n => n.props['data-mobile-icon'] === '').length, 1);
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '300px');
+  assert.equal(view.viewportStyles['--mobile-viewport-top'], '20px');
+  viewport.height = 250; viewport.dispatchEvent(new Event('resize'));
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '250px');
+  view.dispose(); viewport.height = 500; viewport.dispatchEvent(new Event('resize'));
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '250px');
+  assert.deepEqual(view.counts(), { shown: 1, closed: 1, restored: 1 });
+  assert.equal(document.body.style.overflow, 'scroll');
+});
+
+test("desktop dialog retains its original sizing and mobile shell has compact spacing", t => {
+  t.mock.method(require('../services/platform.ts'), 'getRuntimePlatformSync', () => 'desktop');
+  const view = renderer(t, MobileDialog, { title: 'Cuenta', onClose() {} });
+  assert.equal(view.find(n => n.type === 'dialog')[0].props['data-mobile-ui'], undefined);
+  assert.doesNotMatch(view.html(), /class="dialog[^\"]*mobile/);
+  assert.match(view.html(), /text-xl/); assert.match(view.html(), /p-4/);
+  pathname = '/dashboard';
+  const app = renderToStaticMarkup(React.createElement(MobileApp));
+  assert.match(app, /data-mobile-ui=""/);
+  assert.match(app, /gap-3 px-3 pt-3/);
+  assert.match(app, /data-mobile-icon=""/);
+});
 
 for (const [href, title, visible, hidden] of [
   ["/dashboard", "Inicio", /Resumen financiero/, /Listado de categorías|Listado de movimientos/],

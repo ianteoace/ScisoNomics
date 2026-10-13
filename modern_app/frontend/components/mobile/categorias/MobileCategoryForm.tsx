@@ -21,13 +21,13 @@ export function MobileCategoryForm({ category, busy, error, onClose, onSave }: {
     catch (error) { setValidationError(error instanceof Error ? error.message : "Revisá los campos de la categoría."); }
   }
   return <MobileDialog title={category ? "Editar categoría" : "Crear categoría"} onClose={onClose} busy={busy}>
-    <form className="grid gap-4" onSubmit={submit}>
-      <fieldset className="grid min-w-0 gap-4" disabled={busy}>
-        <label className="grid gap-2 text-sm">Nombre<input className="input min-h-12" autoFocus required maxLength={120} value={nombre} onChange={(event) => setNombre(event.target.value)} /></label>
-        <label className="grid gap-2 text-sm">Tipo de categoría<select className="input min-h-12" value={tipo} onChange={(event) => setTipo(event.target.value as MoveType)}>{movementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
+    <form className="grid gap-3" onSubmit={submit}>
+      <fieldset className="grid min-w-0 gap-3" disabled={busy}>
+        <label className="grid gap-1.5 text-sm">Nombre<input className="input min-h-11" autoFocus required maxLength={120} value={nombre} onChange={(event) => setNombre(event.target.value)} /></label>
+        <label className="grid gap-1.5 text-sm">Tipo de categoría<select className="input min-h-11" value={tipo} onChange={(event) => setTipo(event.target.value as MoveType)}>{movementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
         {validationError || error ? <p role="alert" className="break-words text-sm text-red-300">{validationError || error}</p> : null}
-        <button className="btn min-h-12 w-full" type="submit">{busy ? "Guardando…" : "Guardar categoría"}</button>
-        <button className="btn-secondary min-h-12 w-full" type="button" onClick={onClose}>Cancelar</button>
+        <button className="btn min-h-11 w-full" type="submit">{busy ? "Guardando…" : "Guardar categoría"}</button>
+        <button className="btn-secondary min-h-11 w-full" type="button" onClick={onClose}>Cancelar</button>
       </fieldset>
     </form>
   </MobileDialog>;

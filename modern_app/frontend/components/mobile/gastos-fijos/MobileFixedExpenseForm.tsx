@@ -27,12 +27,12 @@ export function MobileFixedExpenseForm({ categories, row, busy, error, onClose, 
     } catch (e) { setValidationError(e instanceof Error ? e.message : "Revisá los campos del gasto fijo."); }
   }
   return <PlanningForm title={row ? "Editar gasto fijo" : "Crear gasto fijo"} busy={busy} error={validationError || error} onClose={onClose} onSubmit={submit} saveLabel="Guardar gasto fijo">
-    <label className="grid gap-2 text-sm">Descripción<input className="input min-h-12" autoFocus required maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Categoría<select className="input min-h-12" required value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
+    <label className="grid gap-1.5 text-sm">Descripción<input className="input min-h-11" autoFocus required maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Categoría<select className="input min-h-11" required value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
     {!available.length ? <p className="text-sm text-amber-200">Primero creá una categoría de gasto en Categorías.</p> : null}
-    <label className="grid gap-2 text-sm">Monto<input className="input min-h-12" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Día de vencimiento<input className="input min-h-12" inputMode="numeric" required value={day} onChange={(e) => setDay(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto<input className="input min-h-11" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Día de vencimiento<input className="input min-h-11" inputMode="numeric" required value={day} onChange={(e) => setDay(e.target.value)} /></label>
     <p className="text-sm text-slate-300">Mensual. Si el día no existe en un mes, corresponde al último día de ese mes.</p>
-    <label className="grid gap-2 text-sm">Estado<select className="input min-h-12" value={active} onChange={(e) => setActive(Number(e.target.value))}><option value={1}>Activo</option><option value={0}>Inactivo</option></select></label>
+    <label className="grid gap-1.5 text-sm">Estado<select className="input min-h-11" value={active} onChange={(e) => setActive(Number(e.target.value))}><option value={1}>Activo</option><option value={0}>Inactivo</option></select></label>
   </PlanningForm>;
 }

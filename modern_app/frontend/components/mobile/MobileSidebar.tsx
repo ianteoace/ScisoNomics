@@ -26,7 +26,7 @@ export function MobileSidebar({ pathname, onClose }: { pathname: string; onClose
     <nav aria-label="Secciones de ScisoNomics" className="grid gap-2">
       {mobileSections.map(({ href, label, icon: Icon }) => <Link key={href} href={href} prefetch={false} onClick={onClose}
         aria-current={pathname === href ? "page" : undefined}
-        className={`flex min-h-12 items-center gap-3 rounded-xl px-3 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 ${pathname === href ? "bg-cyan-900/40 text-cyan-100" : "text-slate-200 hover:bg-slate-800"}`}>
+        className={`flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-300 ${pathname === href ? "bg-cyan-900/40 text-cyan-100" : "text-slate-200 hover:bg-slate-800"}`}>
         <Icon size={21} aria-hidden="true" /><span>{label}</span>
       </Link>)}
     </nav>

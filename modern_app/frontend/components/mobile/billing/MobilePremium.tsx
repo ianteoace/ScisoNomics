@@ -44,9 +44,9 @@ export function MobilePremium() {
       {status?.status==="pending"?<p>Pago pendiente. Todavía no concede Premium.</p>:null}
       {expires?<p>Vigencia verificada: {expires}</p>:null}
       {entitlements.plan==="premium"&&entitlements.expires_at?<p>Premium de tu cuenta hasta {new Date(entitlements.expires_at).toLocaleDateString("es-AR")}.</p>:null}
-      <button className="btn min-h-12" disabled={busy||!currentCatalog?.offers.length||["active","grace","pending"].includes(status?.status||"")} onClick={()=>void run("buy")}>Suscribirme con Google Play</button>
-      <button className="btn-secondary min-h-12" disabled={busy} onClick={()=>void run("restore")}>Restaurar compras</button>
-      <button className="btn-secondary min-h-12" disabled={busy||!currentCatalog?.context.productIds[0]} onClick={()=>{
+      <button className="btn min-h-11" disabled={busy||!currentCatalog?.offers.length||["active","grace","pending"].includes(status?.status||"")} onClick={()=>void run("buy")}>Suscribirme con Google Play</button>
+      <button className="btn-secondary min-h-11" disabled={busy} onClick={()=>void run("restore")}>Restaurar compras</button>
+      <button className="btn-secondary min-h-11" disabled={busy||!currentCatalog?.context.productIds[0]} onClick={()=>{
         if(currentCatalog)void managePlaySubscription(owner,currentCatalog.context.productIds[0]).catch(failure=>setError(failure.message));
       }}>Administrar suscripción</button>
       <p>La suscripción se administra y cancela desde Google Play. Las compras pertenecen a la cuenta ScisoNomics con la que las hiciste.</p>

@@ -42,16 +42,16 @@ export function MobileAccountRecovery() {
   if (!mobileRecoveryEnabled()) return null;
   return <>
     {candidate ? <MobileDialog title="Conservar tus datos anteriores" busy={busy} onClose={() => setCandidate(null)}>
-      <div className="grid gap-4 text-sm">
+      <div className="grid gap-3 text-sm">
         <p>Encontramos datos guardados en este dispositivo de una sesión anterior con este mismo correo. ¿Querés conservarlos en tu cuenta actual?</p>
         <p>{candidate.categories} categorías · {candidate.movements} movimientos (incluye registros eliminados conservados para sincronización).</p>
-        {candidate.blocked ? <p role="alert">La cuenta actual ya tiene datos locales. Se requiere revisión manual; no podemos fusionarlos automáticamente.</p> : <button className="btn min-h-12" disabled={busy} onClick={() => void decide(true)}>{busy ? "Recuperando…" : "Conservar en mi cuenta actual"}</button>}
-        <button className="btn-secondary min-h-12" disabled={busy} onClick={() => void decide(false)}>Mantener por separado, sin transferir</button>
+        {candidate.blocked ? <p role="alert">La cuenta actual ya tiene datos locales. Se requiere revisión manual; no podemos fusionarlos automáticamente.</p> : <button className="btn min-h-11" disabled={busy} onClick={() => void decide(true)}>{busy ? "Recuperando…" : "Conservar en mi cuenta actual"}</button>}
+        <button className="btn-secondary min-h-11" disabled={busy} onClick={() => void decide(false)}>Mantener por separado, sin transferir</button>
         {error ? <p role="alert">{error}</p> : null}
       </div>
     </MobileDialog> : null}
-    {notice ? <MobileDialog title="Datos recuperados" onClose={() => setNotice("")}><p className="text-sm">{notice}</p><button className="btn mt-4 min-h-12" onClick={() => setNotice("")}>Revisar mis datos</button></MobileDialog> : null}
-    {!candidate && !notice && error ? <div role="alert" className="m-4 rounded-xl border border-amber-400/40 p-4 text-sm"><p>{error}</p><button className="btn-secondary mt-2" onClick={() => setRevision(value => value + 1)}>Revisar nuevamente</button></div> : null}
-    {!candidate && !notice && !error && isMobileRecoveryBlocked() ? <div className="m-4 rounded-xl border border-amber-400/40 p-4 text-sm"><p>La sincronización está pausada por datos de una sesión anterior. Iniciá sesión con el mismo correo para revisarlos.</p><button className="btn-secondary mt-2" onClick={() => setRevision(value => value + 1)}>Revisar datos anteriores</button></div> : null}
+    {notice ? <MobileDialog title="Datos recuperados" onClose={() => setNotice("")}><p className="text-sm">{notice}</p><button className="btn mt-4 min-h-11" onClick={() => setNotice("")}>Revisar mis datos</button></MobileDialog> : null}
+    {!candidate && !notice && error ? <div data-mobile-ui="" role="alert" className="m-3 rounded-xl border border-amber-400/40 p-3 text-sm"><p>{error}</p><button className="btn-secondary mt-2" onClick={() => setRevision(value => value + 1)}>Revisar nuevamente</button></div> : null}
+    {!candidate && !notice && !error && isMobileRecoveryBlocked() ? <div data-mobile-ui="" className="m-3 rounded-xl border border-amber-400/40 p-3 text-sm"><p>La sincronización está pausada por datos de una sesión anterior. Iniciá sesión con el mismo correo para revisarlos.</p><button className="btn-secondary mt-2" onClick={() => setRevision(value => value + 1)}>Revisar datos anteriores</button></div> : null}
   </>;
 }

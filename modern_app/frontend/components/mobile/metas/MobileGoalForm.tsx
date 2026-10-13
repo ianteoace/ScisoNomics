@@ -27,11 +27,11 @@ export function MobileGoalForm({ row, busy, error, onClose, onSave }: {
     } catch (e) { setValidationError(e instanceof Error ? e.message : "Revisá los campos de la meta."); }
   }
   return <PlanningForm title={row ? "Editar meta" : "Crear meta"} busy={busy} error={validationError || error} onClose={onClose} onSubmit={submit} saveLabel="Guardar meta">
-    <label className="grid gap-2 text-sm">Nombre<input className="input min-h-12" autoFocus required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Monto objetivo<input className="input min-h-12" inputMode="decimal" required placeholder="0,00" value={target} onChange={(e) => setTarget(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Monto inicial (opcional)<input className="input min-h-12" inputMode="decimal" placeholder="0,00" value={initial} onChange={(e) => setInitial(e.target.value)} /></label>
-    <div className="grid gap-2 text-sm"><p>Fecha objetivo (opcional)</p><SpanishDateInput label="Fecha objetivo" className="input min-h-12" value={date} onChange={setDate} /></div>
-    <label className="grid gap-2 text-sm">Descripción (opcional)<textarea className="input min-h-20" maxLength={2000} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
-    <label className="grid gap-2 text-sm">Estado<select className="input min-h-12" value={state} onChange={(e) => setState(e.target.value as MetaAhorro["estado"])}><option value="activa">Activa</option><option value="pausada">Pausada</option><option value="completada">Completada</option></select></label>
+    <label className="grid gap-1.5 text-sm">Nombre<input className="input min-h-11" autoFocus required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto objetivo<input className="input min-h-11" inputMode="decimal" required placeholder="0,00" value={target} onChange={(e) => setTarget(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto inicial (opcional)<input className="input min-h-11" inputMode="decimal" placeholder="0,00" value={initial} onChange={(e) => setInitial(e.target.value)} /></label>
+    <div className="grid gap-1.5 text-sm"><p>Fecha objetivo (opcional)</p><SpanishDateInput label="Fecha objetivo" className="input min-h-11" value={date} onChange={setDate} /></div>
+    <label className="grid gap-1.5 text-sm">Descripción (opcional)<textarea className="input min-h-20" maxLength={2000} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Estado<select className="input min-h-11" value={state} onChange={(e) => setState(e.target.value as MetaAhorro["estado"])}><option value="activa">Activa</option><option value="pausada">Pausada</option><option value="completada">Completada</option></select></label>
   </PlanningForm>;
 }

@@ -42,7 +42,7 @@ const removalTitles = { scheduled: "planificación", movement: "movimiento", cat
 
 export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
   const { financialContext, financialReady, error, refresh } = useMobileAccount();
-  if (!financialReady) return <><MobileAccountLogin /><MobileAccountRecovery /><div className="p-5"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
+  if (!financialReady) return <><MobileAccountLogin /><MobileAccountRecovery /><div data-mobile-ui="" className="p-3"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
     <p role="alert">{error}</p><button className="btn mt-3" onClick={() => void refresh(true)}>Reintentar sesión</button>
     <button className="btn-secondary mt-3" onClick={switchToLocalMode}>Continuar con datos locales</button>
   </> : null}</div></>;
@@ -65,12 +65,12 @@ function MobileFinancialApp({ context, legalContent }: { context: MobileFinancia
 
 function MobilePremiumGate({title,pathname,router}:{title:string;pathname:string;router:ReturnType<typeof useRouter>}) {
   const [menuOpen,setMenuOpen]=useState(false);
-  return <div className="min-h-screen bg-slate-950 text-slate-100">
+  return <div data-mobile-ui="" className="min-h-dvh min-w-0 bg-slate-950 text-slate-100">
     <MobileHeader title={title} menuOpen={menuOpen} onOpenMenu={()=>setMenuOpen(true)} />
     {menuOpen?<MobileSidebar pathname={pathname} onClose={()=>setMenuOpen(false)} />:null}
-    <main className="grid gap-4 p-5"><p>Esta función requiere Premium vigente en tu cuenta.</p>
-      <button className="btn min-h-12" onClick={()=>router.push("/configuracion?section=suscripcion")}>Ver Premium y cuenta</button>
-      <button className="btn-secondary min-h-12" onClick={()=>router.push("/dashboard")}>Volver a Inicio</button></main>
+    <main className="grid gap-3 p-3"><p>Esta función requiere Premium vigente en tu cuenta.</p>
+      <button className="btn min-h-11" onClick={()=>router.push("/configuracion?section=suscripcion")}>Ver Premium y cuenta</button>
+      <button className="btn-secondary min-h-11" onClick={()=>router.push("/dashboard")}>Volver a Inicio</button></main>
   </div>;
 }
 
@@ -95,16 +95,16 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
     if (success) setRemoval(null);
   }
   const { data, busy, error, loading } = finance;
-  return <div className="min-h-screen bg-slate-950 text-slate-100">
+  return <div data-mobile-ui="" className="min-h-dvh min-w-0 bg-slate-950 text-slate-100">
     <MobileHeader title={legal ? "Legal" : section?.label ?? "Inicio"} menuOpen={menuOpen} onOpenMenu={() => setMenuOpen(true)} />
     {menuOpen ? <MobileSidebar pathname={pathname} onClose={() => setMenuOpen(false)} /> : null}
-    <main className="mx-auto grid w-full max-w-2xl gap-5 px-4 pt-5" style={{ paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))" }}>
+    <main className="mx-auto grid w-full max-w-2xl gap-3 px-3 pt-3" style={{ paddingInlineStart: "max(.75rem, env(safe-area-inset-left, 0px))", paddingInlineEnd: "max(.75rem, env(safe-area-inset-right, 0px))", paddingBottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}>
       {!legal && pathname !== "/configuracion" ? <p className="text-xs text-slate-400">{context.ownerId === "local" ? "Datos locales" : "Cuenta sincronizada"}</p> : null}
       {pathname === "/estadisticas" ? <MobileStatistics /> : null}
       {pathname === "/reporte" ? <MobileReport /> : null}
       {pathname === "/configuracion" ? <MobileSettings /> : null}
       {legal ? legalContent : null}
-      {["/dashboard", "/movimientos", "/presupuestos", "/planificacion"].includes(pathname) ? <div className="grid gap-2 text-sm"><p>{pathname === "/presupuestos" ? "Mes del presupuesto" : pathname === "/planificacion" ? "Mes de la proyección" : "Mes de los movimientos"}</p><SpanishMonthInput className="input min-h-12" label="Mes seleccionado" value={finance.period} disabled={busy} onChange={finance.setPeriod} /></div> : null}
+      {["/dashboard", "/movimientos", "/presupuestos", "/planificacion"].includes(pathname) ? <div className="grid gap-1.5 text-sm"><p>{pathname === "/presupuestos" ? "Mes del presupuesto" : pathname === "/planificacion" ? "Mes de la proyección" : "Mes de los movimientos"}</p><SpanishMonthInput className="input min-h-11" label="Mes seleccionado" value={finance.period} disabled={busy} onChange={finance.setPeriod} /></div> : null}
       {finance.notice ? <p role="status" className="break-words text-sm text-emerald-300">{finance.notice}</p> : null}
       {error && !editor && !removal && !payment ? <div className="card p-4"><p role="alert" className="break-words text-red-300">{error}</p><button className="btn-secondary mt-3 min-h-11" disabled={loading} onClick={finance.reload}>Reintentar</button></div> : null}
       {loading ? <p role="status" className="p-4 text-slate-300">Cargando tus datos…</p> : null}
@@ -128,7 +128,7 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
     {payment ? <MobileDialog title="Registrar pago" busy={busy} onClose={() => setPayment(null)}>
       <p className="break-words text-slate-300">Se registrará {payment.descripcion} como un gasto real con fecha de hoy. Si es recurrente, también se generará el próximo vencimiento.</p>
       {error ? <p role="alert" className="mt-4 break-words text-red-300">{error}</p> : null}
-      <div className="mt-5 grid gap-3"><button className="btn min-h-12" disabled={busy} onClick={() => { void finance.mutate(async (r) => { await r.markGastoProgramadoPaid(payment.id); }, "Pago procesado.").then((ok) => { if (ok) setPayment(null); }); }}>{busy ? "Registrando…" : "Confirmar pago"}</button><button className="btn-secondary min-h-12" disabled={busy} onClick={() => setPayment(null)}>Cancelar</button></div>
+      <div className="mt-3 grid gap-3"><button className="btn min-h-11" disabled={busy} onClick={() => { void finance.mutate(async (r) => { await r.markGastoProgramadoPaid(payment.id); }, "Pago procesado.").then((ok) => { if (ok) setPayment(null); }); }}>{busy ? "Registrando…" : "Confirmar pago"}</button><button className="btn-secondary min-h-11" disabled={busy} onClick={() => setPayment(null)}>Cancelar</button></div>
     </MobileDialog> : null}
     {removal ? <MobileDialog title={`Eliminar ${removalTitles[removal.kind]}`} busy={busy} onClose={() => setRemoval(null)}>
       <p className="break-words text-slate-300">{removal.kind === "movement" ? `¿Querés eliminar ${removal.row.descripcion || removal.row.categoria}?`
@@ -136,7 +136,7 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
         : removal.kind === "goal" ? `¿Querés eliminar ${removal.row.nombre}? Los movimientos conservarán sus montos y quedarán sin esa meta.`
         : removal.kind === "fixed" || removal.kind === "scheduled" ? `¿Querés eliminar ${removal.row.descripcion}? Los movimientos ya registrados se conservarán.` : `¿Querés eliminar el presupuesto de ${removal.row.categoria}?`}</p>
       {error ? <p role="alert" className="mt-4 break-words text-red-300">{error}</p> : null}
-      <div className="mt-5 grid gap-3"><button className="btn min-h-12" disabled={busy} onClick={() => void confirmRemoval()}>{busy ? "Eliminando…" : "Eliminar"}</button><button className="btn-secondary min-h-12" disabled={busy} onClick={() => setRemoval(null)}>Cancelar</button></div>
+      <div className="mt-3 grid gap-3"><button className="btn min-h-11" disabled={busy} onClick={() => void confirmRemoval()}>{busy ? "Eliminando…" : "Eliminar"}</button><button className="btn-secondary min-h-11" disabled={busy} onClick={() => setRemoval(null)}>Cancelar</button></div>
     </MobileDialog> : null}
   </div>;
 }

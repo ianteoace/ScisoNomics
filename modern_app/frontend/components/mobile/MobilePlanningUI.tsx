@@ -8,12 +8,12 @@ export function PlanningForm({ title, busy, error, onClose, onSubmit, children, 
   onSubmit: (event: FormEvent<HTMLFormElement>) => void; children: ReactNode; saveLabel: string;
 }) {
   return <MobileDialog title={title} onClose={onClose} busy={busy}>
-    <form className="grid gap-4" onSubmit={onSubmit}>
-      <fieldset className="grid min-w-0 gap-4" disabled={busy}>
+    <form className="grid gap-3" onSubmit={onSubmit}>
+      <fieldset className="grid min-w-0 gap-3" disabled={busy}>
         {children}
         {error ? <p role="alert" className="break-words text-sm text-red-300">{error}</p> : null}
-        <button className="btn min-h-12 w-full" type="submit">{busy ? "Guardando…" : saveLabel}</button>
-        <button className="btn-secondary min-h-12 w-full" type="button" onClick={onClose}>Cancelar</button>
+        <button className="btn min-h-11 w-full" type="submit">{busy ? "Guardando…" : saveLabel}</button>
+        <button className="btn-secondary min-h-11 w-full" type="button" onClick={onClose}>Cancelar</button>
       </fieldset>
     </form>
   </MobileDialog>;
