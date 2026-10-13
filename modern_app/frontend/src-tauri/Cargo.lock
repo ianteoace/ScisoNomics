@@ -91,6 +91,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-mobile-secure-storage",
  "tauri-plugin-opener",
+ "tauri-plugin-quick-entry",
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
@@ -4811,6 +4812,15 @@ dependencies = [
  "url",
  "windows",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-quick-entry"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

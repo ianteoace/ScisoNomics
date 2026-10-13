@@ -92,8 +92,8 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     window.location = { href: 'http://localhost/configuracion', search: '' };
     window.history = { replaceState: (_state, _title, href) => { const url = new URL(href, window.location.href); window.location = { href: url.href, search: url.search }; } };
   }
-  global.document = { body: { style: { overflow: "scroll" } },
-    activeElement: { isConnected: true, focus: () => { restored++; } }, getElementById: () => ({ focus: () => { restored++; } }) };
+  global.document = Object.assign(new EventTarget(), { body: { style: { overflow: "scroll" } },
+    activeElement: { isConnected: true, focus: () => { restored++; } }, getElementById: () => ({ focus: () => { restored++; } }) });
   t.mock.method(React, "useState", (initial) => {
     const instance = current, index = instance.cursor++;
     if (!(index in instance.values)) instance.values[index] = typeof initial === "function" ? initial() : initial;
@@ -148,11 +148,71 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     dispose, viewportStyles, counts: () => ({ shown, closed, restored }) };
 }
 
+function quickEntryUi(t, type) {
+  const quick = require('../services/mobileQuickEntry.ts');
+  const platform = require('../services/platform.ts');
+  const oldAccount = mobileAccountState, oldPath = pathname;
+  t.after(() => { mobileAccountState = oldAccount; pathname = oldPath; });
+  mobileAccountState = { ...oldAccount, checking: false, error: '', financialReady: true };
+  pathname = '/movimientos';
+  t.mock.method(platform, 'getRuntimePlatformSync', () => 'android');
+  t.mock.method(require('../services/mobileRecoveryState.ts'), 'isMobileRecoveryBlocked', () => false);
+  t.mock.method(quick, 'startQuickEntryBridge', () => () => {});
+  let pending = type ? { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', type, expiresAt:Date.now()+120000 } : null;
+  let consumed = 0;
+  t.mock.method(quick, 'getPendingQuickEntry', () => pending);
+  t.mock.method(quick, 'consumeQuickEntry', async () => { consumed++; return true; });
+  t.mock.method(quick, 'finishQuickEntry', () => { pending = null; });
+  return { consumed:()=>consumed, emit:type=>{ pending = { id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',type,expiresAt:Date.now()+120000 }; } };
+}
+
+for (const [type, expected] of [['income','ingreso'], ['expense','gasto']]) test(`tile ${type} opens a blank create form with normal save and amount focus`, async t => {
+  const state = quickEntryUi(t,type); let saves = 0;
+  t.mock.method(finance,'mutate',async () => { saves++; return true; });
+  const view = renderer(t,MobileApp); view.html(); view.effects(); await flush(); view.html(); view.effects();
+  const dialog = view.find(n=>n.type==='dialog'); assert.equal(dialog.length,1);
+  const kind = view.find(n=>n.type==='select'&&Array.isArray(n.props.children)&&n.props.children.some(c=>c?.props?.value==='ingreso'))[0];
+  assert.equal(kind.props.value,expected);
+  const amount = view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];
+  assert.equal(amount.props.value,''); assert.equal(amount.props.autoFocus,true);
+  assert.equal(state.consumed(),1); assert.equal(saves,0);
+  assert.equal(view.find(n=>n.type==='button'&&n.props.type==='submit').length,1);
+});
+
+test('quick entry never overrides an existing draft or opens stacked dialogs',async t=>{
+  const state=quickEntryUi(t);const view=renderer(t,MobileApp);view.html();view.effects();
+  view.find(n=>n.type==='button'&&n.props.children==='Agregar movimiento')[0].props.onClick();
+  view.html();view.effects();
+  view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.onChange({target:{value:'125'}});
+  state.emit('income');view.html();view.effects();await flush();
+  assert.equal(state.consumed(),0);assert.equal(view.find(n=>n.type==='dialog').length,1);
+  assert.equal(view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.value,'125');
+});
+
+for(const blocked of ['hydration','auth','device','recovery','login-dialog','stale-owner'])test(`quick entry waits for ${blocked} instead of bypassing it`,async t=>{
+  const state=quickEntryUi(t,'income');
+  if(blocked==='hydration')mobileAccountState={...mobileAccountState,checking:true};
+  if(blocked==='auth')mobileAccountState={...mobileAccountState,error:'Account needs attention'};
+  if(blocked==='device')t.mock.method(require('../services/supabaseCloudAuth.ts'),'getPendingDeviceState',()=>({required:true}));
+  if(blocked==='recovery')t.mock.method(require('../services/mobileRecoveryState.ts'),'isMobileRecoveryBlocked',()=>true);
+  if(blocked==='stale-owner')mobileAccountState={...mobileAccountState,financialContext:{ownerId:'local',isCurrent:()=>false}};
+  const view=renderer(t,MobileApp);if(blocked==='login-dialog')document.querySelector=()=>({});
+  view.html();view.effects();await flush();assert.equal(state.consumed(),0);assert.equal(view.find(n=>n.type==='dialog').length,0);
+});
+
+test('initial quick type never overrides an edited movement',t=>{
+  const view=renderer(t,MobileMovementForm,{categories:[],movement:{tipo:'gasto',monto:50,fecha:'2026-10-01'},initialKind:'ingreso',focusAmount:true,busy:false,error:'',onSave:async()=>true,onClose(){}});
+  assert.equal(view.find(n=>n.type==='select')[0].props.value,'gasto');
+  assert.equal(view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.autoFocus,false);
+});
+
 test("mobile dialog follows the keyboard viewport and cleans up without losing focus or scroll", t => {
   t.mock.method(require('../services/platform.ts'), 'getRuntimePlatformSync', () => 'android');
   const view = renderer(t, MobileDialog, { title: 'Verificar dispositivo', onClose() {} });
   const viewport = new EventTarget(); viewport.height = 300; viewport.offsetTop = 20;
   window.visualViewport = viewport;
+  let closeSignals = 0;
+  window.addEventListener('scisonomics:mobile-dialog-closed', () => { closeSignals++; });
   view.html(); view.effects();
   const node = view.find(n => n.type === 'dialog')[0];
   assert.equal(node.props['data-mobile-ui'], ''); assert.match(node.props.className, /mobile/);
@@ -164,6 +224,7 @@ test("mobile dialog follows the keyboard viewport and cleans up without losing f
   view.dispose(); viewport.height = 500; viewport.dispatchEvent(new Event('resize'));
   assert.equal(view.viewportStyles['--mobile-viewport-height'], '250px');
   assert.deepEqual(view.counts(), { shown: 1, closed: 1, restored: 1 });
+  assert.equal(closeSignals, 1);
   assert.equal(document.body.style.overflow, 'scroll');
 });
 

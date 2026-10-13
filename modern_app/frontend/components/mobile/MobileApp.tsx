@@ -35,18 +35,21 @@ import { canUseFeature } from "../../services/entitlements";
 import { SpanishMonthInput } from "../ui/SpanishDateInput";
 import { MobileAccountLogin } from "./account/MobileAccountLogin";
 import { MobileAccountRecovery } from "./account/MobileAccountRecovery";
+import { MobileQuickEntryRouter } from "./MobileQuickEntryRouter";
+import { useMobileQuickEntry } from "./useMobileQuickEntry";
+import { consumeQuickEntry, finishQuickEntry, getPendingQuickEntry, quickEntryKind } from "../../services/mobileQuickEntry";
 
-type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
+type Editor = { kind: "scheduled"; row?: GastoProgramado } | { kind: "movement"; row?: FinanceMovimiento; initialKind?: "ingreso" | "gasto" } | { kind: "category"; row?: Categoria } | { kind: "fixed"; row?: GastoFijo } | { kind: "budget"; row?: Presupuesto } | { kind: "goal"; row?: MetaAhorro };
 type Removal = { kind: "scheduled"; row: GastoProgramado } | { kind: "movement"; row: FinanceMovimiento } | { kind: "category"; row: Categoria } | { kind: "fixed"; row: GastoFijo } | { kind: "budget"; row: Presupuesto } | { kind: "goal"; row: MetaAhorro };
 const removalTitles = { scheduled: "planificación", movement: "movimiento", category: "categoría", fixed: "gasto fijo", budget: "presupuesto", goal: "meta" };
 
 export function MobileApp({ legalContent }: { legalContent?: React.ReactNode } = {}) {
   const { financialContext, financialReady, error, refresh } = useMobileAccount();
-  if (!financialReady) return <><MobileAccountLogin /><MobileAccountRecovery /><div data-mobile-ui="" className="p-3"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
+  if (!financialReady) return <><MobileQuickEntryRouter /><MobileAccountLogin /><MobileAccountRecovery /><div data-mobile-ui="" className="p-3"><p role="status">{error ? "La cuenta necesita atención." : "Preparando tus datos…"}</p>{error ? <>
     <p role="alert">{error}</p><button className="btn mt-3" onClick={() => void refresh(true)}>Reintentar sesión</button>
     <button className="btn-secondary mt-3" onClick={switchToLocalMode}>Continuar con datos locales</button>
   </> : null}</div></>;
-  return <><MobileAccountLogin /><MobileAccountRecovery /><MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} /></>;
+  return <><MobileQuickEntryRouter /><MobileAccountLogin /><MobileAccountRecovery /><MobileFinancialApp key={financialContext.ownerId} context={financialContext} legalContent={legalContent} /></>;
 }
 
 function MobileFinancialApp({ context, legalContent }: { context: MobileFinancialContext; legalContent?: React.ReactNode }) {
@@ -83,6 +86,24 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
   const [editor, setEditor] = useState<Editor | null>(null);
   const [removal, setRemoval] = useState<Removal | null>(null);
   const [payment, setPayment] = useState<GastoProgramado | null>(null);
+  const quick = useMobileQuickEntry();
+  useEffect(() => {
+    const entry = quick.pending;
+    if (!entry || !quick.ready || pathname !== "/movimientos" || finance.loading || !finance.data || finance.busy
+        || editor || removal || payment || quick.dialogOpen() || !context.isCurrent()) return;
+    if (menuOpen) { setMenuOpen(false); return; }
+    let active = true;
+    void consumeQuickEntry(entry.id).then(consumed => {
+      if (!consumed) return;
+      if (!active) { if (!context.isCurrent()) finishQuickEntry(entry.id); return; }
+      if (quick.dialogOpen()) return;
+      if (getPendingQuickEntry()?.id === entry.id && context.isCurrent()) {
+        finance.clearMessages(); setEditor({ kind: "movement", initialKind: quickEntryKind(entry.type) });
+      }
+      finishQuickEntry(entry.id);
+    });
+    return () => { active = false; };
+  }, [quick.pending, quick.ready, quick.revision, pathname, finance.loading, finance.data, finance.busy, editor, removal, payment, menuOpen, context]);
   useEffect(() => { setMenuOpen(false); if (!section && !legal) router.replace("/dashboard"); }, [pathname, section, legal, router]);
   function edit(value: Editor) { finance.clearMessages(); setEditor(value); }
   function remove(value: Removal) { finance.clearMessages(); setRemoval(value); }
@@ -117,7 +138,7 @@ function MobileFinancialPage({ pathname, section, legal, router, context, legalC
       {!loading && data && pathname === "/planificacion" ? <MobileScheduling rows={data.scheduled} summary={data.projection} onCreate={() => edit({ kind: "scheduled" })} onEdit={(row) => edit({ kind: "scheduled", row })} onDelete={(row) => remove({ kind: "scheduled", row })} onPay={(row) => { finance.clearMessages(); setPayment(row); }} /> : null}
       {!loading && data && pathname === "/calendario" ? <MobileCalendar period={{ year: Number(finance.period.slice(0, 4)), month: Number(finance.period.slice(5, 7)) }} days={data.calendar} busy={busy} onPeriod={({ month, year }) => finance.setPeriod(`${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}`)} /> : null}
     </main>
-    {editor?.kind === "movement" ? <MobileMovementForm cloudContext={context.ownerId !== "local"} categories={data?.categories ?? []} goals={data?.goals ?? []} movement={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
+    {editor?.kind === "movement" ? <MobileMovementForm initialKind={editor.initialKind} focusAmount={Boolean(editor.initialKind)} cloudContext={context.ownerId !== "local"} categories={data?.categories ?? []} goals={data?.goals ?? []} movement={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
       onSave={(input) => finance.mutate((repository) => editor.row ? repository.updateMovimiento(editor.row.id, input) : repository.createMovimiento(input), "Movimiento guardado.", input.fecha.slice(0, 7))} /> : null}
     {editor?.kind === "category" ? <MobileCategoryForm category={editor.row} busy={busy} error={error} onClose={() => setEditor(null)}
       onSave={(input) => finance.mutate((repository) => editor.row ? repository.updateCategoria(editor.row.id, input) : repository.createCategoria(input), "Categoría guardada.")} /> : null}

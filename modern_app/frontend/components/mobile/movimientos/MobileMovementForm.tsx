@@ -12,11 +12,12 @@ import { validateMovimiento } from "../../../services/data/mobileFinanceReposito
 import { compatibleCategories, movementTypes } from "../mobileUi";
 import { MobileDialog } from "../MobileDialog";
 
-export function MobileMovementForm({ categories, goals = [], movement, busy, error, onClose, onSave, cloudContext = false }: {
+export function MobileMovementForm({ categories, goals = [], movement, busy, error, onClose, onSave, cloudContext = false, initialKind, focusAmount = false }: {
   categories: Categoria[]; goals?: MetaAhorro[]; movement?: FinanceMovimiento; busy: boolean; error: string;
   onClose: () => void; onSave: (input: CreateMovimiento) => Promise<boolean>; cloudContext?: boolean;
+  initialKind?: "ingreso" | "gasto"; focusAmount?: boolean;
 }) {
-  const [tipo, setTipo] = useState<MoveType>(movement?.tipo ?? "gasto");
+  const [tipo, setTipo] = useState<MoveType>(movement?.tipo ?? (initialKind === "ingreso" ? "ingreso" : "gasto"));
   const [monto, setMonto] = useState(movement ? String(movement.monto).replace(".", ",") : "");
   const [descripcion, setDescripcion] = useState(movement?.descripcion ?? "");
   const [fecha, setFecha] = useState(movement?.fecha ?? getLocalDateInputValue());
@@ -39,8 +40,8 @@ export function MobileMovementForm({ categories, goals = [], movement, busy, err
   return <MobileDialog title={movement ? "Editar movimiento" : "Agregar movimiento"} onClose={onClose} busy={busy}>
     <form onSubmit={submit} className="grid gap-3">
       <fieldset disabled={busy} className="grid min-w-0 gap-3">
-        <label className="grid gap-1.5 text-sm">Tipo de movimiento<select className="input min-h-11" autoFocus value={tipo} onChange={(event) => { setTipo(event.target.value as MoveType); setCategoryId(""); setMetaId(""); }}>{movementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
-        <label className="grid gap-1.5 text-sm">Monto<input className="input min-h-11" inputMode="decimal" value={monto} required onChange={(event) => setMonto(event.target.value)} placeholder="0,00" /></label>
+        <label className="grid gap-1.5 text-sm">Tipo de movimiento<select className="input min-h-11" autoFocus={!focusAmount || Boolean(movement)} value={tipo} onChange={(event) => { setTipo(event.target.value as MoveType); setCategoryId(""); setMetaId(""); }}>{movementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}</select></label>
+        <label className="grid gap-1.5 text-sm">Monto<input className="input min-h-11" autoFocus={focusAmount && !movement} inputMode="decimal" value={monto} required onChange={(event) => setMonto(event.target.value)} placeholder="0,00" /></label>
         <label className="grid gap-1.5 text-sm">Descripción<input className="input min-h-11" value={descripcion} maxLength={500} onChange={(event) => setDescripcion(event.target.value)} /></label>
         <div className="grid gap-1.5 text-sm"><p>Fecha</p><SpanishDateInput label="Fecha del movimiento" className="input min-h-11" required value={fecha} onChange={setFecha} /></div>
         <label className="grid gap-1.5 text-sm">Categoría<select className="input min-h-11" value={categoryId} required onChange={(event) => setCategoryId(event.target.value)}><option value="">Elegí una categoría</option>{available.map((category) => <option key={category.id} value={category.id}>{category.nombre}</option>)}</select></label>

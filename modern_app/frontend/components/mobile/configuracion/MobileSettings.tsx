@@ -12,6 +12,7 @@ import packageJson from "../../../package.json";
 import { mobileSections } from "../MobileSidebar";
 import { MobileAccount } from "../account/MobileAccount";
 import { MobilePremium } from "../billing/MobilePremium";
+import { MobileQuickEntrySettings } from "./MobileQuickEntrySettings";
 
 function SettingsCard({ title, children }: { title: string; children: ReactNode }) {
   return <section className="card min-w-0 space-y-3 p-4">
@@ -51,7 +52,7 @@ export function MobileSettings() {
       case "suscripcion": return <><MobilePremium /><ul className="list-disc space-y-2 pl-5">{mobileSections.filter(item => item.premium).map(item => <li key={item.feature}>{item.label}</li>)}</ul></>;
       case "actualizaciones": return <><p>Las actualizaciones de Android se gestionan mediante Google Play cuando instalás la app desde la tienda.</p><p>No se utiliza el actualizador de Desktop.</p></>;
       case "acerca": return <><p className="font-semibold text-cyan-200">ScisoNomics · Versión {packageJson.version}</p><p>Tus finanzas personales, organizadas en tu dispositivo.</p><h3 className="font-semibold">Novedades</h3><ul className="list-disc space-y-2 pl-5"><li>Tu saldo se mantiene correctamente al comenzar un nuevo mes.</li><li>Registrá movimientos y organizá categorías, presupuestos y metas.</li><li>Consultá estadísticas y reportes sin conexión.</li></ul><h3 className="font-semibold">Legal y soporte</h3><div className="grid gap-2"><Link className="btn-secondary min-h-12 p-3" href="/legal#terminos" prefetch={false}>Términos de uso</Link><Link className="btn-secondary min-h-12 p-3" href="/legal#privacidad" prefetch={false}>Política de privacidad</Link><Link className="btn-secondary min-h-12 p-3" href="/legal#aceptacion" prefetch={false}>Aceptación y licencia</Link></div><p className="select-text break-all font-semibold">scisoftwareco@gmail.com</p><p>Mantené presionado el email para seleccionarlo y copiarlo.</p></>;
-      default: return <><p>Tema oscuro para todas las pantallas.</p><p>Tu saldo se calcula con los movimientos registrados y conserva el saldo del mes anterior.</p><button className="btn-secondary min-h-12" onClick={() => setGuides(true)}>Volver a mostrar guías</button></>;
+      default: return <><p>Tema oscuro para todas las pantallas.</p><p>Tu saldo se calcula con los movimientos registrados y conserva el saldo del mes anterior.</p><button className="btn-secondary min-h-12" onClick={() => setGuides(true)}>Volver a mostrar guías</button><MobileQuickEntrySettings /></>;
     }
   }
   return <div className="grid min-w-0 gap-4" aria-label="Configuración local">

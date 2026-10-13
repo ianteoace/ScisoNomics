@@ -1,0 +1,4 @@
+<resources>
+    <string name="sciso_tile_income">+ Ingreso</string>
+    <string name="sciso_tile_expense">− Gasto</string>
+</resources>

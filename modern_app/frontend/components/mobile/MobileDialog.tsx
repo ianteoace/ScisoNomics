@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import styles from "./MobileDialog.module.css";
 import { getRuntimePlatformSync } from "../../services/platform";
+export const MOBILE_DIALOG_CLOSED_EVENT = "scisonomics:mobile-dialog-closed";
 
 export function MobileDialog({ title, children, onClose, busy = false, drawer = false, id }: {
   title: string; children: ReactNode; onClose: () => void; busy?: boolean; drawer?: boolean; id?: string;
@@ -38,6 +39,7 @@ export function MobileDialog({ title, children, onClose, busy = false, drawer = 
       const target = previousFocus?.isConnected && previousFocus !== document.body
         ? previousFocus : document.getElementById("mobile-menu-button");
       target?.focus({ preventScroll: true });
+      if (mobile) window.dispatchEvent(new Event(MOBILE_DIALOG_CLOSED_EVENT));
     };
   }, []);
   return <dialog ref={ref} id={id} aria-labelledby={titleId} aria-modal="true" data-mobile-ui={mobile ? "" : undefined} className={`${styles.dialog} ${drawer ? styles.drawer : ""} ${mobile ? styles.mobile : ""}`}
