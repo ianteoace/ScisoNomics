@@ -8,12 +8,14 @@ import { createSupabaseAuthClient, isSupabaseAuthConfigured } from "../lib/supab
 import {
   addOrUpdateAccount, cloudAuth, CloudAuthRequestError, getActiveOwnerId,
   getStoredAccounts, getValidAccessToken, isCloudAuthConfigured, removeAccount,
+  recordDesktopSupabaseRefresh,
   type CloudUser, type StoredCloudSession,
 } from "./cloudAuth";
 import { deleteSupabaseRefreshToken, isSupabaseSecureStorageAvailable, loadSupabaseRefreshToken, saveSupabaseRefreshToken } from "./supabaseTokenStorage";
 import type { GoogleOAuthTrace, GoogleOAuthDiagnosticEvent } from "./googleOAuthDiagnostics";
 import { retainGoogleOAuthAuthError } from "./googleOAuthDiagnostics";
 import { getRuntimePlatformSync } from "./platform";
+import { isDesktopAuthRuntime, logDesktopAuthDiagnostic } from "./desktopAuthDiagnostics";
 
 type SupabaseIdentityClient = ReturnType<typeof createSupabaseAuthClient>;
 type MemorySession = { client: SupabaseIdentityClient; session: Session | null; refreshToken: string; persistent: boolean };
@@ -183,7 +185,7 @@ async function acceptAuthorizedSession(client: SupabaseIdentityClient, session: 
   try {
     if (remember) await saveSupabaseRefreshToken(user.id, session.refresh_token);
     else {
-      const deleted = await deleteSupabaseRefreshToken(user.id);
+      const deleted = await deleteSupabaseRefreshToken(user.id, "temporary_login");
       if (!deleted.ok) throw new CloudAuthRequestError("No pudimos quitar la sesión recordada. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
     }
     if (sessions.get(user.id) !== entry) throw new CloudAuthRequestError("Este acceso fue reemplazado. Volvé a iniciar sesión.", { code: "supabase_login_replaced", kind: "auth" });
@@ -294,7 +296,33 @@ export async function getSession(ownerId = getActiveOwnerId()): Promise<StoredCl
   return getValidAccessToken(ownerId);
 }
 
+type RefreshDiagnostic = { stage: "load" | "refresh" | "save" | "device"; refreshTokenFound: boolean; refreshSuccess: boolean; rotatedRefresh: boolean; rotatedSaveSuccess: boolean };
+
 async function refreshAccount(ownerId: string): Promise<StoredCloudSession | null> {
+  if (!isDesktopAuthRuntime()) return refreshAccountImpl(ownerId);
+  const start = Date.now();
+  const diagnostic: RefreshDiagnostic = { stage: "load", refreshTokenFound: false, refreshSuccess: false, rotatedRefresh: false, rotatedSaveSuccess: false };
+  logDesktopAuthDiagnostic("refresh_start", { ownerId });
+  let availability: "active" | "saved_without_token" | "refresh_failed" | "session_expired" = "saved_without_token";
+  let errorCode: string | null = null;
+  try {
+    const result = await refreshAccountImpl(ownerId, diagnostic);
+    availability = result ? "active" : "saved_without_token";
+    if (!result) errorCode = "refresh_token_missing";
+    return result;
+  } catch (failure) {
+    errorCode = failure instanceof CloudAuthRequestError && failure.code === "supabase_not_configured" ? "supabase_not_configured"
+      : diagnostic.stage === "load" ? "secure_refresh_load_failed" : diagnostic.stage === "save" ? "secure_refresh_save_failed"
+      : failure instanceof CloudAuthRequestError && failure.kind === "auth" ? "refresh_rejected" : "network_error";
+    availability = errorCode === "refresh_rejected" ? "session_expired" : "refresh_failed";
+    throw failure;
+  } finally {
+    recordDesktopSupabaseRefresh(ownerId, { availability, ...diagnostic, errorCode });
+    logDesktopAuthDiagnostic("refresh_end", { ownerId, ...diagnostic, phase: diagnostic.stage, availability, errorCode, duration_ms: Date.now() - start });
+  }
+}
+
+async function refreshAccountImpl(ownerId: string, diagnostic?: RefreshDiagnostic): Promise<StoredCloudSession | null> {
   const account = getStoredAccounts().find((item) => item.user.id === ownerId && item.authProvider === "supabase");
   if (!account) return null;
   let entry = sessions.get(ownerId);
@@ -304,11 +332,13 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
     sessions.set(ownerId, entry);
     try {
       const token = await loadSupabaseRefreshToken(ownerId);
+      if (diagnostic) diagnostic.refreshTokenFound = Boolean(token);
       if (sessions.get(ownerId) !== entry) return null;
       if (!token) { forgetSession(ownerId); return null; }
       entry.refreshToken = token;
     } catch (error) { if (sessions.get(ownerId) === entry) forgetSession(ownerId); throw error; }
   }
+  if (diagnostic) { diagnostic.stage = "refresh"; diagnostic.refreshTokenFound = Boolean(entry.refreshToken); }
   const { data, error } = await entry.client.auth.refreshSession({ refresh_token: entry.refreshToken });
   if (sessions.get(ownerId) !== entry) return null;
   if (error) throw providerError(error);
@@ -316,8 +346,17 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
     throw new CloudAuthRequestError("La identidad de la sesión cambió. Volvé a iniciar sesión.", { kind: "auth", code: "internal_identity_mismatch" });
   }
   // Preserve rotated refresh tokens across transient backend failures.
+  if (diagnostic) { diagnostic.refreshSuccess = true; diagnostic.rotatedRefresh = data.session.refresh_token !== entry.refreshToken; }
   entry.session = data.session;
   entry.refreshToken = data.session.refresh_token;
+  // Desktop cold startup cannot rely on memory surviving a failed device refresh.
+  // Save the provider rotation immediately; this does not grant device access.
+  if (diagnostic && entry.persistent) {
+    diagnostic.stage = "save";
+    await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
+    diagnostic.rotatedSaveSuccess = true;
+  }
+  if (diagnostic) diagnostic.stage = "device";
   let grant: DeviceGrant;
   try {
     grant = await restoreDeviceGrant(data.session.access_token, ownerId);
@@ -331,7 +370,7 @@ async function refreshAccount(ownerId: string): Promise<StoredCloudSession | nul
   }
   const user = grant.user;
   if (sessions.get(ownerId) !== entry) return null;
-  if (entry.persistent) await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
+  if (entry.persistent && !diagnostic?.rotatedSaveSuccess) await saveSupabaseRefreshToken(ownerId, entry.refreshToken);
   rememberDeviceGrant(ownerId, grant);
   if (sessions.get(ownerId) !== entry || !getStoredAccounts().some((account) => account.user.id === ownerId && account.authProvider === "supabase")) return null;
   await storeSession(user, data.session, false, entry.persistent, grant);
@@ -350,18 +389,20 @@ export function forgetSession(ownerId: string) {
   if (entry) void entry.client.auth.dispose().catch(() => {});
 }
 
-export async function deleteSavedSession(ownerId: string) {
+export async function deleteSavedSession(ownerId: string, reason: "temporary_login" | "logout_or_remove" | "auth_rejected" = "logout_or_remove") {
   forgetSession(ownerId);
   forgetDeviceGrant(ownerId);
-  return deleteSupabaseRefreshToken(ownerId);
+  return deleteSupabaseRefreshToken(ownerId, reason);
 }
 
-export async function hydrateStoredSessions() {
+export async function hydrateStoredSessions(restore = refreshSession) {
   let restored = false;
   for (const account of getStoredAccounts()) {
     if (account.authProvider !== "supabase" || account.storage !== "persistent" || sessions.has(account.user.id)) continue;
-    try { restored = Boolean(await refreshSession(account.user.id)) || restored; }
-    catch { /* State is evaluated by getValidAccessToken; local mode stays usable. */ }
+    let success = false;
+    try { success = Boolean(await restore(account.user.id)); restored = success || restored; }
+    catch { /* Desktop refresh records failures explicitly; local mode stays usable. */ }
+    logDesktopAuthDiagnostic("hydration_account", { ownerId: account.user.id, success });
   }
   return restored;
 }

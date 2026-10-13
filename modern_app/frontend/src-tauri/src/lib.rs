@@ -29,6 +29,16 @@ mod device_verification;
 mod local_api_token;
 mod supabase_tokens;
 mod supabase_oauth;
+#[cfg(any(windows, test))]
+mod desktop_auth_diag;
+
+#[cfg(windows)]
+#[tauri::command]
+fn log_desktop_auth_diagnostic(payload: serde_json::Value) -> Result<(), String> {
+  let row = desktop_auth_diag::validate(payload).map_err(str::to_string)?;
+  log::info!(target: "desktop_auth", "[auth] {}", row);
+  Ok(())
+}
 #[cfg(any(target_os = "android", test))]
 mod google_oauth_log;
 
@@ -1122,6 +1132,8 @@ pub fn run() {
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
       supabase_tokens::save_persistent_supabase_refresh_token,
+      #[cfg(windows)]
+      log_desktop_auth_diagnostic,
       supabase_tokens::load_persistent_supabase_refresh_token,
       supabase_tokens::delete_persistent_supabase_refresh_token,
       supabase_oauth::save_pending_supabase_oauth,
@@ -1161,6 +1173,12 @@ pub fn run() {
             .build(),
         )?;
       }
+      #[cfg(all(windows, not(debug_assertions)))]
+      {
+        // Only validated auth rows; logging failure must not block startup.
+        let _ = app.handle().plugin(desktop_auth_diag::release_logger());
+      }
+
 
       #[cfg(desktop)]
       {

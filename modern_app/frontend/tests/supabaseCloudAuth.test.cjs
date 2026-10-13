@@ -88,6 +88,7 @@ function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
       (ctx.nativeDiagnostics ||= []).push(args.payload);
       return;
     }
+    if (command === "log_desktop_auth_diagnostic") { (ctx.desktopDiagnostics ||= []).push(args.payload); return; }
     if (command === "plugin:opener|open_url") {
       if (ctx.openerError) throw new Error("Sensitive opener URL must not leak");
       ctx.openedUrls.push(new URL(args.url));
@@ -113,11 +114,15 @@ function setup(t, { configured = true, tauri = false, mobile = false } = {}) {
         assert.ok(args.token.length > 0 && args.token.length <= 4096 && !/\s/.test(args.token), "native token-slot contract");
       }
       if (operation === "save_persistent_supabase_refresh_token") {
+        if (ctx.desktopSaveError) throw new Error("Sensitive native write details");
         if (ctx.pauseSave) await ctx.pauseSave;
         credentials.set(key, args.token);
         return { ok: true, roundtrip: true };
       }
-      if (operation === "load_persistent_supabase_refresh_token") return { found: credentials.has(key), token: credentials.get(key) || null };
+      if (operation === "load_persistent_supabase_refresh_token") {
+        if (ctx.pauseLoad) await ctx.pauseLoad;
+        return { found: credentials.has(key), token: credentials.get(key) || null };
+      }
       if (operation === "delete_persistent_supabase_refresh_token") { credentials.delete(key); return { ok: true }; }
     }
     if (command === "save_persistent_cloud_refresh_token") {
@@ -1309,8 +1314,8 @@ test("native save failure is explicit and never publishes a remembered account",
   assert.equal(ctx.credentials.size, 0);
 });
 
-test("unverified rotation stays in memory until device authorization succeeds", async (t) => {
-  const ctx = setup(t, { tauri: true });
+test("Android unverified rotation stays in memory until device authorization succeeds", async (t) => {
+  const ctx = setup(t, { tauri: true, mobile: true });
   await ctx.external.signInWithPassword("alice@example.com", "correct");
   const [key, old] = [...ctx.credentials][0];
   ctx.backendError = { status: 503, detail: { code: "backend_offline", message: "Try again" } };
@@ -1322,6 +1327,108 @@ test("unverified rotation stays in memory until device authorization succeeds", 
   ctx.browser.sessionStorage.data.clear();
   const reloaded = loadServices();
   assert.equal((await reloaded.cloud.getValidAccessToken("sciso-A")).user.id, "sciso-A");
+});
+
+test("Desktop cold boot waits for native hydration and rotates once before publishing active", async t => {
+  const ctx = setup(t, { tauri: true });
+  await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await new Promise(resolve => setImmediate(resolve));
+  const old = new Map(ctx.credentials); ctx.browser.sessionStorage.data.clear();
+  let release; ctx.pauseLoad = new Promise(resolve => { release = resolve; });
+  const reloaded = loadServices(); let finished = false;
+  const restoring = reloaded.cloud.getActiveCloudAuthState().then(value => { finished = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false); assert.equal(reloaded.cloud.getCloudAuthHydrationState().pending, true);
+  release(); const state = await restoring;
+  assert.equal(state.availability, 'active'); assert.equal(state.persistenceStatus, 'ok');
+  assert([...ctx.credentials].every(([key, token]) => old.get(key) !== token));
+  assert.equal(ctx.calls.filter(call => call.url.searchParams.get('grant_type') === 'refresh_token').length, 1);
+});
+
+test("Desktop native read errors retain account and credential and are distinct from missing tokens", async t => {
+  const ctx = setup(t, { tauri: true }); await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await new Promise(resolve => setImmediate(resolve));
+  const old = new Map(ctx.credentials); ctx.browser.sessionStorage.data.clear(); ctx.nativeError = true;
+  const reloaded = loadServices(); const state = await reloaded.cloud.getActiveCloudAuthState();
+  assert.equal(state.availability, 'refresh_failed'); assert.equal(state.persistenceStatus, 'failed');
+  assert.equal((await reloaded.cloud.getCloudAuthDiagnostics()).lastAuthErrorCode, 'secure_refresh_load_failed');
+  assert.equal(reloaded.cloud.getStoredAccounts().length, 1); assert.deepEqual(ctx.credentials, old);
+  ctx.nativeError = false;
+  assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, 'active');
+});
+
+test("Desktop missing secure credential requires relogin without deleting metadata", async t => {
+  const ctx = setup(t, { tauri: true }); await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await new Promise(resolve => setImmediate(resolve));
+  ctx.browser.sessionStorage.data.clear(); ctx.credentials.clear();
+  const reloaded = loadServices(); const state = await reloaded.cloud.getActiveCloudAuthState();
+  assert.equal(state.availability, 'saved_without_token'); assert.equal(state.requiresRelogin, true);
+  assert.equal((await reloaded.cloud.getCloudAuthDiagnostics()).lastAuthErrorCode, 'refresh_token_missing');
+  assert.equal(reloaded.cloud.getStoredAccounts().length, 1);
+});
+
+test("Desktop missing build configuration is not reported as a WinCred failure", async t => {
+  const ctx = setup(t, { tauri: true }); await ctx.external.signInWithPassword('alice@example.com', 'correct');
+  await new Promise(resolve => setImmediate(resolve)); ctx.browser.sessionStorage.data.clear();
+  process.env.NEXT_PUBLIC_SUPABASE_URL = '';
+  const reloaded = loadServices(); const state = await reloaded.cloud.getActiveCloudAuthState();
+  assert.equal(state.availability, 'refresh_failed'); assert.equal(state.persistentStorageError, false);
+  assert.equal((await reloaded.cloud.getCloudAuthDiagnostics()).lastAuthErrorCode, 'supabase_not_configured');
+  assert.equal(ctx.credentials.size, 1); assert.equal(reloaded.cloud.getStoredAccounts().length, 1);
+});
+
+test("Desktop malformed native load response fails explicitly instead of reporting a missing token", async t => {
+  const ctx = setup(t, { tauri: true });
+  const invoke = ctx.browser.__TAURI_INTERNALS__.invoke;
+  ctx.browser.__TAURI_INTERNALS__.invoke = (command, args) => command === 'load_persistent_supabase_refresh_token' ? Promise.resolve(null) : invoke(command, args);
+  await assert.rejects(require('../services/supabaseTokenStorage.ts').loadSupabaseRefreshToken('sciso-A'), error => error.code === 'supabase_secure_storage_failed');
+});
+
+test("Desktop failed rotated save is visible and metadata never pretends persistence succeeded", async t => {
+  const ctx = setup(t, { tauri: true }); await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await new Promise(resolve => setImmediate(resolve));
+  const old = new Map(ctx.credentials); ctx.browser.sessionStorage.data.clear(); ctx.desktopSaveError = true;
+  const reloaded = loadServices(); const state = await reloaded.cloud.getActiveCloudAuthState();
+  assert.equal(state.availability, 'refresh_failed'); assert.equal(state.persistentStorageError, true);
+  assert.equal(state.persistenceStatus, 'failed'); assert.deepEqual(ctx.credentials, old);
+  const diagnostics = await reloaded.cloud.getCloudAuthDiagnostics();
+  assert.equal(diagnostics.lastAuthErrorCode, 'secure_refresh_save_failed'); assert.equal(diagnostics.refreshSuccess, true);
+  assert.equal(diagnostics.rotatedRefresh, true); assert.equal(reloaded.cloud.getStoredAccounts().length, 1);
+  ctx.desktopSaveError = false; assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, 'active');
+});
+
+test("Desktop device outage cannot lose a provider rotation across process restart", async t => {
+  const ctx = setup(t, { tauri: true }); await ctx.external.signInWithPassword("alice@example.com", "correct");
+  await new Promise(resolve => setImmediate(resolve));
+  const old = new Map(ctx.credentials);
+  ctx.backendError = { status: 503, detail: { code: 'backend_offline', message: 'Sensitive backend details' } };
+  await assert.rejects(ctx.external.refreshSession('sciso-A'), error => error.statusCode === 503);
+  assert([...ctx.credentials].every(([key, token]) => old.get(key) !== token));
+  ctx.browser.sessionStorage.data.clear(); ctx.backendError = null;
+  const reloaded = loadServices(); assert.equal((await reloaded.cloud.getActiveCloudAuthState()).availability, 'active');
+});
+
+test("Desktop release/dev diagnostics and secure namespace are stable and exclude private data", async t => {
+  const ctx = setup(t, { tauri: true });
+  const diagnostic = require('../services/desktopAuthDiagnostics.ts');
+  const original = process.env.NODE_ENV; t.after(() => { if (original === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = original; });
+  const keys = [];
+  for (const mode of ['development', 'production']) {
+    process.env.NODE_ENV = mode;
+    await ctx.external.signInWithPassword('alice@example.com', 'correct');
+    const storage = require('../services/supabaseTokenStorage.ts');
+    await storage.loadSupabaseRefreshToken('sciso-A'); await storage.deleteSupabaseRefreshToken('sciso-A');
+    keys.push(ctx.nativeCalls.slice(-3).map(call => call.accountId));
+    diagnostic.logDesktopAuthDiagnostic('auth_state', { ownerId:'sciso-A', availability:'active', errorCode:'secret-fixture', message:'secret-fixture', token:'secret-fixture', project_tag:'https://secret.test' });
+    diagnostic.logDesktopAuthDiagnostic('auth_state', { ownerId:{secret:'secret-fixture'}, project_tag:{toString:()=> 'a'.repeat(12), secret:'secret-fixture'} });
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(keys[0], keys[1]); assert(keys[0].every(key => key === keys[0][0]));
+  const rows = ctx.desktopDiagnostics;
+  assert(rows.some(row => row.event === 'load_end' && row.found));
+  for (const row of rows) assert(Object.keys(row).every(key => ['event','platform','namespace','owner_tag','project_tag','secureStorageAvailable','found','success','persistentAccounts','duration_ms','refreshTokenFound','refreshSuccess','rotatedRefresh','rotatedSaveSuccess','persistentStorageError','errorCode','lastAuthErrorCode','availability','persistenceStatus','reason','phase'].includes(key)));
+  const text = JSON.stringify(rows);
+  assert.doesNotMatch(text, /alice@example|supabase-access|supabase-refresh|secret-fixture|https?:|sciso-A|Authorization|private_key|access_token|refresh_token/);
 });
 
 test("Supabase logout deletes its namespace and preserves legacy and another external account", async (t) => {
