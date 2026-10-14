@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { formatNumericInput } from "../../../lib/numericInput";
+import { NumericInput } from "../../../components/ui/NumericInput";
 import { SpanishDateInput } from "../../../components/ui/SpanishDateInput";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -109,8 +111,8 @@ export default function MetasPage() {
     setEditing(meta);
     setForm({
       nombre: meta.nombre,
-      monto_objetivo: String(meta.monto_objetivo),
-      monto_inicial: String(meta.monto_inicial || 0),
+      monto_objetivo: formatNumericInput(meta.monto_objetivo),
+      monto_inicial: formatNumericInput(meta.monto_inicial || 0),
       fecha_objetivo: meta.fecha_objetivo || "",
       descripcion: meta.descripcion || "",
       estado: meta.estado,
@@ -310,10 +312,10 @@ export default function MetasPage() {
           <input className="input" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} required />
 
           <label className="text-xs text-muted">Monto objetivo</label>
-          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 1.250.000" value={form.monto_objetivo} onChange={(e) => setForm({ ...form, monto_objetivo: e.target.value })} required />
+          <NumericInput className="input" placeholder="Ej: 1.250.000" value={form.monto_objetivo} onValueChange={(value) => setForm({ ...form, monto_objetivo: value })} required />
 
           <label className="text-xs text-muted">Monto inicial (opcional)</label>
-          <input className="input" type="text" inputMode="decimal" placeholder="Opcional" value={form.monto_inicial} onChange={(e) => setForm({ ...form, monto_inicial: e.target.value })} />
+          <NumericInput className="input" placeholder="Opcional" value={form.monto_inicial} onValueChange={(value) => setForm({ ...form, monto_inicial: value })} />
 
           <label className="text-xs text-muted">Fecha objetivo (opcional)</label>
           <SpanishDateInput label="Fecha objetivo" value={form.fecha_objetivo} onChange={fecha_objetivo => setForm({ ...form, fecha_objetivo })} />

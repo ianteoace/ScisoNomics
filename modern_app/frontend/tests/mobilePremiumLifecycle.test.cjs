@@ -10,7 +10,7 @@ function fixture(t,options={}){
  stub('services/entitlements.ts',{ENTITLEMENTS_CHANGED_EVENT:'entitlements',entitlementValidUntil:()=>0,getCachedEntitlements:()=>entitlements,loadEntitlements:async options=>{state.loads.push(options.ownerId);return entitlements;}});
  stub('services/cloudAuth.ts',{ACCOUNT_SESSION_CHANGED_EVENT:'session',OWNER_CHANGED_EVENT:'owner',getActiveOwnerId:()=>state.owner});
  stub('services/platform.ts',{getRuntimePlatformSync:()=>state.platform});
- stub('services/googlePlayBilling.ts',{restorePlayPurchases:async owner=>{state.restores.push(owner);if(state.fail)throw new Error('not configured');},watchPlayPurchases:async owner=>{state.watched.push(owner);return {unregister:async()=>{state.unregistered++;}};}});
+ stub('services/googlePlayBilling.ts',{isPlayPurchaseInProgress:()=>!!state.purchasing,restorePlayPurchases:async owner=>{state.restores.push(owner);if(state.fail)throw new Error('not configured');},watchPlayPurchases:async owner=>{state.watched.push(owner);return {unregister:async()=>{state.unregistered++;}};}});
  let effect,cleanup; t.mock.method(React,'useEffect',callback=>{effect=callback});t.mock.method(React,'useState',initial=>[initial,()=>{}]);
  const id=path.join(root,'components/mobile/useMobilePremium.ts');delete require.cache[id];const {useMobilePremium}=require(id);useMobilePremium(state.owner,true);
  const dispose=()=>{cleanup?.();cleanup=null;};
@@ -32,6 +32,13 @@ test('account switching prevents the old owner from restoring purchases on futur
  const f=fixture(t);f.start();await flush();f.state.owner='owner-b';
  f.document.dispatchEvent(new Event('visibilitychange'));f.window.dispatchEvent(new Event('session'));await flush();
  assert.deepEqual(f.state.restores,['owner-a']);assert.deepEqual(f.state.loads,[]);
+});
+
+test('foreground during checkout cannot start a second purchase verification',async t=>{
+ const f=fixture(t);f.start();await flush();f.state.purchasing=true;
+ f.document.dispatchEvent(new Event('visibilitychange'));f.window.dispatchEvent(new Event('session'));await flush();
+ assert.equal(f.state.restores.length,1);assert.equal(f.state.loads.length,0);
+ f.state.purchasing=false;f.document.dispatchEvent(new Event('visibilitychange'));await flush();assert.equal(f.state.restores.length,2);
 });
 test('local mode and desktop never initialize or query native Google Billing',async t=>{
  for(const options of [{owner:'local'},{platform:'desktop'}]){

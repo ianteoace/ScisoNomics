@@ -2,7 +2,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const root=path.resolve(__dirname,'..');
 require.extensions['.ts']=(module,filename)=>module._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText,filename);
 function fixture(t){
- const backups=new Map(),state={owner:'owner-a',calls:[],native:[],loads:[],fail:false,pause:null,status:'updated',purchaseState:'purchased'};
+ const backups=new Map(),state={owner:'owner-a',calls:[],native:[],loads:[],fail:false,pause:null,status:'updated',purchaseState:'purchased',plans:[]};
  const binding=owner=>owner==='owner-a'?'a'.repeat(64):'b'.repeat(64);
  const context=()=>({packageName:'com.scisoftware.scisonomics',productIds:['scisonomics_premium_monthly'],basePlanIds:['monthly'],obfuscatedAccountId:binding(state.owner)});
  const offer={productId:'scisonomics_premium_monthly',basePlanId:'monthly',offerToken:'offer',formattedPrice:'Precio de Play',currency:'ARS'};
@@ -17,7 +17,7 @@ function fixture(t){
   return {status:'active',expiresAt:'2030-01-01',acknowledged:true,autoRenew:true};
  }});
  stub('services/supabaseCloudAuth.ts',{getSession:async owner=>({user:{id:owner},token:'device-grant-test-only'})});
- stub('services/entitlements.ts',{loadEntitlements:async options=>{state.loads.push(options.ownerId);return {plan:'premium'};}});
+ stub('services/entitlements.ts',{loadEntitlements:async options=>{state.loads.push(options.ownerId);return {plan:state.plans.shift()||'premium'};}});
  stub('@tauri-apps/api/core',{invoke:async(command,args)=>{
   state.native.push({command,args});
   if(command.endsWith('query_products'))return {packageName:context().packageName,offers:[offer]};
@@ -43,6 +43,23 @@ test('pending never validates or acknowledges as a paid purchase',async t=>{
  const {state,service,offer,context}=fixture(t);state.purchaseState='pending';
  assert.equal((await service.buyPlayPremium('owner-a',offer,context())).pending,true);
  assert(!state.calls.some(c=>c.route.endsWith('/validate')));assert(!state.native.some(c=>c.command.includes('acknowledge')));
+});
+
+test('post-purchase confirmation retries entitlement only and completes without manual restore',async t=>{
+ const {state,service,offer,context}=fixture(t);state.plans=['free','free','premium'];
+ const timer=global.setTimeout;t.mock.method(global,'setTimeout',(fn,_ms,...args)=>timer(fn,0,...args));
+ const result=await service.buyPlayPremium('owner-a',offer,context());
+ assert.equal(result.confirming,false);assert.equal(state.loads.length,3);
+ assert.equal(state.calls.filter(c=>c.route.endsWith('/validate')).length,1);
+ assert(!state.native.some(c=>c.command.endsWith('query_purchases')));
+});
+test('confirmation is bounded, cancellation clears waits and screen refresh is throttled',async t=>{
+ const {state,service}=fixture(t);state.plans=['free','free','free','free'];
+ const timer=global.setTimeout;t.mock.method(global,'setTimeout',(fn,_ms,...args)=>timer(fn,0,...args));
+ assert.equal((await service.confirmPlayEntitlements('owner-a')).confirming,true);assert.equal(state.loads.length,4);
+ const controller=new AbortController();controller.abort();await assert.rejects(service.confirmPlayEntitlements('owner-a',true,controller.signal));
+ const before=state.loads.length;await Promise.all([service.refreshPlayPremiumScreen('owner-a'),service.refreshPlayPremiumScreen('owner-a')]);
+ assert.equal(state.loads.length,before+1);
 });
 test('user cancellation has no backend grant and duplicate launches coalesce',async t=>{
  const {state,service,offer,context}=fixture(t);state.status='canceled';

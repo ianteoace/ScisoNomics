@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { ENTITLEMENTS_CHANGED_EVENT, entitlementValidUntil, getCachedEntitlements, loadEntitlements, type BillingEntitlements } from "../../services/entitlements";
 import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveOwnerId, OWNER_CHANGED_EVENT } from "../../services/cloudAuth";
-import { restorePlayPurchases, watchPlayPurchases } from "../../services/googlePlayBilling";
+import { restorePlayPurchases, watchPlayPurchases, isPlayPurchaseInProgress } from "../../services/googlePlayBilling";
 import { getRuntimePlatformSync } from "../../services/platform";
 
 export function useMobilePremium(ownerId: string, reconcilePlay = false) {
@@ -16,7 +16,7 @@ export function useMobilePremium(ownerId: string, reconcilePlay = false) {
     const update=()=>{if(current()){setState({owner:ownerId,entitlements:getCachedEntitlements(ownerId)});schedule();}};
     const reload=()=>{if(!current())return;update();void loadEntitlements({force:true,ownerId}).then(entitlements=>{if(current()){setState({owner:ownerId,entitlements});schedule();}}).catch(update);};
     const play=reconcilePlay&&ownerId!=="local"&&getRuntimePlatformSync()==="android";
-    const refresh=()=>{if(!current())return;if(play)void restorePlayPurchases(ownerId).then(update).catch(reload);else reload();};
+    const refresh=()=>{if(!current()||(play&&isPlayPurchaseInProgress(ownerId)))return;if(play)void restorePlayPurchases(ownerId).then(update).catch(reload);else reload();};
     if(play)void watchPlayPurchases(ownerId,update).then(value=>{if(active)listener=value;else void value.unregister().catch(()=>{});}).catch(()=>{});
     update();refresh();
     const foreground=()=>{if(document.visibilityState==="visible")refresh();};

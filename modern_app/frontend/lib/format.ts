@@ -1,3 +1,4 @@
+import { parseLocalizedNumber } from "./numericInput";
 export const APP_LOCALE = "es-AR";
 export function formatDateTime(value?: string | null) {
   if (!value) return "Sin registrar";
@@ -17,39 +18,7 @@ export function money(value: number) {
   }).format(value || 0);
 }
 
-export function parseCurrencyInput(value: string): number {
-  const raw = String(value || "")
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(/\$/g, "")
-    .replace(/[^\d.,-]/g, "");
-
-  if (!raw || raw === "-" || raw === "." || raw === ",") return Number.NaN;
-
-  const sign = raw.startsWith("-") ? "-" : "";
-  const unsigned = raw.replace(/-/g, "");
-  let normalized = unsigned;
-
-  if (unsigned.includes(",")) {
-    const lastComma = unsigned.lastIndexOf(",");
-    const integerPart = unsigned.slice(0, lastComma).replace(/[.,]/g, "");
-    const decimalPart = unsigned.slice(lastComma + 1).replace(/[^\d]/g, "");
-    normalized = `${integerPart || "0"}${decimalPart ? `.${decimalPart}` : ""}`;
-  } else {
-    const dotMatches = unsigned.match(/\./g) || [];
-    if (dotMatches.length > 1) {
-      normalized = unsigned.replace(/\./g, "");
-    } else if (dotMatches.length === 1) {
-      const [integerPart, fractionalPart = ""] = unsigned.split(".");
-      normalized = fractionalPart.length === 3
-        ? `${integerPart}${fractionalPart}`
-        : `${integerPart || "0"}.${fractionalPart}`;
-    }
-  }
-
-  const parsed = Number(`${sign}${normalized}`);
-  return Number.isFinite(parsed) ? parsed : Number.NaN;
-}
+export const parseCurrencyInput = parseLocalizedNumber;
 
 export function monthName(month: number) {
   const names = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];

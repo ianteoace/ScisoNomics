@@ -11,6 +11,7 @@ import { MovimientosView } from "../../../components/views/MovimientosView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { parseCurrencyInput } from "../../../lib/format";
+import { NumericInput } from "../../../components/ui/NumericInput";
 import { api } from "../../../services/api";
 import type { Categoria, MetaAhorro, Movimiento, MovimientosResponse } from "../../../types/domain";
 
@@ -186,8 +187,8 @@ export default function MovimientosPage() {
           <option value="">Todas las categorias</option>
           {filteredCategories.map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
         </select>
-        <input className="input md:col-span-3" placeholder="Monto mínimo" value={minMonto} onChange={(e) => setMinMonto(e.target.value)} />
-        <input className="input md:col-span-3" placeholder="Monto máximo" value={maxMonto} onChange={(e) => setMaxMonto(e.target.value)} />
+        <NumericInput className="input md:col-span-3" placeholder="Monto mínimo" value={minMonto} onValueChange={setMinMonto} />
+        <NumericInput className="input md:col-span-3" placeholder="Monto máximo" value={maxMonto} onValueChange={setMaxMonto} />
         <select className="input md:col-span-3" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
           <option value="recientes">Más recientes</option>
           <option value="antiguos">Más antiguos</option>

@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getActiveOwnerId } from "../../../services/cloudAuth";
-import { buyPlayPremium, managePlaySubscription, playCatalog, playSubscription, restorePlayPurchases, type PlayStatus } from "../../../services/googlePlayBilling";
+import { buyPlayPremium, managePlaySubscription, playCatalog, playSubscription, restorePlayPurchases, refreshPlayPremiumScreen, type PlayStatus } from "../../../services/googlePlayBilling";
 import { ENTITLEMENTS_CHANGED_EVENT } from "../../../services/entitlements";
 import { useMobilePremium } from "../useMobilePremium";
 
@@ -10,24 +10,27 @@ export function MobilePremium() {
   const [catalog,setCatalog]=useState<Awaited<ReturnType<typeof playCatalog>>|null>(null);
   const [catalogOwner,setCatalogOwner]=useState("");
   const [status,setStatus]=useState<PlayStatus|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(""),[notice,setNotice]=useState("");
+  const confirmation=useRef<AbortController|null>(null);
   useEffect(()=>{
-    let active=true;
+    let active=true;const controller=new AbortController();
     setCatalog(null);setCatalogOwner("");setStatus(null);setError("");setNotice("");
     if(owner==="local")return;
+    void refreshPlayPremiumScreen(owner,controller.signal).catch(()=>{});
     const refresh=()=>{void playSubscription(owner).then(value=>{if(active&&getActiveOwnerId()===owner)setStatus(value);}).catch(()=>{});};
     void playCatalog(owner).then(value=>{if(active&&getActiveOwnerId()===owner){setCatalog(value);setCatalogOwner(owner);}}).catch(failure=>{if(active)setError(failure.message);});
     refresh();
     window.addEventListener(ENTITLEMENTS_CHANGED_EVENT,refresh);
-    return()=>{active=false;window.removeEventListener(ENTITLEMENTS_CHANGED_EVENT,refresh);};
+    return()=>{active=false;controller.abort();confirmation.current?.abort();window.removeEventListener(ENTITLEMENTS_CHANGED_EVENT,refresh);};
   },[owner]);
   const currentCatalog=catalogOwner===owner?catalog:null;
   async function run(kind:"buy"|"restore"){
     if(busy||owner==="local")return;setBusy(true);setError("");setNotice("");
+    const controller=new AbortController();confirmation.current=controller;
     try{
-      const result=kind==="restore"?await restorePlayPurchases(owner):currentCatalog?.offers[0]?await buyPlayPremium(owner,currentCatalog.offers[0],currentCatalog.context):null;
+      const result=kind==="restore"?await restorePlayPurchases(owner,controller.signal):currentCatalog?.offers[0]?await buyPlayPremium(owner,currentCatalog.offers[0],currentCatalog.context,controller.signal):null;
       if(getActiveOwnerId()!==owner)return;
       if(result&&"canceled" in result)setNotice("Compra cancelada.");
-      else {if(result&&"pending" in result&&result.pending)setNotice("Compra pendiente. Premium se activará cuando el pago sea confirmado y verificado.");else setNotice("Verificación completada. El plan mostrado depende de tu cuenta.");setStatus(await playSubscription(owner));}
+      else {if(result&&"pending" in result&&result.pending)setNotice("Compra pendiente. Premium se activará cuando el pago sea confirmado y verificado.");else if(result&&"confirming" in result&&result.confirming)setNotice("Confirmando suscripción… Si todavía no se refleja, podés usar Restaurar compras.");else setNotice("Verificación completada. El plan mostrado depende de tu cuenta.");setStatus(await playSubscription(owner));}
     }catch(failure){if(getActiveOwnerId()===owner)setError(failure instanceof Error?failure.message:"No se pudo verificar la compra.");}
     finally{setBusy(false);}
   }
@@ -51,6 +54,7 @@ export function MobilePremium() {
       }}>Administrar suscripción</button>
       <p>La suscripción se administra y cancela desde Google Play. Las compras pertenecen a la cuenta ScisoNomics con la que las hiciste.</p>
     </>}
+    {busy?<p role="status">Confirmando suscripción…</p>:null}
     {notice?<p role="status">{notice}</p>:null}{error?<p role="alert" className="text-red-300">{error}</p>:null}
   </div>;
 }

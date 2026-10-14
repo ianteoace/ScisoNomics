@@ -1,5 +1,7 @@
 "use client";
 
+import { formatNumericInput } from "../../../lib/numericInput";
+import { NumericInput } from "../../ui/NumericInput";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { Categoria, GastoFijo } from "../../../types/domain";
@@ -14,7 +16,7 @@ export function MobileFixedExpenseForm({ categories, row, busy, error, onClose, 
 }) {
   const [category, setCategory] = useState(String(row?.categoria_id ?? ""));
   const [description, setDescription] = useState(row?.descripcion ?? "");
-  const [amount, setAmount] = useState(row ? String(row.monto).replace(".", ",") : "");
+  const [amount, setAmount] = useState(row ? formatNumericInput(row.monto) : "");
   const [day, setDay] = useState(String(row?.dia_vencimiento ?? 1));
   const [active, setActive] = useState(row?.activo ?? 1);
   const [validationError, setValidationError] = useState("");
@@ -30,7 +32,7 @@ export function MobileFixedExpenseForm({ categories, row, busy, error, onClose, 
     <label className="grid gap-1.5 text-sm">Descripción<input className="input min-h-11" autoFocus required maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
     <label className="grid gap-1.5 text-sm">Categoría<select className="input min-h-11" required value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
     {!available.length ? <p className="text-sm text-amber-200">Primero creá una categoría de gasto en Categorías.</p> : null}
-    <label className="grid gap-1.5 text-sm">Monto<input className="input min-h-11" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto<NumericInput className="input min-h-11" required placeholder="0,00" value={amount} onValueChange={setAmount} /></label>
     <label className="grid gap-1.5 text-sm">Día de vencimiento<input className="input min-h-11" inputMode="numeric" required value={day} onChange={(e) => setDay(e.target.value)} /></label>
     <p className="text-sm text-slate-300">Mensual. Si el día no existe en un mes, corresponde al último día de ese mes.</p>
     <label className="grid gap-1.5 text-sm">Estado<select className="input min-h-11" value={active} onChange={(e) => setActive(Number(e.target.value))}><option value={1}>Activo</option><option value={0}>Inactivo</option></select></label>

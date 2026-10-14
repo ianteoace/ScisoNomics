@@ -1,5 +1,7 @@
 "use client";
 
+import { formatNumericInput } from "../../../lib/numericInput";
+import { NumericInput } from "../../ui/NumericInput";
 import { SpanishDateInput } from "../../ui/SpanishDateInput";
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -16,7 +18,7 @@ export function MobileSchedulingForm({ categories, row, busy, error, onClose, on
 }) {
   const [description, setDescription] = useState(row?.descripcion ?? "");
   const [category, setCategory] = useState(String(row?.categoria_id ?? ""));
-  const [amount, setAmount] = useState(row ? String(row.monto_estimado).replace(".", ",") : "");
+  const [amount, setAmount] = useState(row ? formatNumericInput(row.monto_estimado) : "");
   const [date, setDate] = useState(row?.fecha_vencimiento ?? getLocalDateInputValue());
   const [state, setState] = useState<GastoProgramado["estado"]>(row?.estado ?? "pendiente");
   const [recurring, setRecurring] = useState(!!row?.es_recurrente);
@@ -35,7 +37,7 @@ export function MobileSchedulingForm({ categories, row, busy, error, onClose, on
     <label className="grid gap-1.5 text-sm">Descripción<input className="input min-h-11" autoFocus required maxLength={500} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
     <label className="grid gap-1.5 text-sm">Categoría<select className="input min-h-11" required value={category} onChange={(e) => setCategory(e.target.value)}><option value="">Elegí una categoría</option>{available.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
     {!available.length ? <p className="text-sm text-amber-200">Primero creá una categoría de gasto en Categorías.</p> : null}
-    <label className="grid gap-1.5 text-sm">Monto estimado<input className="input min-h-11" inputMode="decimal" required placeholder="0,00" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto estimado<NumericInput className="input min-h-11" required placeholder="0,00" value={amount} onValueChange={setAmount} /></label>
     <div className="grid gap-1.5 text-sm"><p>Fecha de vencimiento</p><SpanishDateInput label="Fecha de vencimiento" className="input min-h-11" required value={date} onChange={setDate} /></div>
     <label className="grid gap-1.5 text-sm">Estado<select className="input min-h-11" value={state} onChange={(e) => setState(e.target.value as GastoProgramado["estado"])}><option value="pendiente">Pendiente</option><option value="pagado">Pagado</option><option value="cancelado">Cancelado</option></select></label>
     <p className="text-xs text-slate-300">Cambiar el estado aquí no registra un movimiento. Usá Marcar pagado para registrar el gasto real.</p>

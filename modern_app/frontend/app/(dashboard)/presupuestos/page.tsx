@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { formatNumericInput } from "../../../lib/numericInput";
+import { NumericInput } from "../../../components/ui/NumericInput";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -98,7 +100,7 @@ export default function PresupuestosPage() {
     setCategoriaId(row.categoria_id);
     setMes(row.mes);
     setAnio(row.anio);
-    setMonto(String(row.monto_presupuestado));
+    setMonto(formatNumericInput(row.monto_presupuestado));
     setOpen(true);
   }
 
@@ -225,7 +227,7 @@ export default function PresupuestosPage() {
             {yearOptions(new Date().getFullYear(), [anio, ...rows.map((r) => r.anio)]).map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 500.000,50" value={monto} onChange={(e) => setMonto(e.target.value)} required />
+          <NumericInput className="input" placeholder="Ej: 500.000,50" value={monto} onValueChange={setMonto} required />
           {!editing && usedPairs.has(`${categoriaId}-${mes}-${anio}`) ? <p className="text-xs text-amber-300">Ya existe para este periodo. Se actualizara al guardar.</p> : null}
           <div className="mt-2 flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={() => setOpen(false)}>Cancelar</button><button className="btn" type="submit">{editing ? "Guardar cambios" : "Crear presupuesto"}</button></div>
         </form>

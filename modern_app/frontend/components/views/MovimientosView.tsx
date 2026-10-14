@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { formatNumericInput } from "../../lib/numericInput";
+import { NumericInput } from "../ui/NumericInput";
 import { useEffect, useMemo, useState } from "react";
 
 import { getLocalDateInputValue } from "../../lib/date";
@@ -87,7 +89,7 @@ export function MovimientosView({ rows, categories, metas, loading, openCreateSi
       tipo: row.tipo,
       categoria_id: cat?.id || null,
       descripcion: row.descripcion || "",
-      monto: String(row.monto),
+      monto: formatNumericInput(row.monto),
       meta_id: row.meta_id || null,
       nota: row.nota || "",
       tag_ids: (row.tags || []).map((t) => t.id),
@@ -177,7 +179,7 @@ export function MovimientosView({ rows, categories, metas, loading, openCreateSi
           <label className="text-xs text-slate-400">Descripcion</label>
           <input className="input" value={form.descripcion} placeholder="Descripcion" onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="text" inputMode="decimal" value={form.monto} placeholder="Ej: 500.000,50" onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
+          <NumericInput className="input" value={form.monto} placeholder="Ej: 500.000,50" onValueChange={(value) => setForm({ ...form, monto: value })} required />
           {form.tipo === "ahorro" ? (
             <>
               <label className="text-xs text-slate-400">Meta de ahorro (opcional)</label>
