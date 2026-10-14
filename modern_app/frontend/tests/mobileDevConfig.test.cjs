@@ -106,7 +106,7 @@ test("Android alone starts the public mobile listener; desktop keeps its origina
   assert.equal(scripts["dev:mobile"], "next dev --webpack -p 3000 --hostname 0.0.0.0");
   assert.equal(desktop.build.beforeDevCommand, "npm run dev");
   assert.equal(desktop.build.devUrl, "http://127.0.0.1:3000");
-  assert.equal(android.build.beforeDevCommand, "npm run dev:mobile");
+  assert.equal(android.build.beforeDevCommand, "node ../scripts/prepare-android-runtime.cjs && npm run dev:mobile");
   assert.equal(android.build.frontendDist, undefined);
   assert.equal(android.bundle.externalBin.length, 0);
   assert.equal(android.identifier, "com.scisoftware.scisonomics");

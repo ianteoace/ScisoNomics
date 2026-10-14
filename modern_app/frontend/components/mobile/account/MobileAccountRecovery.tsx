@@ -5,6 +5,8 @@ import { useMobileAccount } from "./MobileAccountProvider";
 import { isMobileRecoveryBlocked, mobileRecoveryEnabled, MOBILE_RECOVERY_CHANGED } from "../../../services/mobileRecoveryState";
 import { MobileRecoveryError, evaluateRecoveryInventory, findMobileRecovery, keepMobileRecoverySeparate, migrateMobileAccount, type RecoveryCandidate } from "../../../services/data/mobileAccountRecovery";
 
+export const OPEN_MOBILE_RECOVERY_EVENT = "scisonomics:open-mobile-recovery";
+
 export function MobileAccountRecovery() {
   const { session, checking } = useMobileAccount();
   const [revision, setRevision] = useState(0), [candidate, setCandidate] = useState<RecoveryCandidate | null>(null);
@@ -14,7 +16,8 @@ export function MobileAccountRecovery() {
     if (!mobileRecoveryEnabled()) return;
     const changed = () => setRevision(value => value + 1);
     window.addEventListener(MOBILE_RECOVERY_CHANGED, changed);
-    return () => window.removeEventListener(MOBILE_RECOVERY_CHANGED, changed);
+    window.addEventListener(OPEN_MOBILE_RECOVERY_EVENT, changed);
+    return () => { window.removeEventListener(MOBILE_RECOVERY_CHANGED, changed); window.removeEventListener(OPEN_MOBILE_RECOVERY_EVENT, changed); };
   }, []);
   useEffect(() => {
     if (!mobileRecoveryEnabled() || checking) return;

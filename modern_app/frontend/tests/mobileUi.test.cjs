@@ -19,9 +19,10 @@ function stub(filename, exports) {
 stub("./components/account/AccountDevices.tsx", { AccountDevices: () => React.createElement("section", {}, "Dispositivos") });
 const pullState = { snapshot: { cursor: null, categories: [], movements: [] }, calls: [], failure: null };
 class MockMobilePullError extends Error {}
-stub("./services/data/mobileCloudPush.ts", { pushMobileCloudNow: async () => ({uploaded:0,rejected:0,conflicts:0,stillPending:0}) });
+stub("./services/data/mobileCloudPush.ts", { getMobileCloudPending: async () => ({categorias:[],movimientos:[]}), pushMobileCloudNow: async () => ({uploaded:0,rejected:0,conflicts:0,stillPending:0}) });
 stub("./services/data/mobileCloudPull.ts", {
   MobilePullError: MockMobilePullError,
+  getMobilePullCursor: async () => pullState.snapshot.cursor,
   readMobileCloudSnapshot: async () => pullState.snapshot,
   pullMobileCloudNow: async owner => { pullState.calls.push(owner); if (pullState.failure) throw pullState.failure; return {categoriesApplied:1,movementsApplied:1}; },
 });
@@ -90,7 +91,11 @@ function renderer(t, Component, props = {}, nativeRefs = true) {
     const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }; };
     window.sessionStorage = storage(); window.localStorage = storage();
     window.location = { href: 'http://localhost/configuracion', search: '' };
-    window.history = { replaceState: (_state, _title, href) => { const url = new URL(href, window.location.href); window.location = { href: url.href, search: url.search }; } };
+    const entries = [{href:window.location.href,state:null}]; let position = 0;
+    const apply = () => { const url = new URL(entries[position].href); window.location = {href:url.href,search:url.search}; window.history.state=entries[position].state; };
+    window.history = {state:null, replaceState: (state,_title,href) => { entries[position]={href:new URL(href,window.location.href).href,state}; apply(); },
+      pushState: (state,_title,href) => { entries.splice(++position); entries.push({href:new URL(href,window.location.href).href,state}); apply(); },
+      back: () => { if (position) { position--; apply(); window.dispatchEvent(new Event('popstate')); } } };
   }
   global.document = Object.assign(new EventTarget(), { body: { style: { overflow: "scroll" } },
     activeElement: { isConnected: true, focus: () => { restored++; } }, getElementById: () => ({ focus: () => { restored++; } }) });
@@ -831,19 +836,146 @@ test("settings show real version and Premium features from the drawer metadata",
 test("local settings have no cloud pull action, checkout or Windows updater", (t) => {
   pathname = "/configuracion"; const view = renderer(t, MobileApp);
   view.html(); assert.equal(financeEnabled, false);
-  assert.equal(view.find(node => node.type === 'details').length, 4);
-  assert.equal(view.find(node => node.type === 'button' && node.props.children === 'Volver a mostrar guías').length, 1);
+  assert.equal(view.find(node => node.type === 'details').length, 0);
+  assert.equal(view.find(node => node.type === 'button' && node.props.children === 'Volver a mostrar guías').length, 0);
   assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
   assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Crear backup|Continuar con Google|localhost/);
-  selectSettings(view, 'Acerca de');
+  selectSettings(view, 'Legal y privacidad');
   assert.match(view.html(), /scisoftwareco@gmail.com/);
   assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
 });
 
 function selectSettings(view, label) {
-  const button = view.find(n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children[0]?.props?.children === label)[0];
+  if (!view.find(n => n.props['data-settings-row']).length) {
+    const back = view.find(n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children.includes('Volver a Configuración'))[0];
+    assert.ok(back); back.props.onClick();
+  }
+  const titles = {'Acerca de':'Acerca de ScisoNomics','ScisoNomics Premium':'Premium','General':'Preferencias generales'};
+  const button = view.find(n => n.props['data-settings-row'] && n.props.children[0]?.props?.children[0]?.props?.children === (titles[label] || label))[0];
   assert.ok(button, `Missing section ${label}`); button.props.onClick();
 }
+
+test('shared numeric field formats typing, paste and empty deletion; movement saves its numeric value', async t => {
+  let saved;
+  const view=renderer(t,MobileMovementForm,{categories:[{id:1,nombre:'Ingreso QA',tipo:'ingreso'}],initialKind:'ingreso',busy:false,error:'',onSave:async value=>{saved=value;return true;},onClose(){}});
+  const amount=()=>view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];
+  amount().props.onChange({target:{value:'1000',selectionStart:4},nativeEvent:{inputType:'insertText',data:'0'}});
+  assert.equal(amount().props.value,'1.000');
+  amount().props.onChange({target:{value:'1.0000',selectionStart:6},nativeEvent:{inputType:'insertText',data:'0'}});
+  assert.equal(amount().props.value,'10.000');
+  amount().props.onChange({target:{value:'10.000,',selectionStart:7},nativeEvent:{inputType:'insertText',data:','}});
+  assert.equal(amount().props.value,'10.000,');
+  amount().props.onChange({target:{value:'',selectionStart:0},nativeEvent:{inputType:'deleteContentBackward',data:null}});
+  assert.equal(amount().props.value,'');
+  let prevented=false;amount().props.onPaste({clipboardData:{getData:()=> '1,234.56'},preventDefault:()=>{prevented=true;},currentTarget:{value:'',selectionStart:0,selectionEnd:0}});
+  assert(prevented);assert.equal(amount().props.value,'1.234,56');
+  view.find(n=>n.type==='select'&&n.props.children[0]?.props?.children==='Elegí una categoría')[0].props.onChange({target:{value:'1'}});
+  await view.find(n=>n.type==='form')[0].props.onSubmit({preventDefault(){}});
+  assert.equal(saved.monto,1234.56);assert.equal(typeof saved.monto,'number');
+});
+
+test('settings root groups stay compact; Android shortcuts are gated and detail/back preserves the route', async t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const platform = require('../services/platform.ts'), quick = require('../services/mobileQuickEntry.ts');
+  let runtime = 'android', info = 0, added = 0;
+  t.mock.method(platform, 'getRuntimePlatformSync', () => runtime);
+  t.mock.method(quick, 'quickEntryInfo', async () => { info++; return {sdk:33}; });
+  t.mock.method(quick, 'requestQuickEntryTile', async () => { added++; return 'Agregado'; });
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.deepEqual(view.find(n => n.type === 'h2').map(n => n.props.children), ['General','Cuenta y seguridad','Sincronización','Premium y facturación','Información']);
+  assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 1);
+  assert.doesNotMatch(view.html(), /<form|<input|Agregar tile|Restaurar compras|Cerrar sesión|Volver a mostrar guías|<details/);
+  assert.equal(info, 0); assert.equal(added, 0);
+  selectSettings(view, 'Accesos rápidos de Android'); view.html(); view.effects(); await flush();
+  assert.equal(info, 1); assert.equal(added, 0);
+  assert.equal(view.find(n => n.type === 'h2' && n.props.children === 'Accesos rápidos de Android').length, 1);
+  assert.equal(view.find(n => n.type === 'h3').length, 0);
+  assert.equal(view.find(n => n.props['data-settings-row']).length, 0);
+  assert.match(view.html(), /Agregar tile de ingreso/);
+  view.find(n => n.type === 'button' && n.props.children.includes?.('Volver a Configuración'))[0].props.onClick();
+  assert.equal(window.location.search, ''); assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 1);
+  for (runtime of ['ios','browser','desktop']) assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 0);
+  assert.equal(added, 0);
+  const { mobileSettingsFromUrl } = require('../components/mobile/configuracion/MobileSettingsNavigation.tsx');
+  assert.equal(mobileSettingsFromUrl('?section=quick-entry', false), null);
+  assert.equal(mobileSettingsFromUrl('', true), null);
+  assert.equal(mobileSettingsFromUrl('?section=invalid', true), null);
+});
+
+test('settings summaries use internal owner and existing state without login, purchase or cloud sync side effects', async t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const owner = 'internal-qa-owner', account = {user:{id:owner,email:'private@example.test'}};
+  mobileAccountState = {...previous,financialContext:{ownerId:owner,isCurrent:()=>true},financialAccount:account,session:account};
+  const entitlements = require('../services/entitlements.ts'), flags = require('../services/mobileRecoveryState.ts');
+  const pull = require('../services/data/mobileCloudPull.ts'), push = require('../services/data/mobileCloudPush.ts');
+  let plan = 'premium', blocked = false, pending = [], remote = 0, auth = 0, purchase = 0, reads = [];
+  t.mock.method(entitlements, 'getCachedEntitlements', id => { assert.equal(id,owner); return {...mobilePremium,plan}; });
+  t.mock.method(entitlements, 'loadEntitlements', async () => { remote++; });
+  t.mock.method(flags, 'isMobileRecoveryBlocked', () => blocked);
+  t.mock.method(pull, 'getMobilePullCursor', async id => { reads.push(id); return '42'; });
+  t.mock.method(push, 'getMobileCloudPending', async id => { assert.equal(id,owner); return {categorias:pending,movimientos:[]}; });
+  t.mock.method(pull, 'pullMobileCloudNow', async () => { remote++; });
+  t.mock.method(push, 'pushMobileCloudNow', async () => { remote++; });
+  t.mock.method(require('../services/supabaseCloudAuth.ts'), 'signOut', async () => { auth++; });
+  t.mock.method(require('../services/googlePlayBilling.ts'), 'restorePlayPurchases', async () => { purchase++; });
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.match(view.html(), /Sesión iniciada/); assert.doesNotMatch(view.html(), /private@example.test|internal-qa-owner|Sincronizado/);
+  const rowText = id => renderToStaticMarkup(view.find(n => n.props['data-settings-row'] === id)[0]);
+  assert.match(rowText('sync'), /Sin pendientes locales/); assert.match(rowText('suscripcion'), /Activo/);
+  pending = [{sync_error_code:null}]; window.dispatchEvent(new Event(flags.MOBILE_RECOVERY_CHANGED)); view.html(); view.effects(); await flush();
+  assert.match(rowText('sync'), /Pendiente/);
+  pending = [{sync_error_code:'conflict'}]; window.dispatchEvent(new Event(flags.MOBILE_RECOVERY_CHANGED)); view.html(); view.effects(); await flush();
+  assert.match(rowText('sync'), /Requiere atención/);
+  plan = 'free'; blocked = true; window.dispatchEvent(new Event(entitlements.ENTITLEMENTS_CHANGED_EVENT)); view.html(); view.effects(); await flush();
+  assert.match(rowText('suscripcion'), /No activo/); assert.match(rowText('recovery'), /Pendiente/);
+  for (const title of ['Datos y backups','General','Acerca de']) { selectSettings(view,title); view.html(); view.effects(); await flush(); }
+  assert.deepEqual([remote,auth,purchase],[0,0,0]); assert(reads.length > 0);
+  assert.equal(mobileAccountState.session, account);
+});
+
+test('settings keeps saved-session, checking and offline labels separate from active-session claims', async t => {
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  mobileAccountState = {...previous,session:null,financialAccount:{user:{id:'qa'}},financialContext:{ownerId:'qa',isCurrent:()=>true}};
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.match(view.html(), /Cuenta guardada/); assert.doesNotMatch(view.html(), /Sesión iniciada/);
+  mobileAccountState = {...mobileAccountState,checking:true}; assert.match(view.html(), /Comprobando cuenta/);
+  const old = global.navigator;
+  Object.defineProperty(global,'navigator',{value:{onLine:false},configurable:true});
+  t.after(() => Object.defineProperty(global,'navigator',{value:old,configurable:true}));
+  window.dispatchEvent(new Event('offline')); assert.match(view.html(), /Sin conexión/);
+});
+
+test('late local sync metadata cannot leak another owner into the settings summary', async t => {
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const late = deferred(); let current = true;
+  mobileAccountState = {...previous,financialAccount:{user:{id:'old-owner'}},financialContext:{ownerId:'old-owner',isCurrent:()=>current}};
+  t.mock.method(require('../services/data/mobileCloudPull.ts'),'getMobilePullCursor',id => id === 'old-owner' ? late.promise : Promise.resolve(null));
+  const view = renderer(t,MobileSettings); view.html(); view.effects();
+  current = false; mobileAccountState = {...previous,financialAccount:{user:{id:'new-owner'}},financialContext:{ownerId:'new-owner',isCurrent:()=>true}};
+  view.html(); view.effects(); await flush(); assert.match(view.html(), /Sincronización manual/);
+  late.resolve('42'); await flush(); assert.doesNotMatch(view.html(), /Sin pendientes locales/);
+});
+
+test('settings recovery detail requests the single global review host without making recovery decisions', async t => {
+  const {MobileSettings} = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const recovery = require('../components/mobile/account/MobileAccountRecovery.tsx');
+  const service = require('../services/data/mobileAccountRecovery.ts'), flags = require('../services/mobileRecoveryState.ts');
+  let reviews = 0, decisions = 0;
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true); t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{reviews++;});
+  t.mock.method(service,'migrateMobileAccount',async()=>{decisions++;});
+  t.mock.method(service,'keepMobileRecoverySeparate',async()=>{decisions++;});
+  function Screen() { return React.createElement(React.Fragment,{},React.createElement(recovery.MobileAccountRecovery),React.createElement(MobileSettings)); }
+  const view = renderer(t,Screen); view.html(); view.effects(); await flush(); assert.equal(reviews,1);
+  selectSettings(view,'Recuperación de cuenta'); view.html(); view.effects(); await flush(); assert.equal(reviews,1);
+  assert.equal(view.find(n=>n.type==='dialog').length,0);
+  // The global pending warning remains; only the detail's action is selected.
+  const action = view.find(n=>n.type==='button'&&n.props.children==='Revisar datos anteriores').find(n=>n.props.className.includes('w-full'));
+  action.props.onClick(); view.html(); view.effects(); await flush(); assert.equal(reviews,2); assert.equal(decisions,0);
+});
 
 test('recovery UI waits for authorized session, shows only counts and needs explicit consent before migrating',async t=>{
   const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
@@ -879,7 +1011,7 @@ test('settings groups and old deep links select one pane, without duplicate devi
   const view = renderer(t, MobileSettings); window.location.search = '?panel=cuenta'; view.html(); view.effects();
   assert.match(view.html(), /Iniciar sesión o crear cuenta/);
   assert.doesNotMatch(view.html(), /Descargar cambios cloud|<section>Dispositivos/);
-  assert.deepEqual(view.find(n=>n.type==='summary').map(n=>n.props.children), ['Cuenta y nube','Datos y seguridad','Suscripción','Aplicación']);
+  assert.equal(view.find(n=>n.type==='summary').length, 0);
   selectSettings(view, 'Datos y backups'); assert.match(window.location.search, /section=datos/);
   assert.match(view.html(), /Desinstalar la app/); assert.doesNotMatch(view.html(), /Iniciar sesión o crear cuenta/);
   selectSettings(view, 'General'); view.find(n=>n.type==='button'&&n.props.children==='Volver a mostrar guías')[0].props.onClick();
@@ -1094,6 +1226,7 @@ async function premiumView(t, initialStatus='none') {
  t.mock.method(play,'playCatalog',async()=>({context:{productIds:['premium-from-server']},offers:[{formattedPrice:'Precio real de Play'}]}));
  t.mock.method(play,'playSubscription',async()=>({status:state.status,expiresAt:'2030-01-01T00:00:00Z',acknowledged:true,autoRenew:state.status==='active'}));
  t.mock.method(play,'watchPlayPurchases',async()=>({unregister:async()=>{}}));
+ t.mock.method(play,'refreshPlayPremiumScreen',async()=>{});
  t.mock.method(play,'buyPlayPremium',async owner=>{state.calls.push(['buy',owner]);if(state.failure)throw new Error(state.failure);return state.result;});
  t.mock.method(play,'restorePlayPurchases',async owner=>{state.calls.push(['restore',owner]);return {pending:false};});
  t.mock.method(play,'managePlaySubscription',async(owner,product)=>{state.calls.push(['manage',owner,product]);});

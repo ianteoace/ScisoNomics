@@ -6,8 +6,8 @@
     }
   },
   "build": {
-    "beforeDevCommand": "npm run dev:mobile",
-    "beforeBuildCommand": "npm run build:android:production"
+    "beforeDevCommand": "node ../scripts/prepare-android-runtime.cjs && npm run dev:mobile",
+    "beforeBuildCommand": "node ../scripts/prepare-android-runtime.cjs && npm run build:android:production"
   },
   "bundle": {
     "externalBin": [],
