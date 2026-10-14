@@ -12,7 +12,7 @@
   "bundle": {
     "externalBin": [],
     "android": {
-      "versionCode": 3003003,
+      "versionCode": 3003004,
       "debugApplicationIdSuffix": ".debug"
     }
   }

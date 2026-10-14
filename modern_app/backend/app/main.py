@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +68,7 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # expondria superficie interna innecesaria aunque los endpoints tengan token.
 app = FastAPI(
     title="Registro Finanzas API",
-    version="3.3.3",
+    version="3.3.4",
     docs_url=None if _IS_FROZEN else "/docs",
     redoc_url=None if _IS_FROZEN else "/redoc",
     openapi_url=None if _IS_FROZEN else "/openapi.json",
