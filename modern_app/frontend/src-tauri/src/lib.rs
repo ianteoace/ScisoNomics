@@ -1,20 +1,26 @@
+#[cfg(desktop)]
 use std::io::{Read, Write};
+#[cfg(desktop)]
 use std::net::{SocketAddr, TcpStream};
 use std::hash::{Hash, Hasher};
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
-use std::sync::{
-  atomic::{AtomicBool, Ordering},
-  Arc, Condvar, Mutex,
-};
+#[cfg(desktop)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::process::CommandChild;
+#[cfg(desktop)]
+use tauri_plugin_shell::process::CommandEvent;
+#[cfg(desktop)]
 use tauri_plugin_shell::ShellExt;
+#[cfg(desktop)]
 use tauri::{Emitter, Manager};
 use serde::Serialize;
 use zeroize::{Zeroize, Zeroizing};
@@ -23,12 +29,34 @@ mod device_verification;
 mod local_api_token;
 mod supabase_tokens;
 mod supabase_oauth;
+#[cfg(any(windows, test))]
+mod desktop_auth_diag;
+
+#[cfg(windows)]
+#[tauri::command]
+fn log_desktop_auth_diagnostic(payload: serde_json::Value) -> Result<(), String> {
+  let row = desktop_auth_diag::validate(payload).map_err(str::to_string)?;
+  log::info!(target: "desktop_auth", "[auth] {}", row);
+  Ok(())
+}
+#[cfg(any(target_os = "android", test))]
+mod google_oauth_log;
+
+#[cfg(target_os = "android")]
+#[tauri::command]
+async fn log_google_oauth_diagnostic(app: tauri::AppHandle, payload: serde_json::Value) -> Result<(), String> {
+  let payload = google_oauth_log::validate(payload).map_err(str::to_string)?;
+  tauri_plugin_mobile_secure_storage::google_oauth_diagnostic(&app, payload)
+}
+#[cfg(mobile)]
+mod mobile_sql_transaction;
 use device_verification::{ProofChallengeInput, PublicIdentity, Purpose, SignedProof, StoredIdentity};
 
 const CLOUD_REFRESH_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-refresh-token";
 const LEGACY_CLOUD_TOKEN_SERVICE_NAME: &str = "com.scisonomics.desktop.cloud-token";
 const DEVICE_IDENTITY_SERVICE_NAME: &str = "com.scisonomics.desktop.device-identity-v1";
 static DEVICE_IDENTITY_CREATE_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(desktop)]
 fn cloud_api_url() -> &'static str {
   option_env!("NEXT_PUBLIC_SCISONOMICS_CLOUD_API_URL").unwrap_or("")
 }
@@ -87,6 +115,7 @@ struct AppCloseSyncState {
   timeout_ms: u64,
 }
 
+#[cfg(desktop)]
 const APP_CLOSE_SYNC_REQUESTED_EVENT: &str = "scisonomics://app-close-sync-requested";
 const APP_CLOSE_SYNC_TIMEOUT_MS: u64 = 6_000;
 const APP_CLOSE_SYNC_CRITICAL_TIMEOUT_MS: u64 = 10_000;
@@ -526,11 +555,23 @@ fn debug_refresh_keyring_status(account_id: String) -> Result<RefreshKeyringDebu
   })
 }
 
-fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredIdentity>, String> {
+fn device_identity_debug(stage: &'static str) {
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage={stage}");
+  #[cfg(not(all(debug_assertions, target_os = "android")))]
+  let _ = stage;
+}
+
+fn load_account_device_identity(app: &tauri::AppHandle, account_binding: &str) -> Result<Option<StoredIdentity>, String> {
+  device_identity_debug("storage_account_key");
   let storage_key = device_verification::storage_account_key(account_binding)?;
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage=identity_load account_key_length={}", storage_key.len());
   #[cfg(target_os = "windows")]
   let loaded = wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key);
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "android")]
+  let loaded = tauri_plugin_mobile_secure_storage::identity_load(app, &storage_key);
+  #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
   let loaded = {
     let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
     match entry.get_password() {
@@ -539,6 +580,9 @@ fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredId
       Err(_) => Err("device_identity_storage_failed".to_string()),
     }
   };
+  #[cfg(target_os = "ios")]
+  let loaded: Result<Option<String>, String> = Err("device_identity_storage_unavailable".into());
+  let _ = app;
   match loaded.map_err(|_| "device_identity_storage_failed".to_string())? {
     None => Ok(None),
     Some(value) => {
@@ -548,9 +592,12 @@ fn load_account_device_identity(account_binding: &str) -> Result<Option<StoredId
   }
 }
 
-fn persist_account_device_identity(account_binding: &str, identity: &StoredIdentity) -> Result<(), String> {
+fn persist_account_device_identity(app: &tauri::AppHandle, account_binding: &str, identity: &StoredIdentity) -> Result<(), String> {
+  let _ = app;
   let storage_key = device_verification::storage_account_key(account_binding)?;
   let encoded = device_verification::encode_identity(identity)?;
+  #[cfg(all(debug_assertions, target_os = "android"))]
+  log::info!("[device-identity] stage=identity_save encoded_length={}", encoded.len());
   #[cfg(target_os = "windows")]
   {
     wincred_write_secret(
@@ -561,89 +608,135 @@ fn persist_account_device_identity(account_binding: &str, identity: &StoredIdent
     )
     .map_err(|_| "device_identity_storage_failed".to_string())
   }
-  #[cfg(not(target_os = "windows"))]
+  #[cfg(target_os = "android")]
+  { tauri_plugin_mobile_secure_storage::identity_save(app, &storage_key, encoded.as_str()) }
+  #[cfg(target_os = "ios")]
+  { Err("device_identity_storage_unavailable".into()) }
+  #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
   {
     let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
     entry.set_password(encoded.as_str()).map_err(|_| "device_identity_storage_failed".to_string())
   }
 }
 
-fn require_account_device_identity(account_binding: &str) -> Result<StoredIdentity, String> {
-  load_account_device_identity(account_binding)?.ok_or_else(|| "device_identity_missing".to_string())
+fn require_account_device_identity(app: &tauri::AppHandle, account_binding: &str) -> Result<StoredIdentity, String> {
+  load_account_device_identity(app, account_binding)?.ok_or_else(|| "device_identity_missing".to_string())
 }
 
 fn sign_account_device_proof(
+  app: &tauri::AppHandle,
   account_binding: &str,
   purpose: Purpose,
   challenge: &ProofChallengeInput,
 ) -> Result<SignedProof, String> {
-  let identity = require_account_device_identity(account_binding)?;
+  let identity = require_account_device_identity(app, account_binding)?;
   device_verification::sign_proof(&identity, account_binding, purpose, challenge)
 }
 
 #[tauri::command]
-fn get_or_create_account_device_identity(account_binding: String) -> Result<DeviceIdentityResult, String> {
-  device_verification::validate_account_binding(&account_binding)?;
-  let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
-    .lock()
-    .map_err(|_| "device_identity_lock_failed".to_string())?;
-  if let Some(identity) = load_account_device_identity(&account_binding)? {
-    return Ok(DeviceIdentityResult {
-      created: false,
+async fn get_or_create_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<DeviceIdentityResult, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    device_identity_debug("validate_binding");
+    device_verification::validate_account_binding(&account_binding)
+      .inspect_err(|_| device_identity_debug("validate_binding_failed"))?;
+    let _identity_guard = DEVICE_IDENTITY_CREATE_LOCK
+      .lock()
+      .map_err(|_| "device_identity_lock_failed".to_string())?;
+    if let Some(identity) = load_account_device_identity(&app, &account_binding)
+      .inspect_err(|_| device_identity_debug("identity_load_failed"))? {
+      device_identity_debug("identity_loaded");
+      return Ok(DeviceIdentityResult {
+        created: false,
+        identity: device_verification::public_identity(&identity)?,
+      });
+    }
+    device_identity_debug("generate_identity");
+    let identity = device_verification::generate_identity();
+    persist_account_device_identity(&app, &account_binding, &identity)
+      .inspect_err(|_| device_identity_debug("identity_save_failed"))?;
+    device_identity_debug("identity_created");
+    Ok(DeviceIdentityResult {
+      created: true,
       identity: device_verification::public_identity(&identity)?,
-    });
-  }
-  let identity = device_verification::generate_identity();
-  persist_account_device_identity(&account_binding, &identity)?;
-  Ok(DeviceIdentityResult {
-    created: true,
-    identity: device_verification::public_identity(&identity)?,
-  })
+    })
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_enrollment_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::DeviceEnrollment, &challenge)
+async fn sign_device_enrollment_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::DeviceEnrollment, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_authentication_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::DeviceAuthentication, &challenge)
+async fn sign_device_authentication_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::DeviceAuthentication, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_refresh_proof(account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::Refresh, &challenge)
+async fn sign_refresh_proof(app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::Refresh, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
 #[tauri::command]
-fn sign_device_management_proof(
+async fn sign_device_management_proof(
+  app: tauri::AppHandle,
   account_binding: String,
   purpose: String,
   challenge: ProofChallengeInput,
 ) -> Result<SignedProof, String> {
-  sign_account_device_proof(&account_binding, Purpose::management(&purpose)?, &challenge)
+  tauri::async_runtime::spawn_blocking(move || {
+    sign_account_device_proof(&app, &account_binding, Purpose::management(&purpose)?, &challenge)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
 
-#[allow(dead_code)]
 #[tauri::command]
-fn delete_account_device_identity(account_binding: String) -> Result<bool, String> {
-  let storage_key = device_verification::storage_account_key(&account_binding)?;
-  #[cfg(target_os = "windows")]
-  {
-    wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)
-      .map_err(|_| "device_identity_storage_failed".to_string())?;
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
-    let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
-    match entry.delete_credential() {
-      Ok(()) | Err(keyring::Error::NoEntry) => {}
-      Err(_) => return Err("device_identity_storage_failed".to_string()),
-    }
-  }
-  Ok(true)
+async fn sign_account_deletion_proof(
+  app: tauri::AppHandle, account_binding: String, challenge: ProofChallengeInput,
+) -> Result<SignedProof, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let identity = require_account_device_identity(&app, &account_binding)?;
+    device_verification::sign_account_delete(&identity, &account_binding, &challenge)
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
 }
+
+#[tauri::command]
+async fn delete_account_device_identity(app: tauri::AppHandle, account_binding: String) -> Result<bool, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let _ = &app;
+    let storage_key = device_verification::storage_account_key(&account_binding)?;
+    #[cfg(target_os = "windows")]
+    {
+      wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)
+        .map_err(|_| "device_identity_storage_failed".to_string())?;
+    }
+    #[cfg(target_os = "android")]
+    { tauri_plugin_mobile_secure_storage::identity_delete(&app, &storage_key)?; }
+    #[cfg(target_os = "ios")]
+    { return Err("device_identity_storage_unavailable".into()); }
+    #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
+    {
+      let entry = secure_token_entry(DEVICE_IDENTITY_SERVICE_NAME, &storage_key)?;
+      match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(_) => return Err("device_identity_storage_failed".to_string()),
+      }
+    }
+    Ok(true)
+
+  }).await.map_err(|_| "device_identity_task_failed".to_string())?
+}
+
 
 #[tauri::command]
 fn complete_app_close_sync(signal: tauri::State<'_, AppCloseSyncSignal>, success: Option<bool>) {
@@ -667,6 +760,7 @@ fn set_app_close_sync_timeout(signal: tauri::State<'_, AppCloseSyncSignal>, time
 
 type BackendChild = Arc<Mutex<Option<CommandChild>>>;
 
+#[cfg(desktop)]
 fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   let (lock, _) = &*signal.0;
   if let Ok(mut state) = lock.lock() {
@@ -676,6 +770,7 @@ fn reset_app_close_sync(signal: &AppCloseSyncSignal) {
   }
 }
 
+#[cfg(desktop)]
 fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> Option<bool> {
   let (lock, condition) = &*signal.0;
   let Ok(mut state) = lock.lock() else {
@@ -699,14 +794,17 @@ fn wait_for_app_close_sync(signal: &AppCloseSyncSignal) -> Option<bool> {
   }
 }
 
+#[cfg(desktop)]
 fn local_backend_address() -> SocketAddr {
   "127.0.0.1:8000".parse().expect("valid local backend address")
 }
 
+#[cfg(desktop)]
 fn local_port_is_open() -> bool {
   TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(150)).is_ok()
 }
 
+#[cfg(desktop)]
 fn wait_for_local_port_release(timeout: Duration) -> bool {
   let deadline = Instant::now() + timeout;
   while local_port_is_open() {
@@ -718,6 +816,7 @@ fn wait_for_local_port_release(timeout: Duration) -> bool {
   true
 }
 
+#[cfg(desktop)]
 fn request_cooperative_backend_shutdown(local_api_token: &str) -> bool {
   let Ok(mut stream) = TcpStream::connect_timeout(&local_backend_address(), Duration::from_millis(250)) else {
     return false;
@@ -765,11 +864,12 @@ fn backend_process_is_running(pid: u32) -> bool {
   }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(desktop, not(target_os = "windows")))]
 fn backend_process_is_running(_pid: u32) -> bool {
   false
 }
 
+#[cfg(desktop)]
 fn wait_for_backend_exit(pid: u32) {
   let deadline = Instant::now() + Duration::from_secs(3);
   while backend_process_is_running(pid) {
@@ -832,11 +932,12 @@ fn terminate_stale_sidecars() -> usize {
   terminated
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(desktop, not(target_os = "windows")))]
 fn terminate_stale_sidecars() -> usize {
   0
 }
 
+#[cfg(desktop)]
 fn prepare_local_port_for_sidecar() -> bool {
   if !local_port_is_open() {
     return true;
@@ -849,6 +950,7 @@ fn prepare_local_port_for_sidecar() -> bool {
   false
 }
 
+#[cfg(desktop)]
 fn fallback_close_stale_sidecars() {
   log::warn!("Aplicando fallback seguro para cerrar sidecars locales anteriores.");
   terminate_stale_sidecars();
@@ -857,6 +959,7 @@ fn fallback_close_stale_sidecars() {
   }
 }
 
+#[cfg(desktop)]
 fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   let child = match backend_child.lock() {
     Ok(mut guard) => guard.take(),
@@ -897,6 +1000,7 @@ fn stop_backend_sidecar(backend_child: &BackendChild, local_api_token: &str) {
   }
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 async fn prepare_update_install(
   app: tauri::AppHandle,
@@ -924,6 +1028,7 @@ async fn prepare_update_install(
   }).await.map_err(|_| "No se pudo preparar la actualizacion.".to_string())?
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn restart_after_failed_update_install(app: tauri::AppHandle) {
   app.restart();
@@ -937,15 +1042,23 @@ pub fn run() {
     success: false,
     timeout_ms: APP_CLOSE_SYNC_TIMEOUT_MS,
   }), Condvar::new())));
+  #[cfg(desktop)]
   let close_in_progress = Arc::new(AtomicBool::new(false));
   let local_api_token = local_api_token::generate()
     .expect("No se pudo inicializar el servicio local con un token seguro.");
+  #[cfg(desktop)]
   let setup_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let close_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let exit_backend_child = Arc::clone(&backend_child);
+  #[cfg(desktop)]
   let close_app_sync_signal = app_close_sync_signal.clone();
+  #[cfg(desktop)]
   let close_in_progress_for_window = Arc::clone(&close_in_progress);
+  #[cfg(desktop)]
   let close_local_api_token = local_api_token.clone();
+  #[cfg(desktop)]
   let exit_local_api_token = local_api_token.clone();
 
   let builder = tauri::Builder::default();
@@ -958,16 +1071,59 @@ pub fn run() {
       let _ = window.set_focus();
     }
   }));
-  builder
+  let builder = builder
     .plugin(tauri_plugin_deep_link::init())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_opener::init())
-    .plugin(tauri_plugin_updater::Builder::new().build())
+    .plugin(tauri_plugin_opener::init());
+  #[cfg(desktop)]
+  let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_mobile_secure_storage::init());
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_google_play_billing::init());
+  #[cfg(target_os = "android")]
+  let builder = builder.plugin(tauri_plugin_quick_entry::init());
+  #[cfg(mobile)]
+  let builder = builder.plugin(
+    tauri_plugin_sql::Builder::default()
+      .add_migrations("sqlite:scisonomics-mobile.db", vec![tauri_plugin_sql::Migration {
+        version: 1,
+        description: "mobile_finance_core",
+        sql: include_str!("../migrations/0001_mobile_finance.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 2,
+        description: "mobile_planning",
+        sql: include_str!("../migrations/0002_mobile_planning.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 3,
+        description: "mobile_scheduling",
+        sql: include_str!("../migrations/0003_mobile_scheduling.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 4,
+        description: "mobile_cloud_pull",
+        sql: include_str!("../migrations/0004_mobile_cloud_pull.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }, tauri_plugin_sql::Migration {
+        version: 5,
+        description: "mobile_cloud_push",
+        sql: include_str!("../migrations/0005_mobile_cloud_push.sql"),
+        kind: tauri_plugin_sql::MigrationKind::Up,
+      }])
+      .build()
+  );
+  let builder = builder
     .manage(LocalApiToken(local_api_token.clone()))
     .manage(app_close_sync_signal)
     .manage(Arc::clone(&backend_child))
     .invoke_handler(tauri::generate_handler![
+      #[cfg(target_os = "android")]
+      log_google_oauth_diagnostic,
+      #[cfg(mobile)]
+      mobile_sql_transaction::mobile_sql_transaction,
       save_binary_file,
       get_local_api_token,
       enable_windows_data_protection,
@@ -978,6 +1134,8 @@ pub fn run() {
       load_persistent_cloud_refresh_token,
       delete_persistent_cloud_refresh_token,
       supabase_tokens::save_persistent_supabase_refresh_token,
+      #[cfg(windows)]
+      log_desktop_auth_diagnostic,
       supabase_tokens::load_persistent_supabase_refresh_token,
       supabase_tokens::delete_persistent_supabase_refresh_token,
       supabase_oauth::save_pending_supabase_oauth,
@@ -989,9 +1147,13 @@ pub fn run() {
       sign_device_authentication_proof,
       sign_refresh_proof,
       sign_device_management_proof,
+      sign_account_deletion_proof,
+      delete_account_device_identity,
       complete_app_close_sync,
       set_app_close_sync_timeout,
+      #[cfg(desktop)]
       prepare_update_install,
+      #[cfg(desktop)]
       restart_after_failed_update_install
     ])
     .setup(move |app| {
@@ -1013,102 +1175,116 @@ pub fn run() {
             .build(),
         )?;
       }
-
-      if !prepare_local_port_for_sidecar() {
-        app
-          .dialog()
-          .message("El puerto local de ScisoNomics esta ocupado por otro proceso. Cerra otras instancias de ScisoNomics o el servicio que usa el puerto 8000 y volve a abrir la app.")
-          .title("No se pudo iniciar ScisoNomics")
-          .blocking_show();
-        return Ok(());
+      #[cfg(all(windows, not(debug_assertions)))]
+      {
+        // Only validated auth rows; logging failure must not block startup.
+        let _ = app.handle().plugin(desktop_auth_diag::release_logger());
       }
 
-      log::info!("Intentando iniciar sidecar backend: scisonomics-backend");
-      let sidecar_command = match app.shell().sidecar("scisonomics-backend") {
-        Ok(command) => command,
-        Err(error) => {
-          log::error!("No se pudo preparar el comando del sidecar: {error}");
+
+      #[cfg(desktop)]
+      {
+        if !prepare_local_port_for_sidecar() {
+          app
+            .dialog()
+            .message("El puerto local de ScisoNomics esta ocupado por otro proceso. Cerra otras instancias de ScisoNomics o el servicio que usa el puerto 8000 y volve a abrir la app.")
+            .title("No se pudo iniciar ScisoNomics")
+            .blocking_show();
           return Ok(());
         }
-      };
 
-      match sidecar_command
-        .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
-        .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
-        .env("SCISONOMICS_CLOUD_API_URL", cloud_api_url())
-        .spawn() {
-        Ok((mut rx, child)) => {
-          log::info!("Sidecar backend iniciado. PID: {}", child.pid());
-          match setup_backend_child.lock() {
-            Ok(mut guard) => {
-              *guard = Some(child);
-            }
-            Err(error) => {
-              log::error!("No se pudo guardar el handle del sidecar: {error}");
-            }
+        log::info!("Intentando iniciar sidecar backend: scisonomics-backend");
+        let sidecar_command = match app.shell().sidecar("scisonomics-backend") {
+          Ok(command) => command,
+          Err(error) => {
+            log::error!("No se pudo preparar el comando del sidecar: {error}");
+            return Ok(());
           }
-          tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-              match event {
-                CommandEvent::Stdout(line) => {
-                  let line = String::from_utf8_lossy(&line);
-                  log::info!("[sidecar][stdout] {}", line.trim_end());
-                }
-                CommandEvent::Stderr(line) => {
-                  let line = String::from_utf8_lossy(&line);
-                  log::error!("[sidecar][stderr] {}", line.trim_end());
-                }
-                CommandEvent::Error(error) => {
-                  log::error!("[sidecar][error] {error}");
-                }
-                CommandEvent::Terminated(payload) => {
-                  log::warn!(
-                    "[sidecar][terminated] code={:?} signal={:?}",
-                    payload.code,
-                    payload.signal
-                  );
-                }
-                _ => {}
+        };
+
+        match sidecar_command
+          .env("SCISONOMICS_LOCAL_TOKEN", local_api_token.clone())
+          .env("SCISONOMICS_PARENT_PID", std::process::id().to_string())
+          .env("SCISONOMICS_CLOUD_API_URL", cloud_api_url())
+          .spawn() {
+          Ok((mut rx, child)) => {
+            log::info!("Sidecar backend iniciado. PID: {}", child.pid());
+            match setup_backend_child.lock() {
+              Ok(mut guard) => {
+                *guard = Some(child);
+              }
+              Err(error) => {
+                log::error!("No se pudo guardar el handle del sidecar: {error}");
               }
             }
-          });
-        }
-        Err(error) => {
-          log::error!("Fallo al arrancar el sidecar backend: {error}");
+            tauri::async_runtime::spawn(async move {
+              while let Some(event) = rx.recv().await {
+                match event {
+                  CommandEvent::Stdout(line) => {
+                    let line = String::from_utf8_lossy(&line);
+                    log::info!("[sidecar][stdout] {}", line.trim_end());
+                  }
+                  CommandEvent::Stderr(line) => {
+                    let line = String::from_utf8_lossy(&line);
+                    log::error!("[sidecar][stderr] {}", line.trim_end());
+                  }
+                  CommandEvent::Error(error) => {
+                    log::error!("[sidecar][error] {error}");
+                  }
+                  CommandEvent::Terminated(payload) => {
+                    log::warn!(
+                      "[sidecar][terminated] code={:?} signal={:?}",
+                      payload.code,
+                      payload.signal
+                    );
+                  }
+                  _ => {}
+                }
+              }
+            });
+          }
+          Err(error) => {
+            log::error!("Fallo al arrancar el sidecar backend: {error}");
+          }
         }
       }
+      #[cfg(mobile)]
+      log::info!("Mobile runtime: desktop sidecar disabled.");
 
       Ok(())
-    })
-    .on_window_event(move |window, event| {
-      if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-        if close_in_progress_for_window.swap(true, Ordering::SeqCst) {
-          return;
-        }
-        api.prevent_close();
-        reset_app_close_sync(&close_app_sync_signal);
-        let sync_signal = close_app_sync_signal.clone();
-        let backend_child = Arc::clone(&close_backend_child);
-        let local_api_token = close_local_api_token.clone();
-        let window = window.clone();
-        if let Err(error) = window.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ()) {
-          log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
-        }
-        std::thread::spawn(move || {
-          if wait_for_app_close_sync(&sync_signal).is_none() {
-            log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
-          }
-          stop_backend_sidecar(&backend_child, &local_api_token);
-          if let Err(error) = window.close() {
-            log::error!("No se pudo cerrar la ventana despues del shutdown seguro: {error}");
-          }
-        });
+    });
+  #[cfg(desktop)]
+  let builder = builder.on_window_event(move |window, event| {
+    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+      if close_in_progress_for_window.swap(true, Ordering::SeqCst) {
+        return;
       }
-    })
+      api.prevent_close();
+      reset_app_close_sync(&close_app_sync_signal);
+      let sync_signal = close_app_sync_signal.clone();
+      let backend_child = Arc::clone(&close_backend_child);
+      let local_api_token = close_local_api_token.clone();
+      let window = window.clone();
+      if let Err(error) = window.emit(APP_CLOSE_SYNC_REQUESTED_EVENT, ()) {
+        log::warn!("No se pudo solicitar sync app_close al frontend: {error}");
+      }
+      std::thread::spawn(move || {
+        if wait_for_app_close_sync(&sync_signal).is_none() {
+          log::warn!("Timeout esperando sync app_close; continuando cierre seguro.");
+        }
+        stop_backend_sidecar(&backend_child, &local_api_token);
+        if let Err(error) = window.close() {
+          log::error!("No se pudo cerrar la ventana despues del shutdown seguro: {error}");
+        }
+      });
+    }
+  });
+  builder
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
-    .run(move |_app_handle, event| {
-      if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+    .run(move |_app_handle, _event| {
+      #[cfg(desktop)]
+      if matches!(_event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
         stop_backend_sidecar(&exit_backend_child, &exit_local_api_token);
       }
     });
@@ -1117,6 +1293,33 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn device_identity_wincred_roundtrip_and_account_isolation() {
+    let identity = device_verification::generate_identity();
+    let public = device_verification::public_identity(&identity).unwrap();
+    let storage_key = device_verification::storage_account_key(&public.public_key_hash).unwrap();
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+      fn drop(&mut self) {
+        let _ = wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &self.0);
+      }
+    }
+    let _cleanup = Cleanup(storage_key.clone());
+    let encoded = device_verification::encode_identity(&identity).unwrap();
+    wincred_write_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key, encoded.as_str(), "Synthetic device test").unwrap();
+    let loaded = Zeroizing::new(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap().unwrap());
+    let restored = device_verification::decode_identity(loaded.as_str()).unwrap();
+    let restored_public = device_verification::public_identity(&restored).unwrap();
+    assert_eq!(public.device_id, restored_public.device_id);
+    assert_eq!(public.public_key, restored_public.public_key);
+    let other = device_verification::public_identity(&device_verification::generate_identity()).unwrap();
+    let other_key = device_verification::storage_account_key(&other.public_key_hash).unwrap();
+    assert!(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &other_key).unwrap().is_none());
+    wincred_delete_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap();
+    assert!(wincred_read_secret(DEVICE_IDENTITY_SERVICE_NAME, &storage_key).unwrap().is_none());
+  }
 
   #[test]
   fn keyring_refresh_token_roundtrip_dummy() {

@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service android:name="com.scisoftware.quickentry.IncomeQuickTileService"
+            android:exported="true" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:label="@string/sciso_tile_income" android:icon="@drawable/sciso_tile_income">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
+        <service android:name="com.scisoftware.quickentry.ExpenseQuickTileService"
+            android:exported="true" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:label="@string/sciso_tile_expense" android:icon="@drawable/sciso_tile_expense">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
+    </application>
+</manifest>

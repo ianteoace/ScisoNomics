@@ -1,0 +1,19 @@
+{
+  "identifier": "com.scisoftware.scisonomics",
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["scisonomics"], "host": "auth", "path": ["/callback"], "appLink": false }]
+    }
+  },
+  "build": {
+    "beforeDevCommand": "node ../scripts/prepare-android-runtime.cjs && npm run dev:mobile",
+    "beforeBuildCommand": "node ../scripts/prepare-android-runtime.cjs && npm run build:android:production"
+  },
+  "bundle": {
+    "externalBin": [],
+    "android": {
+      "versionCode": 3003004,
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

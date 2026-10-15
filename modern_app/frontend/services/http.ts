@@ -1,4 +1,5 @@
 import { getActiveOwnerId } from "./cloudAuth";
+import { assertDesktopLocalApiAvailable } from "./platform";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 const LOCAL_TOKEN_HEADER = "X-Scisonomics-Local-Token";
@@ -35,6 +36,7 @@ async function loadLocalApiToken(): Promise<string | null> {
 }
 
 export function localOwnerHeaders(extra?: HeadersInit, ownerId?: string): HeadersInit {
+  assertDesktopLocalApiAvailable();
   const headers: Record<string, string> = {
     ...((extra as Record<string, string>) || {}),
     "X-Scisonomics-Owner-Id": ownerId || getActiveOwnerId(),
@@ -44,6 +46,7 @@ export function localOwnerHeaders(extra?: HeadersInit, ownerId?: string): Header
 }
 
 export async function getLocalRequestHeaders(extra?: HeadersInit, ownerId?: string, requireToken = false): Promise<HeadersInit> {
+  assertDesktopLocalApiAvailable();
   const token = await loadLocalApiToken();
   if (requireToken && !token) {
     throw new Error(isRunningInTauri()
@@ -73,6 +76,7 @@ export async function getLocalRequestSecurity(extra?: HeadersInit, ownerId?: str
 }
 
 export function getLocalRequestSecuritySnapshot(ownerId?: string): LocalRequestSecurity {
+  assertDesktopLocalApiAvailable();
   return {
     token_available: Boolean(cachedLocalApiToken),
     token_header_added: Boolean(cachedLocalApiToken),
@@ -130,6 +134,7 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export async function getJSON<T>(path: string): Promise<T> {
+  assertDesktopLocalApiAvailable();
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, { cache: "no-store", headers: await getLocalRequestHeaders() });
@@ -140,6 +145,7 @@ export async function getJSON<T>(path: string): Promise<T> {
 }
 
 export async function sendJSON<T>(path: string, method: string, body?: unknown): Promise<T> {
+  assertDesktopLocalApiAvailable();
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, {

@@ -12,7 +12,7 @@ fn valid_key(key: &str) -> bool {
 
 fn read(key: &str) -> Result<Option<String>, String> {
   #[cfg(target_os = "windows")]
-  { super::wincred_read_secret(SERVICE, key) }
+  { super::wincred_read_secret(SERVICE, key).map_err(|error| { super::desktop_auth_diag::storage_failure("load", key, &error); error }) }
   #[cfg(not(target_os = "windows"))]
   {
     let entry = super::secure_token_entry(SERVICE, key)?;
@@ -32,7 +32,7 @@ pub fn save_persistent_supabase_refresh_token(account_id: String, token: String)
   }
   #[cfg(target_os = "windows")]
   super::wincred_write_secret(SERVICE, &account_id, &token, "ScisoNomics Supabase refresh token")
-    .map_err(|_| "supabase_secure_write_failed".to_string())?;
+    .map_err(|error| { super::desktop_auth_diag::storage_failure("save", &account_id, &error); "supabase_secure_write_failed".to_string() })?;
   #[cfg(not(target_os = "windows"))]
   super::secure_token_entry(SERVICE, &account_id)?.set_password(&token)
     .map_err(|_| "supabase_secure_write_failed".to_string())?;
@@ -61,7 +61,7 @@ pub fn load_persistent_supabase_refresh_token(account_id: String) -> Result<Pers
 pub fn delete_persistent_supabase_refresh_token(account_id: String) -> Result<PersistentCloudTokenDeleteResult, String> {
   if !valid_key(&account_id) { return Err("invalid_supabase_storage_input".to_string()); }
   #[cfg(target_os = "windows")]
-  super::wincred_delete_secret(SERVICE, &account_id).map_err(|_| "supabase_secure_delete_failed".to_string())?;
+  super::wincred_delete_secret(SERVICE, &account_id).map_err(|error| { super::desktop_auth_diag::storage_failure("delete", &account_id, &error); "supabase_secure_delete_failed".to_string() })?;
   #[cfg(not(target_os = "windows"))]
   match super::secure_token_entry(SERVICE, &account_id)?.delete_credential() {
     Ok(()) | Err(keyring::Error::NoEntry) => {},
@@ -82,6 +82,32 @@ mod tests {
     assert!(valid_key(&format!("{}::sciso-owner-42", "a".repeat(64))));
     for invalid in ["local", "sub", "project::owner", ""] { assert!(!valid_key(invalid)); }
     assert!(!valid_key(&format!("{}::local", "a".repeat(64))));
+  }
+
+  #[cfg(windows)]
+  #[test]
+  fn fresh_process_reads_persisted_credential() {
+    const CHILD_KEY: &str = "SCISONOMICS_AUTH_TEST_CHILD_KEY";
+    const DUMMY: &str = "isolated-auth-test-fixture";
+    if let Ok(key) = std::env::var(CHILD_KEY) {
+      // The child can only read the disposable namespace created by this test.
+      assert!(valid_key(&key) && key.starts_with(&format!("{}::auth-test-process-", "a".repeat(64))));
+      let loaded = load_persistent_supabase_refresh_token(key).unwrap();
+      assert!(loaded.found && loaded.token.as_deref() == Some(DUMMY));
+      return;
+    }
+    let key = format!("{}::auth-test-process-{}-{}", "a".repeat(64), std::process::id(),
+      std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    struct Cleanup(String);
+    impl Drop for Cleanup { fn drop(&mut self) { let _ = delete_persistent_supabase_refresh_token(self.0.clone()); } }
+    let _cleanup = Cleanup(key.clone());
+    assert!(save_persistent_supabase_refresh_token(key.clone(), DUMMY.into()).unwrap().roundtrip);
+    assert_eq!(super::super::wincred_target_name(SERVICE, &key), format!("scisonomics::{SERVICE}::{key}"));
+    use std::os::windows::process::CommandExt;
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+      .args(["--exact", "supabase_tokens::tests::fresh_process_reads_persisted_credential"])
+      .env(CHILD_KEY, key).creation_flags(0x08000000).output().unwrap();
+    assert!(result.status.success(), "isolated credential did not survive a fresh process");
   }
 
   #[test]

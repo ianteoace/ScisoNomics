@@ -29,6 +29,14 @@ produccion fuera de Git; no copiarlas a ejemplos, issues ni resultados publicado
 
 ## Controles incorporados
 
+- Eliminación de cuenta con grant trusted, OTP específico y firma Ed25519 nativa
+  en dominio `delete_account`, independiente del contrato Device Proof V1.
+  Borrado interno transaccional, revocación de familias/dispositivos, barrera contra
+  bootstrap de identidades eliminadas y reintento externo server-side. Billing y
+  evidencia de seguridad se separan/minimizan; no se cancela Mercado Pago ni se
+  borra SQLite local. Ver [ACCOUNT_DELETION.md](docs/ACCOUNT_DELETION.md), incluidos
+  los pendientes de retención/legal y credencial Supabase administrativa opcional.
+
 - Passwords nuevas derivadas con scrypt; hashes PBKDF2 anteriores se migran al iniciar sesion.
 - Access tokens de corta duracion con emisor, audiencia, tipo y `jti` validados.
 - Refresh tokens rotativos con deteccion de reutilizacion y revocacion de toda la familia.
@@ -81,7 +89,8 @@ schedule semanal existente; no se activa por tags. Conserva solo
   secretos configurados de ScisoNomics/Tauri, admin JSON y URLs PostgreSQL.
   Las excepciones cubren solo fixtures ficticios concretos; no se excluyen
   directorios de codigo, tests ni commits completos.
-- `application-security`: tests de seguridad Python, smoke imports del backend
+- `application-security`: tests de seguridad Python y autorizacion de dispositivos,
+  smoke imports del backend
   local (`finance_app.services` y `modern_app.backend.app.main`) desde el
   checkout limpio, y `finance_app.test_restore_validation` para backup/restore.
   El smoke no inicia el servidor ni necesita secretos; los logs de importacion
@@ -131,6 +140,34 @@ bloquear CI. Esto no elimina los warnings ni resuelve el problema de `glib`.
 
 ## Respuesta a incidentes
 
+### Dispositivos cloud — Milestone 8
+
+Windows y Android usan el mismo protocolo Ed25519 por cuenta para enrollment,
+login conocido, refresh, rename y revoke. La clave privada permanece en WinCred
+o cifrada con Android Keystore, fuera de JavaScript y SQLite financiera.
+El nuevo dispositivo requiere OTP backend de seis digitos, TTL 10 minutos,
+cinco intentos, reenvio con cooldown de 60 segundos y cuotas por cuenta.
+Solo se guardan hashes/HMAC del codigo, continuacion y nonce; no se loggean.
+Se reutiliza Resend/SMTP y el email confirmado por Supabase.
+
+La proteccion aplica al backend: grants cortos ligados a dispositivo/familia,
+comprobacion de revocacion por request y proofs consumidos atomicamente.
+Refresh Supabase solo no restaura la sesion. Revocar exige nueva verificacion
+y elimina la sesion persistida al fallar refresh, sin borrar datos locales.
+Renombrar y revocar firman proposito, familia y target; revocar el actual exige
+confirmacion. No se usan fingerprints ni la telemetria `cloud_devices` como trust.
+
+El modo predeterminado ahora es `enforce`. `off` solo es rollback explicito sin
+esta proteccion; clientes nuevos lo rechazan. Las sesiones antiguas sin familia
+requieren re-login y OTP. iOS/Keychain y login cloud browser quedan pendientes y
+fallan cerrados. Un dispositivo/WebView comprometido y el robo simultaneo de
+grant/clave/email no estan resueltos por esta capa. Logout local no equivale a
+revocacion remota; usar Dispositivos si se sospecha robo.
+
+Ver [flujo, recuperacion, amenazas, rollout y evidencia](docs/device-verification/DEVICE_AUTHORIZATION.md).
+El milestone sigue abierto hasta verificar correo real, restauracion y revocacion
+entre PC/Android reales y un segundo perfil Windows. No se modifico produccion.
+
 Si se sospecha el robo de un secreto o una sesion:
 
 1. Rotar inmediatamente el secreto o token afectado.
@@ -138,6 +175,28 @@ Si se sospecha el robo de un secreto o una sesion:
 3. Revisar `security_audit_log` y los logs del proveedor sin exportar datos financieros.
 4. Notificar a los usuarios afectados y forzar un nuevo inicio de sesion.
 5. Conservar evidencia minimizada y documentar la causa y la correccion.
+
+## Google Play Billing (M10B)
+
+Android usa Billing Library 9.1.0 mediante un plugin nativo exclusivo de Android.
+Una compra local nunca concede Premium: el backend consulta Google, valida
+package/producto y ownership HMAC, y confirma el acknowledgement antes de
+proyectar el entitlement comun de Google, Mercado Pago y grants manuales.
+Los tokens de compra se almacenan cifrados con AES-GCM y hash unico; las
+credenciales administrativas permanecen exclusivamente en el servidor.
+
+RTDN exige OIDC de Pub/Sub, audience, cuenta de servicio y subscription exactos,
+y vuelve a consultar Google. Locks y generaciones impiden que respuestas viejas
+sobrescriban resultados nuevos. Las cuentas eliminadas solo conservan el archivo
+comercial minimizado y nunca se recrean mediante notificaciones.
+Android verifica la misma clave publica RSA de licencias que desktop; el cache
+firmado vence en un maximo de 24 horas y no permite conceder Premium offline.
+
+CI incluye las pruebas backend Google Play. Las pruebas locales tambien cubren
+ownership, estados, reconciliacion, borrado, cache firmado y bridge Android.
+La compra real y RTDN requieren configurar Play Console y staging; no se afirma
+que se hayan validado con el proveedor real.
+Ver [configuracion, amenazas y checklist](docs/GOOGLE_PLAY_BILLING.md).
 
 ## Reporte responsable
 

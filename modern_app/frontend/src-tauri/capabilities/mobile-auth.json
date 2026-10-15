@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-auth",
+  "description": "Acceso Android al refresh token Supabase protegido con Keystore.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "mobile-secure-storage:allow-save",
+    "mobile-secure-storage:allow-load",
+    "mobile-secure-storage:allow-delete"
+  ]
+}

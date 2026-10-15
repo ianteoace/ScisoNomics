@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.app" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">#020617</item>
+        <item name="android:windowSplashScreenBackground">#020617</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="android:statusBarColor">#020617</item>
+        <item name="android:navigationBarColor">#020617</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

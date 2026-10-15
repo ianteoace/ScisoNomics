@@ -1,0 +1,1259 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { test } = require("node:test");
+const React = require("react");
+const { renderToStaticMarkup } = require("react-dom/server");
+const ts = require("typescript");
+const root = path.resolve(__dirname, "..");
+for (const extension of [".ts", ".tsx"]) require.extensions[extension] = (module, filename) => {
+  module._compile(ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true }, fileName: filename,
+  }).outputText, filename);
+};
+require.extensions[".css"] = (module) => { module.exports = { dialog: "dialog", drawer: "drawer", mobile: "mobile", content: "content", header: "header" }; };
+function stub(filename, exports) {
+  const resolved = filename.startsWith(".") ? path.resolve(root, filename) : require.resolve(filename);
+  require.cache[resolved] = { id: resolved, filename: resolved, loaded: true, exports };
+}
+stub("./components/account/AccountDevices.tsx", { AccountDevices: () => React.createElement("section", {}, "Dispositivos") });
+const pullState = { snapshot: { cursor: null, categories: [], movements: [] }, calls: [], failure: null };
+class MockMobilePullError extends Error {}
+stub("./services/data/mobileCloudPush.ts", { getMobileCloudPending: async () => ({categorias:[],movimientos:[]}), pushMobileCloudNow: async () => ({uploaded:0,rejected:0,conflicts:0,stillPending:0}) });
+stub("./services/data/mobileCloudPull.ts", {
+  MobilePullError: MockMobilePullError,
+  getMobilePullCursor: async () => pullState.snapshot.cursor,
+  readMobileCloudSnapshot: async () => pullState.snapshot,
+  pullMobileCloudNow: async owner => { pullState.calls.push(owner); if (pullState.failure) throw pullState.failure; return {categoriesApplied:1,movementsApplied:1}; },
+});
+let pathname = "/dashboard";
+const router = { replace: (href) => { pathname = href; } };
+stub("next/navigation", { usePathname: () => pathname, useRouter: () => router });
+stub("next/link", { __esModule: true, default: ({ href, onClick, prefetch, children, ...props }) => React.createElement("a", {
+  ...props, href, onClick: () => { onClick?.(); pathname = href; },
+}, children) });
+const rechartsProps={};
+stub("recharts", Object.fromEntries(["LineChart","Line","XAxis","YAxis","Tooltip","CartesianGrid"].map(name=>[name,(props)=>{rechartsProps[name]=props;return React.createElement('div',{'data-chart':name,'data-width':props.width,'data-height':props.height},props.children);}] )));
+const emptyStatistics={summary:{saldo_inicial:0,ingreso:0,gasto:0,balance_final:0},month_totals:{ingreso:0,gasto:0,ahorro:0,inversion:0,balance:0},expenses_by_category:[],trend:Array.from({length:12},(_,i)=>({mes:i+1,ingresos:0,gastos:0})),planificacion:{total_vencido:0,total_pendiente_30_dias:0,total_pagado_mes:0,balance_proyectado_mes:0}};
+const emptyReport={month:10,year:2026,ingresos:0,gastos:0,ahorro:0,inversiones:0,balance_operativo:0,disponible_luego_ahorro:0,top_categorias:[],top_movimientos:[],evolucion_ultimos_6_meses:[],presupuestos_excedidos:[],metas:[]};
+const emptyAnnual=require('../services/data/financeAnalytics.ts').buildAnnualStatistics(2026,[],[]);
+let analytics={data:{statistics:emptyStatistics,rows:[],monthly:emptyReport},loading:false,error:'',reload(){}};
+stub('./components/mobile/useMobileAnalytics.ts',{useMobileAnalytics:kind=>({...analytics,data:kind==='statistics'?{statistics:analytics.data?.statistics,rows:analytics.data?.rows}:kind==='monthly'?{monthly:analytics.data?.monthly}:{annual:analytics.data?.annual}})});
+const summary = { ingresos: 10000, gastos: 2500, ahorros: 200, inversiones: 300, saldoInicial: 700, saldo: 7700, balance: 7500 };
+const finance = { period: "2026-10", data: { categories: [{ id: 1, nombre: "Ingreso Mobile", tipo: "ingreso" }], movements: [], summary, fixedExpenses: [], budgets: [], goals: [], scheduled: [], projection: { total_vencido: 0, total_pendiente_30_dias: 0, total_pagado_mes: 0, balance_proyectado_mes: 0 }, calendar: [] },
+  loading: false, busy: false, error: "", notice: "", setPeriod() {}, clearMessages() {}, reload() {}, mutate: async () => true };
+let financeEnabled;
+const localFinancialContext = { ownerId: "local", isCurrent: () => true };
+let mobileAccountState = { financialContext: localFinancialContext, financialReady: true, financialAccount: null, session: null, checking: false, error: "", refresh: async () => {} };
+stub("./components/mobile/account/MobileAccountProvider.tsx", { useMobileAccount: () => mobileAccountState });
+stub("./components/mobile/useMobileFinance.ts", { useMobileFinance: (enabled) => { financeEnabled = enabled; return finance; } });
+let mobilePremium={plan:"premium",status:"active",features:{budgets:true,saving_goals:true,fixed_expenses:true,planning:true},expires_at:null};
+stub("./components/mobile/useMobilePremium.ts", {useMobilePremium:()=>mobilePremium});
+const { MobileApp } = require("../components/mobile/MobileApp.tsx");
+test('Premium modules are gated by account entitlement while free navigation stays available',t=>{
+ const previous=mobilePremium;mobilePremium={plan:'free',status:'active',features:{budgets:false,saving_goals:false,fixed_expenses:false,planning:false},expires_at:null};
+ t.after(()=>{mobilePremium=previous;pathname='/dashboard';});
+ pathname='/presupuestos';const blocked=renderToStaticMarkup(React.createElement(MobileApp));
+ assert.match(blocked,/requiere Premium vigente/);assert.match(blocked,/Abrir menú/);assert.doesNotMatch(blocked,/Nuevo presupuesto/);
+ pathname='/dashboard';assert.doesNotMatch(renderToStaticMarkup(React.createElement(MobileApp)),/requiere Premium vigente/);
+});
+
+test('account deletion has explicit consequences, exact typed confirmation and OTP; errors preserve the account',async t=>{
+ const cloud=require('../services/cloudAuth.ts'),service=require('../services/accountDeletion.ts');
+ t.mock.method(cloud,'getActiveOwnerId',()=> 'internal-delete-owner');
+ const oldWindow=global.window;global.window=new EventTarget();t.after(()=>{global.window=oldWindow;});
+ const intent={requestId:'test-intent',capability:'memory-only',expiresIn:300,resendAvailableIn:60};let requested=0,confirmed=0;
+ t.mock.method(service,'requestAccountDeletion',async owner=>{assert.equal(owner,'internal-delete-owner');requested++;return intent;});
+ t.mock.method(service,'accountDeletionOperation',()=>({complete:async(code,text)=>{confirmed++;assert.equal(code,'123456');assert.equal(text,'ELIMINAR');throw new Error('El código no es correcto.');}}));
+ const {AccountDeletionDialog}=require('../components/account/AccountDeletionDialog.tsx');
+ const view=renderer(t,AccountDeletionDialog,{ownerId:'internal-delete-owner'},false);view.html();view.effects();
+ view.find(n=>n.type==='button'&&n.props.children==='Eliminar mi cuenta')[0].props.onClick();
+ assert.match(view.html(),/irreversible respecto a cloud/);assert.match(view.html(),/no se eliminan automáticamente/);assert.match(view.html(),/no cancela suscripciones/);assert.match(view.html(),/Google Play/);
+ assert.doesNotMatch(view.html(),/internal-delete-owner|memory-only/);
+ view.find(n=>n.type==='button'&&n.props.children==='Continuar y enviar código')[0].props.onClick();await flush();view.html();assert.equal(requested,1);
+ const confirm=()=>view.find(n=>n.type==='button'&&n.props.children==='Eliminar cuenta y datos cloud')[0];
+ assert.equal(confirm().props.disabled,true);const inputs=view.find(n=>n.type==='input');
+ inputs.find(n=>n.props.autoComplete==='one-time-code').props.onChange({target:{value:'123456'}});
+ inputs.find(n=>n.props.autoComplete==='off').props.onChange({target:{value:'ELIMINAR'}});
+ assert.equal(confirm().props.disabled,false);confirm().props.onClick();await flush();
+ assert.equal(confirmed,1);assert.match(view.html(),/El código no es correcto/);assert.match(view.html(),/Eliminar cuenta y datos cloud/);
+});
+const { MobileDialog } = require("../components/mobile/MobileDialog.tsx");
+const { MobileMovementForm } = require("../components/mobile/movimientos/MobileMovementForm.tsx");
+const { compatibleCategories, formatMobileDate } = require("../components/mobile/mobileUi.ts");
+const { getLocalDateInputValue } = require("../lib/date.ts");
+
+function renderer(t, Component, props = {}, nativeRefs = true) {
+  const slots = new Map(), viewportStyles = {}; let current, pending = [], shown = 0, closed = 0, restored = 0;
+  const oldDocument = global.document, oldWindow = global.window;
+  if (!global.window) {
+    global.window = new EventTarget();
+    const storage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }; };
+    window.sessionStorage = storage(); window.localStorage = storage();
+    window.location = { href: 'http://localhost/configuracion', search: '' };
+    const entries = [{href:window.location.href,state:null}]; let position = 0;
+    const apply = () => { const url = new URL(entries[position].href); window.location = {href:url.href,search:url.search}; window.history.state=entries[position].state; };
+    window.history = {state:null, replaceState: (state,_title,href) => { entries[position]={href:new URL(href,window.location.href).href,state}; apply(); },
+      pushState: (state,_title,href) => { entries.splice(++position); entries.push({href:new URL(href,window.location.href).href,state}); apply(); },
+      back: () => { if (position) { position--; apply(); window.dispatchEvent(new Event('popstate')); } } };
+  }
+  global.document = Object.assign(new EventTarget(), { body: { style: { overflow: "scroll" } },
+    activeElement: { isConnected: true, focus: () => { restored++; } }, getElementById: () => ({ focus: () => { restored++; } }) });
+  t.mock.method(React, "useState", (initial) => {
+    const instance = current, index = instance.cursor++;
+    if (!(index in instance.values)) instance.values[index] = typeof initial === "function" ? initial() : initial;
+    return [instance.values[index], (value) => { instance.values[index] = typeof value === "function" ? value(instance.values[index]) : value; }];
+  });
+  t.mock.method(React, "useRef", (initial) => {
+    if (nativeRefs) return { current: { style: { setProperty: (name, value) => { viewportStyles[name] = value; } }, showModal: () => { shown++; }, close: () => { closed++; } } };
+    const instance = current, index = instance.cursor++;
+    if (!(index in instance.values)) instance.values[index] = { current: initial };
+    return instance.values[index];
+  });
+  t.mock.method(React, "useId", () => "dialog-title");
+  t.mock.method(React, "useCallback", (callback, deps) => {
+    const instance = current, index = instance.cursor++, previous = instance.values[index];
+    if (!previous || deps.some((value, i) => value !== previous.deps[i])) instance.values[index] = { deps, callback };
+    return instance.values[index].callback;
+  });
+  t.mock.method(React, "useSyncExternalStore", (_subscribe, getSnapshot) => getSnapshot());
+  t.mock.method(React, "useEffect", (callback, deps) => {
+    const instance = current, index = instance.cursor++, previous = instance.values[index];
+    if (!previous || deps.some((value, i) => value !== previous.deps[i])) pending.push(() => {
+      previous?.cleanup?.(); instance.values[index] = { deps, cleanup: callback() };
+    });
+  });
+  function resolve(node, key) {
+    if (Array.isArray(node)) return node.map((child, i) => resolve(React.isValidElement(child) ? React.cloneElement(child, { key: child.key ?? i }) : child, `${key}.${i}`));
+    if (!React.isValidElement(node)) return node;
+    if (typeof node.type === "function") {
+      const instanceKey = `${key}:${node.type.name}`;
+      if (!slots.has(instanceKey)) slots.set(instanceKey, { values: [], cursor: 0 });
+      current = slots.get(instanceKey); current.cursor = 0;
+      const resolved = resolve(node.type(node.props), `${instanceKey}.render`);
+      return React.isValidElement(resolved) && node.key != null ? React.cloneElement(resolved, { key: node.key }) : resolved;
+    }
+    return React.cloneElement(node, {}, resolve(node.props.children, `${key}.children`));
+  }
+  const tree = () => resolve(React.createElement(Component, props), "root");
+  function all(node, predicate) {
+    if (Array.isArray(node)) return node.flatMap((child) => all(child, predicate));
+    if (!React.isValidElement(node)) return [];
+    return [...(predicate(node) ? [node] : []), ...all(node.props.children, predicate)];
+  }
+  const fixtureWindow = global.window;
+  function dispose() {
+    const currentWindow = global.window; global.window = fixtureWindow;
+    try { for (const instance of slots.values()) for (const value of instance.values) { value?.cleanup?.(); if (value?.cleanup) value.cleanup = undefined; } }
+    finally { global.window = currentWindow; }
+  }
+  t.after(() => { dispose(); global.document = oldDocument; if (!oldWindow) global.window = oldWindow; });
+  return { tree, html: () => renderToStaticMarkup(tree()), find: (predicate) => all(tree(), predicate),
+    effects: () => { const callbacks = pending; pending = []; callbacks.forEach((callback) => callback()); },
+    dispose, viewportStyles, counts: () => ({ shown, closed, restored }) };
+}
+
+function quickEntryUi(t, type) {
+  const quick = require('../services/mobileQuickEntry.ts');
+  const platform = require('../services/platform.ts');
+  const oldAccount = mobileAccountState, oldPath = pathname;
+  t.after(() => { mobileAccountState = oldAccount; pathname = oldPath; });
+  mobileAccountState = { ...oldAccount, checking: false, error: '', financialReady: true };
+  pathname = '/movimientos';
+  t.mock.method(platform, 'getRuntimePlatformSync', () => 'android');
+  t.mock.method(require('../services/mobileRecoveryState.ts'), 'isMobileRecoveryBlocked', () => false);
+  t.mock.method(quick, 'startQuickEntryBridge', () => () => {});
+  let pending = type ? { id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', type, expiresAt:Date.now()+120000 } : null;
+  let consumed = 0;
+  t.mock.method(quick, 'getPendingQuickEntry', () => pending);
+  t.mock.method(quick, 'consumeQuickEntry', async () => { consumed++; return true; });
+  t.mock.method(quick, 'finishQuickEntry', () => { pending = null; });
+  return { consumed:()=>consumed, emit:type=>{ pending = { id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',type,expiresAt:Date.now()+120000 }; } };
+}
+
+for (const [type, expected] of [['income','ingreso'], ['expense','gasto']]) test(`tile ${type} opens a blank create form with normal save and amount focus`, async t => {
+  const state = quickEntryUi(t,type); let saves = 0;
+  t.mock.method(finance,'mutate',async () => { saves++; return true; });
+  const view = renderer(t,MobileApp); view.html(); view.effects(); await flush(); view.html(); view.effects();
+  const dialog = view.find(n=>n.type==='dialog'); assert.equal(dialog.length,1);
+  const kind = view.find(n=>n.type==='select'&&Array.isArray(n.props.children)&&n.props.children.some(c=>c?.props?.value==='ingreso'))[0];
+  assert.equal(kind.props.value,expected);
+  const amount = view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];
+  assert.equal(amount.props.value,''); assert.equal(amount.props.autoFocus,true);
+  assert.equal(state.consumed(),1); assert.equal(saves,0);
+  assert.equal(view.find(n=>n.type==='button'&&n.props.type==='submit').length,1);
+});
+
+test('quick entry never overrides an existing draft or opens stacked dialogs',async t=>{
+  const state=quickEntryUi(t);const view=renderer(t,MobileApp);view.html();view.effects();
+  view.find(n=>n.type==='button'&&n.props.children==='Agregar movimiento')[0].props.onClick();
+  view.html();view.effects();
+  view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.onChange({target:{value:'125'}});
+  state.emit('income');view.html();view.effects();await flush();
+  assert.equal(state.consumed(),0);assert.equal(view.find(n=>n.type==='dialog').length,1);
+  assert.equal(view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.value,'125');
+});
+
+for(const blocked of ['hydration','auth','device','recovery','login-dialog','stale-owner'])test(`quick entry waits for ${blocked} instead of bypassing it`,async t=>{
+  const state=quickEntryUi(t,'income');
+  if(blocked==='hydration')mobileAccountState={...mobileAccountState,checking:true};
+  if(blocked==='auth')mobileAccountState={...mobileAccountState,error:'Account needs attention'};
+  if(blocked==='device')t.mock.method(require('../services/supabaseCloudAuth.ts'),'getPendingDeviceState',()=>({required:true}));
+  if(blocked==='recovery')t.mock.method(require('../services/mobileRecoveryState.ts'),'isMobileRecoveryBlocked',()=>true);
+  if(blocked==='stale-owner')mobileAccountState={...mobileAccountState,financialContext:{ownerId:'local',isCurrent:()=>false}};
+  const view=renderer(t,MobileApp);if(blocked==='login-dialog')document.querySelector=()=>({});
+  view.html();view.effects();await flush();assert.equal(state.consumed(),0);assert.equal(view.find(n=>n.type==='dialog').length,0);
+});
+
+test('initial quick type never overrides an edited movement',t=>{
+  const view=renderer(t,MobileMovementForm,{categories:[],movement:{tipo:'gasto',monto:50,fecha:'2026-10-01'},initialKind:'ingreso',focusAmount:true,busy:false,error:'',onSave:async()=>true,onClose(){}});
+  assert.equal(view.find(n=>n.type==='select')[0].props.value,'gasto');
+  assert.equal(view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0].props.autoFocus,false);
+});
+
+test("mobile dialog follows the keyboard viewport and cleans up without losing focus or scroll", t => {
+  t.mock.method(require('../services/platform.ts'), 'getRuntimePlatformSync', () => 'android');
+  const view = renderer(t, MobileDialog, { title: 'Verificar dispositivo', onClose() {} });
+  const viewport = new EventTarget(); viewport.height = 300; viewport.offsetTop = 20;
+  window.visualViewport = viewport;
+  let closeSignals = 0;
+  window.addEventListener('scisonomics:mobile-dialog-closed', () => { closeSignals++; });
+  view.html(); view.effects();
+  const node = view.find(n => n.type === 'dialog')[0];
+  assert.equal(node.props['data-mobile-ui'], ''); assert.match(node.props.className, /mobile/);
+  assert.equal(view.find(n => n.props['data-mobile-icon'] === '').length, 1);
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '300px');
+  assert.equal(view.viewportStyles['--mobile-viewport-top'], '20px');
+  viewport.height = 250; viewport.dispatchEvent(new Event('resize'));
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '250px');
+  view.dispose(); viewport.height = 500; viewport.dispatchEvent(new Event('resize'));
+  assert.equal(view.viewportStyles['--mobile-viewport-height'], '250px');
+  assert.deepEqual(view.counts(), { shown: 1, closed: 1, restored: 1 });
+  assert.equal(closeSignals, 1);
+  assert.equal(document.body.style.overflow, 'scroll');
+});
+
+test("desktop dialog retains its original sizing and mobile shell has compact spacing", t => {
+  t.mock.method(require('../services/platform.ts'), 'getRuntimePlatformSync', () => 'desktop');
+  const view = renderer(t, MobileDialog, { title: 'Cuenta', onClose() {} });
+  assert.equal(view.find(n => n.type === 'dialog')[0].props['data-mobile-ui'], undefined);
+  assert.doesNotMatch(view.html(), /class="dialog[^\"]*mobile/);
+  assert.match(view.html(), /text-xl/); assert.match(view.html(), /p-4/);
+  pathname = '/dashboard';
+  const app = renderToStaticMarkup(React.createElement(MobileApp));
+  assert.match(app, /data-mobile-ui=""/);
+  assert.match(app, /gap-3 px-3 pt-3/);
+  assert.match(app, /data-mobile-icon=""/);
+});
+
+for (const [href, title, visible, hidden] of [
+  ["/dashboard", "Inicio", /Resumen financiero/, /Listado de categorías|Listado de movimientos/],
+  ["/movimientos", "Movimientos", /Listado de movimientos/, /Resumen financiero|Listado de categorías/],
+  ["/categorias", "Categorías", /Listado de categorías/, /Resumen financiero|Listado de movimientos/],
+  ["/gastos-fijos", "Gastos fijos", /Listado de gastos fijos/, /Listado de presupuestos|Listado de metas|Resumen financiero/],
+  ["/presupuestos", "Presupuestos", /Listado de presupuestos/, /Listado de gastos fijos|Listado de metas|Resumen financiero/],
+  ["/planificacion", "Planificación", /Listado de planificación/, /Calendario financiero|Resumen financiero/],
+  ["/calendario", "Calendario", /Calendario financiero/, /Listado de planificación|Resumen financiero/],
+  ["/metas", "Metas", /Listado de metas/, /Listado de presupuestos|Listado de gastos fijos|Resumen financiero/],
+  ["/estadisticas", "Estadísticas", /Estadísticas financieras/, /Reporte financiero|Resumen financiero/],
+  ["/reporte", "Reporte", /Reporte financiero/, /Estadísticas financieras|Resumen financiero/],
+  ["/reporte-mensual", "Reporte", /Reporte financiero/, /Estadísticas financieras|Resumen financiero/],
+  ["/configuracion", "Configuración", /Configuración local/, /Reporte financiero|Resumen financiero/],
+]) test(`mobile route ${href} renders only ${title}`, (t) => {
+  pathname = href; const view = renderer(t, MobileApp);
+  assert.match(view.html(), visible); assert.doesNotMatch(view.html(), hidden);
+  assert.match(view.html(), new RegExp(`<h1[^>]*>${title}</h1>`));
+  assert.equal(view.find((node) => node.type === "dialog").length, 0);
+});
+
+test("hamburger opens drawer with desktop-consistent links; X closes it", (t) => {
+  pathname = "/dashboard"; const view = renderer(t, MobileApp);
+  view.find((node) => node.props["aria-label"] === "Abrir menú")[0].props.onClick({ currentTarget: { focus() {} } });
+  const html = view.html();
+  assert.match(html, /<dialog/); assert.match(html, /aria-modal="true"/); assert.match(html, /aria-labelledby="dialog-title"/);
+  assert.match(html, /aria-expanded="true"/); assert.match(html, /aria-current="page"/);
+  assert.deepEqual(view.find((node) => node.type === "a" && !node.props.href.includes('?')).map((node) => node.props.href), ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]);
+  view.find((node) => node.props["aria-label"] === "Cerrar")[0].props.onClick({ currentTarget: { focus() {} } });
+  assert.doesNotMatch(view.html(), /<dialog/);
+});
+
+for (const href of ["/dashboard", "/movimientos", "/categorias", "/gastos-fijos", "/planificacion", "/calendario", "/presupuestos", "/metas", "/estadisticas", "/reporte", "/configuracion"]) test(`drawer navigates to ${href} and closes automatically`, (t) => {
+  pathname = "/dashboard"; const view = renderer(t, MobileApp);
+  view.find((node) => node.props["aria-label"] === "Abrir menú")[0].props.onClick({ currentTarget: { focus() {} } });
+  view.find((node) => node.type === "a" && node.props.href === href)[0].props.onClick({ currentTarget: { focus() {} } });
+  assert.equal(pathname, href); assert.doesNotMatch(view.html(), /<dialog/);
+});
+
+test("drawer closes on outside touch and Escape, uses native focus isolation and restores scroll", (t) => {
+  let dismissed = 0; const view = renderer(t, MobileDialog, { title: "Menú", drawer: true, onClose: () => { dismissed++; }, children: "Secciones" });
+  const node = view.find((node) => node.type === "dialog")[0];
+  view.effects(); assert.equal(view.counts().shown, 1); assert.equal(document.body.style.overflow, "hidden");
+  const target = {}; node.props.onClick({ target, currentTarget: target }); assert.equal(dismissed, 1);
+  node.props.onClick({ target: {}, currentTarget: target }); assert.equal(dismissed, 1);
+  let prevented = false; node.props.onCancel({ preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true); assert.equal(dismissed, 2);
+  view.dispose(); assert.equal(view.counts().closed, 1); assert.equal(view.counts().restored, 1); assert.equal(document.body.style.overflow, "scroll");
+});
+
+test("pending mutation prevents dialog dismissal", (t) => {
+  let dismissed = false; const view = renderer(t, MobileDialog, { title: "Guardar", busy: true, onClose: () => { dismissed = true; } });
+  const node = view.find((node) => node.type === "dialog")[0], target = {};
+  node.props.onCancel({ preventDefault() {} }); node.props.onClick({ target, currentTarget: target });
+  assert.equal(dismissed, false); assert.equal(view.find((node) => node.props["aria-label"] === "Cerrar")[0].props.disabled, true);
+});
+
+test("unsupported mobile routes redirect to dashboard without rendering desktop content", (t) => {
+  pathname = "/no-implementado"; const view = renderer(t, MobileApp);
+  assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos|Listado de categorías/);
+  view.effects(); assert.equal(pathname, "/dashboard"); assert.match(view.html(), /Resumen financiero/);
+});
+
+test("movement form edits category by ID and submits validated values, note and local date", async (t) => {
+  let saved;
+  const row = { id: 7, fecha: "2026-01-01", tipo: "gasto", categoria: "Gasto Mobile", categoria_id: 2, descripcion: "Gasto", monto: 3000, nota: "Detalle", saldo_acumulado: 7000 };
+  const view = renderer(t, MobileMovementForm, { categories: [{ id: 2, nombre: "Gasto Mobile", tipo: "gasto" }], movement: row, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  await view.find((node) => node.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { fecha: "2026-01-01", tipo: "gasto", categoria_id: 2, descripcion: "Gasto", monto: 3000, nota: "Detalle", meta_id: null });
+  assert.match(view.html(), /inputMode="decimal"/);
+});
+
+test("mobile dates and compatible categories follow desktop choices without UTC date parsing", () => {
+  assert.equal(getLocalDateInputValue(new Date(2026, 0, 1, 0, 5)), "2026-01-01");
+  assert.equal(formatMobileDate("2026-01-01"), "1/1/2026");
+  const categories = [{ id: 1, nombre: "Ingreso", tipo: "ingreso" }, { id: 2, nombre: "Gastos", tipo: "gasto" }, { id: 3, nombre: "Ahorro legacy", tipo: "gasto" }];
+  assert.deepEqual(compatibleCategories(categories, "gasto").map((row) => row.id), [2, 3]);
+  assert.deepEqual(compatibleCategories(categories, "ahorro").map((row) => row.id), [3]);
+});
+
+test("first installation shows empty dashboard and category guidance without creating data", (t) => {
+  const previous = finance.data;
+  finance.data = { ...previous, categories: [], movements: [], summary: { ingresos: 0, gastos: 0, ahorros: 0, inversiones: 0, saldoInicial: 0, saldo: 0, balance: 0 } };
+  t.after(() => { finance.data = previous; });
+  pathname = "/dashboard"; const view = renderer(t, MobileApp);
+  assert.match(view.html(), /No tenés movimientos este mes/);
+  pathname = "/categorias";
+  assert.match(view.html(), /Creá una categoría para empezar/);
+});
+
+function financeHook(t, repository, enabled = true, input = { context: localFinancialContext }) {
+  const hookPath = path.join(root, "components/mobile/useMobileFinance.ts"), repoPath = path.join(root, "services/data/financeRepository.ts");
+  const oldHook = require.cache[hookPath], oldRepo = require.cache[repoPath];
+  stub("./services/data/financeRepository.ts", { getFinanceRepository: async () => repository });
+  delete require.cache[hookPath];
+  const { useMobileFinance } = require(hookPath);
+  t.after(() => { require.cache[hookPath] = oldHook; if (oldRepo) require.cache[repoPath] = oldRepo; else delete require.cache[repoPath]; });
+  let value;
+  function Probe() { value = useMobileFinance(enabled, input.context); return React.createElement("div"); }
+  const view = renderer(t, Probe, {}, false);
+  return { ...view, value: () => value };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
+
+function accountProvider(t, account, restore, cachedGrant = false) {
+  const providerPath = path.join(root, "components/mobile/account/MobileAccountProvider.tsx");
+  const cloud = require("../services/cloudAuth.ts"), auth = require("../services/supabaseCloudAuth.ts");
+  const previous = require.cache[providerPath], oldWindow = global.window;
+  const events = new EventTarget(); global.window = events;
+  let forced = 0, cached = 0, removed = 0, currentAccount = account;
+  t.mock.method(cloud, "getActiveAccount", () => currentAccount);
+  t.mock.method(cloud, "getActiveCloudSession", () => currentAccount);
+  t.mock.method(require("../services/deviceAuthorization.ts"), "hasCachedDeviceGrant", () => cachedGrant);
+  t.mock.method(cloud, "removeAccount", async () => { removed++; currentAccount = null; return { ok: true }; });
+  t.mock.method(auth, "refreshSession", async (id) => { forced++; return restore(id); });
+  t.mock.method(auth, "getSession", async (id) => { cached++; return restore(id); });
+  delete require.cache[providerPath];
+  const { MobileAccountProvider } = require(providerPath);
+  const view = renderer(t, MobileAccountProvider, { children: "Finanzas locales disponibles" }, false);
+  t.after(() => { view.dispose(); require.cache[providerPath] = previous; global.window = oldWindow; });
+  return { ...view, state: () => view.find(node => node.props.value?.refresh)[0].props.value,
+    counts: () => ({ forced, cached }), removed: () => removed,
+    setAccount: value => { currentAccount = value; },
+    event: () => events.dispatchEvent(new Event(cloud.ACCOUNT_SESSION_CHANGED_EVENT)) };
+}
+
+test("mobile account cold restore runs in background once, events reuse session and do not poll", async t => {
+  const session = { user: { id: "internal-owner", email: "test@example.com" }, token: "not-visible" };
+  const view = accountProvider(t, { authProvider: "supabase", user: session.user }, async id => {
+    assert.equal(id, "internal-owner"); return session;
+  });
+  assert.match(view.html(), /Finanzas locales disponibles/);
+  view.effects(); await flush(); assert.equal(view.state().session, session);
+  assert.equal(view.state().checking, false);
+  view.html(); view.effects(); await flush(); assert.deepEqual(view.counts(), { forced: 1, cached: 0 });
+  view.event(); await flush(); assert.deepEqual(view.counts(), { forced: 1, cached: 1 });
+  view.dispose(); view.event(); await flush(); assert.equal(view.counts().cached, 1);
+});
+
+test("mobile local startup never calls auth and failed restoration does not hide finance", async t => {
+  const view = accountProvider(t, null, async () => { throw new Error("should not call"); });
+  view.html(); view.effects(); await flush();
+  assert.deepEqual(view.counts(), { forced: 0, cached: 0 });
+  assert.equal(view.state().session, null); assert.equal(view.state().error, "");
+});
+
+test("authorized cached owner opens offline before network restoration and remains stable on network failure",async t=>{
+  const storage=require('../services/supabaseTokenStorage.ts');
+  t.mock.method(storage,'loadSupabaseRefreshToken',async()=> 'secure-fixture-not-exposed');
+  const network=deferred(),account={authProvider:'supabase',storage:'persistent',user:{id:'internal-owner'}};
+  const view=accountProvider(t,account,()=>network.promise,true);
+  view.html();view.effects();await flush();
+  assert.equal(view.state().financialReady,true);assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  assert.equal(view.state().checking,true);assert.equal(view.state().session,null);
+  const context=view.state().financialContext;
+  network.resolve(null);await flush();assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  assert.equal(context.isCurrent(),true);assert.equal(view.removed(),0);
+  assert.doesNotMatch(view.state().error,/secure-fixture|internal-owner/);
+});
+
+test("owner event invalidates old lease immediately; logout/local and relogin isolate namespaces",async t=>{
+  const a={authProvider:'supabase',storage:'session',user:{id:'owner-a'}},b={...a,user:{id:'owner-b'}};
+  const view=accountProvider(t,a,async id=>({...a,user:{id},token:'not-visible'}),true);
+  view.html();view.effects();await flush();const old=view.state().financialContext;
+  assert.equal(old.ownerId,'owner-a');assert.equal(old.isCurrent(),true);
+  view.setAccount(b);view.event();assert.equal(old.isCurrent(),false);await flush();
+  assert.equal(view.state().financialContext.ownerId,'owner-b');
+  view.setAccount(null);view.event();await flush();assert.equal(view.state().financialContext.ownerId,'local');
+  view.setAccount(a);view.event();await flush();assert.equal(view.state().financialContext.ownerId,'owner-a');
+  assert.equal(old.isCurrent(),false);assert.equal(view.removed(),0);
+});
+
+test("saved account without previous device authorization never selects a cloud financial owner",async t=>{
+  const account={authProvider:'supabase',user:{id:'internal-owner'}};
+  const view=accountProvider(t,account,async()=>null,false);
+  view.html();view.effects();await flush();assert.equal(view.state().financialContext.ownerId,'local');
+  assert.equal(view.state().financialReady,true);
+});
+
+test("explicit credential rejection disables cached cloud context; transient network errors retain it",async t=>{
+  const storage=require('../services/supabaseTokenStorage.ts'),cloud=require('../services/cloudAuth.ts');
+  t.mock.method(storage,'loadSupabaseRefreshToken',async()=> 'secure-fixture');
+  let failure=new cloud.CloudAuthRequestError('Sin conexión',{kind:'network'});
+  const view=accountProvider(t,{authProvider:'supabase',storage:'persistent',user:{id:'internal-owner'}},async()=>{throw failure;},true);
+  view.html();view.effects();await flush();assert.equal(view.state().financialContext.ownerId,'internal-owner');
+  const old=view.state().financialContext;
+  failure=new cloud.CloudAuthRequestError('Sesión rechazada',{kind:'auth',code:'invalid_refresh_token'});
+  await view.state().refresh(true);assert.equal(view.state().financialContext.ownerId,'local');assert.equal(old.isCurrent(),false);
+  assert.equal(view.removed(),0);
+});
+
+test("invalidated finance hook hides cached data and refuses old form submissions",async t=>{
+  let valid=true,writes=0;
+  const input={context:{ownerId:'owner-a',isCurrent:()=>valid}};
+  const repository={listCategorias:async()=>[],listMovimientos:async()=>[],getSummary:async()=>summary,
+    listGastosFijos:async()=>[],listPresupuestos:async()=>[],listMetas:async()=>[],listGastosProgramados:async()=>[],getSchedulingSummary:async()=>({})};
+  const view=financeHook(t,repository,true,input);view.html();view.effects();await flush();view.html();
+  const oldMutate=view.value().mutate;assert.ok(view.value().data);
+  valid=false;input.context={ownerId:'owner-b',isCurrent:()=>true};view.html();
+  assert.equal(view.value().data,null);
+  assert.equal(await oldMutate(async()=>{writes++;},'Obsoleto'),false);assert.equal(writes,0);
+  view.effects();await flush();view.html();assert.ok(view.value().data);assert.equal(view.value().data.ownerId,'owner-b');
+});
+
+test("normal cloud Movimientos uses the account context and the existing form without notes/metas",t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  mobileAccountState={...previous,financialContext:{ownerId:'internal-owner',isCurrent:()=>true}};
+  let used;
+  t.mock.method(require('../components/mobile/useMobileFinance.ts'),'useMobileFinance',(enabled,context)=>{used=context.ownerId;return finance;});
+  pathname='/movimientos';const view=renderer(t,MobileApp);assert.match(view.html(),/Cuenta sincronizada/);
+  assert.equal(used,'internal-owner');
+  view.find(n=>n.type==='button'&&n.props.children==='Agregar movimiento')[0].props.onClick();
+  assert.doesNotMatch(view.html(),/Nota \(opcional\)|Meta de ahorro|internal-owner/);
+  pathname='/presupuestos';view.html();assert.equal(used,'local');assert.match(view.html(),/Datos locales/);
+});
+
+test("unreadable account context offers explicit local mode, never silently creates local data",t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});let switches=0;
+  mobileAccountState={...previous,financialReady:false,error:'No se pudo leer la sesión guardada.'};
+  t.mock.method(require('../services/cloudAuth.ts'),'switchToLocalMode',()=>{switches++;});
+  const view=renderer(t,MobileApp);assert.match(view.html(),/Reintentar sesión/);assert.match(view.html(),/La cuenta necesita atención/);
+  assert.doesNotMatch(view.html(),/Listado de movimientos|Resumen financiero/);assert.equal(switches,0);
+  view.find(n=>n.type==='button'&&n.props.children==='Continuar con datos locales')[0].props.onClick();assert.equal(switches,1);
+});
+
+test("mobile restoration errors are sanitized, retryable and keep local shell available", async t => {
+  const view = accountProvider(t, { authProvider: "supabase", user: { id: "internal-owner" } }, async () => {
+    throw new Error("refresh-token-secret");
+  });
+  view.html(); view.effects(); await flush();
+  assert.match(view.state().error, /sin conexión/); assert.doesNotMatch(view.state().error, /secret/);
+  assert.match(view.html(), /Finanzas locales disponibles/);
+  await view.state().refresh(true); assert.equal(view.counts().forced, 2);
+});
+
+test("unmounted mobile account ignores an outstanding restore", async t => {
+  const pending = deferred();
+  const view = accountProvider(t, { authProvider: "supabase", user: { id: "internal-owner" } }, () => pending.promise);
+  view.html(); view.effects(); view.dispose();
+  pending.resolve({ user: { id: "internal-owner" } }); await flush();
+  assert.equal(view.state().session, null);
+});
+
+test("cold mobile logout drops stale WebView metadata only after confirmed secure credential absence", async t => {
+  const storage = require("../services/supabaseTokenStorage.ts");
+  t.mock.method(storage, "loadSupabaseRefreshToken", async () => null);
+  const view = accountProvider(t, { authProvider: "supabase", storage: "persistent", user: { id: "internal-owner" } }, async () => null);
+  view.html(); view.effects(); await flush();
+  assert.equal(view.removed(), 1); assert.equal(view.state().session, null);
+  assert.equal(view.state().error, ""); assert.equal(view.state().checking, false);
+});
+
+test("an unreadable mobile credential preserves metadata and presents retry instead of deleting a valid account", async t => {
+  const storage = require("../services/supabaseTokenStorage.ts");
+  t.mock.method(storage, "loadSupabaseRefreshToken", async () => { throw new Error("secret-native-error"); });
+  const view = accountProvider(t, { authProvider: "supabase", storage: "persistent", user: { id: "internal-owner" } }, async () => null);
+  view.html(); view.effects(); await flush();
+  assert.equal(view.removed(), 0); assert.match(view.state().error, /Reintentá/);
+  assert.doesNotMatch(view.state().error, /secret-native-error/);
+});
+
+test("mobile account displays connected identity without tokens or full IDs and logs out through shared auth", async t => {
+  const previous = mobileAccountState, auth = require("../services/supabaseCloudAuth.ts");
+  t.after(() => { mobileAccountState = previous; });
+  let signedOut;
+  mobileAccountState = { ...previous, session: { user: { id: "internal-owner-private", email: "test@example.com", display_name: "Usuario" }, token: "private-access-token" }, refresh: async () => {} };
+  mobileAccountState = { ...mobileAccountState, financialAccount: mobileAccountState.session,
+    financialContext: { ownerId: mobileAccountState.session.user.id, isCurrent: () => true } };
+  t.mock.method(auth, "signOut", async id => { signedOut = id; return { ok: true }; });
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  assert.match(view.html(), /Cuenta sincronizada|test@example.com|Usuario/);
+  assert.doesNotMatch(view.html(), /internal-owner-private|private-access-token/);
+  view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
+  await flush(); assert.equal(signedOut, "internal-owner-private");
+});
+
+test("mobile opens the shared email/signup/recovery form with Google", t => {
+  const auth = require("../services/supabaseCloudAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  view.find(node => node.type === "button" && node.props.children === "Iniciar sesión o crear cuenta")[0].props.onClick();
+  const html = view.html();
+  assert.match(html, /Email/); assert.match(html, /Contraseña/); assert.match(html, /Crear cuenta/);
+  assert.match(html, /Olvidaste tu contraseña/); assert.match(html, /Continuar con Google/);
+  view.find(node => node.type === "button" && node.props.children === "Continuar en modo local")[0].props.onClick();
+  assert.equal(view.find(node => node.type === "form").length, 0);
+});
+
+test("Android add-account shows Google; signup OTP, recovery, device OTP, callbacks and iOS hide it", async t => {
+  const auth = require("../services/supabaseCloudAuth.ts"), google = require("../services/supabaseGoogleAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  let deviceRequired = false, oauth = "idle";
+  t.mock.method(auth, "getPendingDeviceState", () => ({ required: deviceRequired, completionVersion: 0 }));
+  t.mock.method(google, "getGoogleOAuthState", () => ({ status: oauth }));
+  const { AddAccountModal } = require("../components/account/AddAccountModal.tsx");
+  const view = renderer(t, AddAccountModal, { open: true, onClose() {} }, false);
+  window.navigator = { userAgent: "Android" }; window.__TAURI_INTERNALS__ = {};
+  let button = view.find(n => n.type === "button" && n.props.children === "Continuar con Google")[0];
+  assert.ok(button); assert.equal(button.props.disabled, false);
+  deviceRequired = true; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  deviceRequired = false; oauth = "processing"; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  oauth = "idle";
+  view.find(n => n.type === "button" && n.props.children === "¿Olvidaste tu contraseña?")[0].props.onClick();
+  assert.doesNotMatch(view.html(), /Continuar con Google/);
+  view.find(n => n.type === "button" && n.props.children === "Volver al inicio de sesión")[0].props.onClick();
+  assert.match(view.html(), /Continuar con Google/);
+  window.navigator.userAgent = "iPhone"; assert.doesNotMatch(view.html(), /Continuar con Google/);
+  window.navigator.userAgent = "Android";
+  t.mock.method(auth, "signUpWithPassword", async email => ({ status: "verification_required", email }));
+  view.find(n => n.type === "button" && n.props.children === "¿No tenés cuenta? Crear cuenta")[0].props.onClick();
+  view.find(n => n.type === "input" && n.props.type === "email")[0].props.onChange({ target: { value: "qa@example.test" } });
+  for (const input of view.find(n => n.type === "input" && n.props.type === "password")) input.props.onChange({ target: { value: "fixture-password-long" } });
+  view.find(n => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); await flush();
+  assert.match(view.html(), /Confirmar código/);
+  assert.doesNotMatch(view.html(), /Continuar con Google/);
+});
+
+test("OAuth form and listener show friendly failures without technical codes on Android and desktop", t => {
+  const auth = require("../services/supabaseCloudAuth.ts"), google = require("../services/supabaseGoogleAuth.ts");
+  t.mock.method(auth, "isSupabaseCloudAuthConfigured", () => true);
+  let diagnosticCode = "oauth_exchange_failed";
+  t.mock.method(google, "getGoogleOAuthState", () => ({ status: "error", message: "No se pudo completar el inicio de sesión.", diagnosticCode }));
+  const { SupabaseAccountForm } = require("../components/account/SupabaseAccountForm.tsx"), { SupabaseOAuthListener } = require("../components/account/SupabaseOAuthListener.tsx");
+  const Component = () => React.createElement(React.Fragment, {}, React.createElement(SupabaseAccountForm, { onAuthenticated() {}, onBusyChange() {} }), React.createElement(SupabaseOAuthListener));
+  const view = renderer(t, Component, {}, false);
+  window.navigator = { userAgent: "Android" }; window.__TAURI_INTERNALS__ = {};
+  assert.equal(view.find(n => n.props.role === "alert").length, 2);
+  assert.match(view.html(), /No se pudo completar el inicio de sesión/);
+  assert.doesNotMatch(view.html(), /Código:|oauth_exchange_failed/);
+  diagnosticCode = "fixture-secret"; assert.doesNotMatch(view.html(), /fixture-secret|Código:/);
+  diagnosticCode = "oauth_exchange_failed"; window.navigator.userAgent = "Windows NT";
+  assert.doesNotMatch(view.html(), /Código:|oauth_exchange_failed/);
+});
+
+test("mobile reports a partial secure logout and can retry deleting the saved session", async t => {
+  const previous = mobileAccountState, auth = require("../services/supabaseCloudAuth.ts");
+  t.after(() => { mobileAccountState = previous; });
+  mobileAccountState = { ...previous, session: { user: { id: "internal-owner", email: "test@example.com" } }, refresh: async () => { mobileAccountState = { ...previous }; } };
+  mobileAccountState = { ...mobileAccountState, financialAccount: mobileAccountState.session,
+    financialContext: { ownerId: mobileAccountState.session.user.id, isCurrent: () => true } };
+  t.mock.method(auth, "signOut", async () => ({ ok: false }));
+  let deleted;
+  t.mock.method(auth, "deleteSavedSession", async id => { deleted = id; return { ok: true }; });
+  const { MobileAccount } = require("../components/mobile/account/MobileAccount.tsx");
+  const view = renderer(t, MobileAccount, {}, false);
+  view.find(node => node.type === "button" && node.props.children === "Cerrar sesión")[0].props.onClick();
+  await flush(); assert.match(view.html(), /no pudimos borrar por completo/);
+  assert.match(view.html(), /Datos locales/);
+  view.find(node => node.type === "button" && node.props.children === "Reintentar borrar sesión")[0].props.onClick();
+  await flush(); assert.equal(deleted, "internal-owner"); assert.doesNotMatch(view.html(), /no pudimos borrar por completo/);
+});
+
+test("mobile reload ignores stale periods and does not poll on navigation/render", async (t) => {
+  const first = deferred(); let reads = 0;
+  const repository = { listGastosProgramados: async () => [], getSchedulingSummary: async () => ({}), listGastosFijos: async () => [], listPresupuestos: async () => [], listMetas: async () => [], listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return reads === 1 ? first.promise : { ...summary, saldo: 222 }; } };
+  const view = financeHook(t, repository);
+  view.html(); view.effects(); await flush();
+  assert.equal(view.value().period, getLocalDateInputValue().slice(0, 7));
+  view.value().setPeriod("2026-01"); view.html(); view.effects(); await flush(); view.html();
+  assert.equal(view.value().data.summary.saldo, 222);
+  first.resolve({ ...summary, saldo: 999 }); await flush(); view.html();
+  assert.equal(view.value().data.summary.saldo, 222);
+  view.html(); view.effects(); await flush(); assert.equal(reads, 2);
+});
+
+test("mobile mutations prevent duplicate writes and refresh once after success", async (t) => {
+  let writes = 0, reads = 0; const write = deferred();
+  const repository = { listGastosProgramados: async () => [], getSchedulingSummary: async () => ({}), listGastosFijos: async () => [], listPresupuestos: async () => [], listMetas: async () => [], listCategorias: async () => [], listMovimientos: async () => [], getSummary: async () => { reads++; return summary; } };
+  const view = financeHook(t, repository);
+  view.html(); view.effects(); await flush(); view.html();
+  const operation = async () => { writes++; await write.promise; };
+  const pending = view.value().mutate(operation, "Guardado");
+  assert.equal(await view.value().mutate(operation, "Duplicado"), false);
+  await flush(); assert.equal(writes, 1);
+  write.resolve(); assert.equal(await pending, true);
+  view.html(); view.effects(); await flush(); view.html(); assert.equal(reads, 2);
+  assert.equal(view.value().notice, "Guardado");
+});
+
+const { MobileFixedExpenseForm } = require("../components/mobile/gastos-fijos/MobileFixedExpenseForm.tsx");
+const { MobileBudgetForm } = require("../components/mobile/presupuestos/MobileBudgetForm.tsx");
+const { MobileGoalForm } = require("../components/mobile/metas/MobileGoalForm.tsx");
+const { mobileSections } = require("../components/mobile/MobileSidebar.tsx");
+const { budgetState, goalState } = require("../components/mobile/MobilePlanningUI.tsx");
+
+test("planning navigation retains desktop Premium feature metadata without enabling billing", () => {
+  assert.deepEqual(mobileSections.filter((s) => s.premium).map(({ href, feature }) => ({ href, feature })), [
+    { href: "/gastos-fijos", feature: "fixed_expenses" }, { href: "/planificacion", feature: "planning" }, { href: "/presupuestos", feature: "budgets" }, { href: "/metas", feature: "saving_goals" },
+  ]);
+  assert.deepEqual([69, 70, 100, 101].map(budgetState), ["En control", "Cerca del límite", "Al límite", "Superado"]);
+  assert.deepEqual([74, 75, 100].map(goalState), ["En progreso", "Cerca de completar", "Cumplida"]);
+});
+
+test("fixed expense form submits edited monthly day, amount and active state", async (t) => {
+  let saved, closed = 0;
+  const row = { id: 1, categoria_id: 2, categoria: "Servicios", descripcion: "Alquiler", monto: 750, dia_vencimiento: 31, activo: 0 };
+  const view = renderer(t, MobileFixedExpenseForm, { row, categories: [{ id: 2, nombre: "Servicios", tipo: "gasto" }], busy: false, error: "", onClose: () => { closed++; }, onSave: async (input) => { saved = input; return true; } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { categoria_id: 2, descripcion: "Alquiler", monto: 750, dia_vencimiento: 31, activo: 0 }); assert.equal(closed, 1);
+  assert.match(view.html(), /Mensual/); assert.match(view.html(), /inputMode="decimal"/);
+});
+
+test("budget editing keeps category and period while changing the limit", async (t) => {
+  let saved;
+  const row = { id: 1, categoria_id: 2, categoria: "Servicios", mes: 10, anio: 2026, monto_presupuestado: 2000 };
+  const view = renderer(t, MobileBudgetForm, { row, rows: [row], categories: [{ id: 2, nombre: "Servicios", tipo: "gasto" }], period: "2026-11", busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  assert.equal(view.find((n) => n.type === "select")[0].props.disabled, true);
+  const periodControls = view.find(n => n.props['aria-label']?.startsWith('Período del presupuesto:'));
+  assert.equal(periodControls.length, 2); assert.ok(periodControls.every(n => n.props.disabled));
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { categoria_id: 2, mes: 10, anio: 2026, monto: 2000 });
+});
+
+test("goal form submits initial funds, optional date and explicit state", async (t) => {
+  let saved;
+  const row = { id: 1, nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 250, fecha_objetivo: "2028-02-29", descripcion: "Detalle", estado: "pausada" };
+  const view = renderer(t, MobileGoalForm, { row, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved, { nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 250, fecha_objetivo: "2028-02-29", descripcion: "Detalle", estado: "pausada" });
+});
+
+test("planning form errors preserve entered data and do not dismiss failed writes", async (t) => {
+  let closed = 0;
+  const view = renderer(t, MobileGoalForm, { row: { nombre: "Viaje", monto_objetivo: 1000, monto_inicial: 0, estado: "activa" }, busy: false, error: "No se pudo guardar la meta.", onClose: () => { closed++; }, onSave: async () => false });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} });
+  assert.equal(closed, 0); assert.match(view.html(), /role="alert"/); assert.match(view.html(), /No se pudo guardar la meta/);
+  assert.equal(view.find((n) => n.type === "input")[0].props.value, "Viaje");
+});
+
+test("savings form sends an explicit goal assignment; other movement types clear it", async (t) => {
+  let saved;
+  const view = renderer(t, MobileMovementForm, { categories: [{ id: 2, nombre: "Ahorro", tipo: "ahorro" }, { id: 4, nombre: "Ingreso", tipo: "ingreso" }], goals: [{ id: 3, nombre: "Viaje" }],
+    movement: { id: 1, tipo: "ahorro", fecha: "2026-10-04", categoria_id: 2, descripcion: "Aporte", monto: 100, meta_id: 3 }, busy: false, error: "", onClose() {}, onSave: async (input) => { saved = input; return true; } });
+  assert.match(view.html(), /Meta de ahorro \(opcional\)/);
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, 3);
+  view.find((n) => n.type === "select" && n.props.autoFocus)[0].props.onChange({ target: { value: "ingreso" } });
+  view.find((n) => n.type === "select" && n.props.value === "")[0].props.onChange({ target: { value: "4" } });
+  await view.find((n) => n.type === "form")[0].props.onSubmit({ preventDefault() {} }); assert.equal(saved.meta_id, null);
+});
+
+test("planning views show consumed budgets and goal progress as text, with separate routes", (t) => {
+  const previous = finance.data; t.after(() => { finance.data = previous; });
+  finance.data = { ...previous, budgets: [{ id: 1, categoria: "Servicios", mes: 10, anio: 2026, monto_presupuestado: 600, monto_gastado: 700, monto_disponible: -100, porcentaje_usado: 116.7 }],
+    goals: [{ id: 1, nombre: "Viaje", estado: "pausada", monto_objetivo: 1000, monto_ahorrado: 1100, faltante: 0, porcentaje_completado: 110, fecha_objetivo: "2027-01-01" }] };
+  pathname = "/presupuestos"; const view = renderer(t, MobileApp);
+  assert.match(view.html(), /Consumido/); assert.match(view.html(), /Restante/); assert.match(view.html(), /Superado/); assert.match(view.html(), /aria-valuenow="100"/);
+  assert.doesNotMatch(view.html(), /Listado de metas/);
+  pathname = "/metas"; assert.match(view.html(), /Pausada/); assert.match(view.html(), /110.0%/); assert.match(view.html(), /1\/1\/2027/);
+});
+
+const { MobileScheduling } = require("../components/mobile/planificacion/MobileScheduling.tsx");
+const { MobileSchedulingForm } = require("../components/mobile/planificacion/MobileSchedulingForm.tsx");
+const { MobileCalendar } = require("../components/mobile/calendario/MobileCalendar.tsx");
+const scheduleRow = { id: 1, descripcion: "Seguro", categoria_id: 2, categoria: "Servicios", monto_estimado: 500, fecha_vencimiento: "2026-10-31", estado: "pendiente", es_recurrente: 1, frecuencia: "mensual" };
+const projection = { total_vencido: 0, total_pendiente_30_dias: 500, total_pagado_mes: 0, balance_proyectado_mes: -500 };
+
+test("scheduling form persists desktop fields and clears frequency when recurrence is disabled", async (t) => {
+  let saved, closed = 0;
+  const view = renderer(t, MobileSchedulingForm, { row: scheduleRow, categories: [{id:2,nombre:"Servicios",tipo:"gasto"}], busy:false,error:"",onClose:()=>{closed++;},onSave:async input=>{saved=input;return true;} });
+  assert.match(view.html(),/Frecuencia/);assert.match(view.html(),/Cambiar el estado aquí no registra un movimiento/);
+  view.find(n=>n.props.type==="checkbox")[0].props.onChange({target:{checked:false}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  assert.equal(saved.frecuencia,null);assert.equal(saved.es_recurrente,0);assert.equal(saved.fecha_vencimiento,"2026-10-31");assert.equal(closed,1);
+});
+
+test("scheduling form retains values on failure and validates before save", async (t) => {
+  let calls=0,closed=0;
+  const view=renderer(t,MobileSchedulingForm,{row:scheduleRow,categories:[{id:2,nombre:"Servicios",tipo:"gasto"}],busy:false,error:"No se pudo guardar",onClose:()=>{closed++;},onSave:async()=>{calls++;return false;}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});assert.equal(calls,1);assert.equal(closed,0);assert.match(view.html(),/role="alert"/);
+  view.find(n=>n.type==="input"&&n.props.inputMode==="decimal")[0].props.onChange({target:{value:"0"}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});assert.equal(calls,1);assert.match(view.html(),/mayor a cero/);
+});
+
+test("scheduling view filters statuses and offers explicit payment only for pending", (t) => {
+  let paid=0;const rows=[scheduleRow,{...scheduleRow,id:2,descripcion:"Pagada",estado:"pagado"},{...scheduleRow,id:3,descripcion:"Cancelada",estado:"cancelado"}];
+  const view=renderer(t,MobileScheduling,{rows,summary:projection,onCreate(){},onEdit(){},onDelete(){},onPay(){paid++;}});
+  assert.equal(view.find(n=>n.props["aria-label"]?.startsWith("Marcar pagado")).length,1);
+  view.find(n=>n.props["aria-label"]==="Marcar pagado Seguro")[0].props.onClick();assert.equal(paid,1);
+  view.find(n=>n.type==="select")[0].props.onChange({target:{value:"cancelado"}});assert.equal(view.find(n=>n.props["aria-label"]?.startsWith("Marcar pagado")).length,0);assert.match(view.html(),/Cancelada/);
+  assert.match(view.html(),/No es tu saldo actual/);assert.doesNotMatch(view.html(),/<table/);
+});
+
+test("calendar renders empty month, local day detail and year transitions without tables", (t) => {
+  let selectedPeriod;const view=renderer(t,MobileCalendar,{period:{year:2026,month:12},days:[],busy:false,onPeriod:p=>{selectedPeriod=p;}});
+  assert.equal(view.find(n=>n.props["aria-label"]?.endsWith("movimientos")).length,42);assert.match(view.html(),/No hay movimientos en este mes/);assert.doesNotMatch(view.html(),/<table/);
+  view.find(n=>n.props["aria-label"]==="Mes siguiente")[0].props.onClick();assert.deepEqual(selectedPeriod,{year:2027,month:1});
+  view.find(n=>n.props["aria-label"]==="Mes anterior")[0].props.onClick();assert.deepEqual(selectedPeriod,{year:2026,month:11});
+  view.find(n=>n.props["aria-label"]?.startsWith("1\/12\/2026:"))[0].props.onClick();assert.match(view.html(),/No hay eventos para este día/);
+});
+
+test("calendar day details show actual typed movements and signed daily balance", (t) => {
+  const days=[{fecha:"2026-10-04",movimientos:[{id:1,fecha:"2026-10-04",tipo:"gasto",categoria:"Servicios",descripcion:"Real",monto:100}],totales:{ingreso:0,gasto:100,ahorro:0,inversion:0}}];
+  const view=renderer(t,MobileCalendar,{period:{year:2026,month:10},days,busy:false,onPeriod(){}});
+  view.find(n=>n.props["aria-label"]==="4/10/2026: 1 movimientos")[0].props.onClick();
+  assert.match(view.html(),/Movimiento · Gasto/);assert.match(view.html(),/Balance del día/);assert.match(view.html(),/-\$\s100,00/);assert.doesNotMatch(view.html(),/Planificado|Gasto fijo/);
+});
+
+test("payment confirmation is separate from editing and mutations refresh shared state", async (t) => {
+  const previous=finance.data,previousMutate=finance.mutate;t.after(()=>{finance.data=previous;finance.mutate=previousMutate;});
+  finance.data={...previous,scheduled:[scheduleRow],projection};let paid=0;
+  finance.mutate=async action=>{await action({markGastoProgramadoPaid:async id=>{assert.equal(id,1);paid++;}});return true;};
+  pathname="/planificacion";const view=renderer(t,MobileApp);
+  view.find(n=>n.props["aria-label"]==="Marcar pagado Seguro")[0].props.onClick();assert.match(view.html(),/Registrar pago/);assert.match(view.html(),/gasto real con fecha de hoy/);assert.equal(paid,0);
+  view.find(n=>n.type==="button"&&n.props.children==="Confirmar pago")[0].props.onClick();await flush();assert.equal(paid,1);assert.doesNotMatch(view.html(),/<dialog/);
+  assert.equal(mobileSections.find(s=>s.href==="/calendario").premium,false);assert.equal(mobileSections.find(s=>s.href==="/planificacion").premium,true);
+});
+
+const {MobileStatistics}=require('../components/mobile/estadisticas/MobileStatistics.tsx');
+const {MobileReport,MonthlyReportContent,AnnualReportContent}=require('../components/mobile/reporte/MobileReport.tsx');
+test('statistics show actual totals, safe category percentages and touch detail separately from projection',(t)=>{
+  const old=analytics;t.after(()=>{analytics=old;});
+  analytics={...old,data:{statistics:{...emptyStatistics,month_totals:{ingreso:1000,gasto:200,ahorro:50,inversion:25,balance:800},expenses_by_category:[{categoria_id:1,categoria:'Servicios',total:200,movimientos:1}],trend:emptyStatistics.trend.map(r=>({...r,ingresos:1000})),planificacion:{...emptyStatistics.planificacion,balance_proyectado_mes:-5000}},rows:[{id:1,fecha:'2026-10-04',tipo:'gasto',categoria:'Servicios',descripcion:'Real',monto:200,nota:'Detalle'}]}};
+  const view=renderer(t,MobileStatistics);assert.match(view.html(),/100.0%/);assert.match(view.html(),/Balance proyectado/);assert.match(view.html(),/\$\s800,00/);
+  assert.match(view.html(),/datos completos debajo/);assert.match(view.html(),/línea continua/);assert.match(view.html(),/línea punteada/);assert.match(view.html(),/Ver datos de la evolución/);
+  view.find(n=>n.type==='button'&&n.props.children?.some?.(x=>x?.props?.children==='Servicios'))[0].props.onClick();
+  assert.match(view.html(),/Movimientos: Servicios/);assert.match(view.html(),/Gasto · /);assert.match(view.html(),/Nota: Detalle/);
+  view.find(n=>n.type==='select')[0].props.onChange({target:{value:'1'}});assert.doesNotMatch(view.html(),/<dialog/);
+});
+test('responsive chart measures actual width, handles resizing and disconnects on unmount',(t)=>{
+  const {ResponsiveTrendLines}=require('../components/mobile/analytics/MobileAnalyticsUI.tsx');
+  let width=254.9, callback, observed, disconnected=0;
+  const previous=global.ResizeObserver;
+  global.ResizeObserver=class {constructor(cb){callback=cb;}observe(element){observed=element;}disconnect(){disconnected++;}};
+  t.after(()=>{global.ResizeObserver=previous;});
+  const view=renderer(t,ResponsiveTrendLines,{title:'Evolución',rows:[{label:'Octubre',ingresos:100,gastos:50}]},false);
+  const container=view.find(n=>n.props.role==='img')[0];
+  const element={getBoundingClientRect:()=>({width})};container.ref.current=element;
+  view.effects();assert.equal(observed,element);
+  assert.match(view.html(),/data-chart="LineChart"/);
+  assert.equal(rechartsProps.XAxis.type,'category');assert.equal(rechartsProps.XAxis.orientation,'bottom');
+  assert.equal(rechartsProps.YAxis.type,'number');assert.equal(rechartsProps.YAxis.orientation,'left');
+  assert.equal(rechartsProps.XAxis.xAxisId,0);assert.equal(rechartsProps.YAxis.yAxisId,0);
+  assert.equal(rechartsProps.Line.yAxisId,0);assert.deepEqual(rechartsProps.YAxis.domain,[0,'auto']);
+  const chartProps=()=>view.find(n=>n.props['data-chart']==='LineChart')[0].props;
+  assert.equal(chartProps()['data-width'],254);assert.equal(chartProps()['data-height'],240);
+  width=320;callback();assert.equal(chartProps()['data-width'],320);
+  width=0;callback();assert.doesNotMatch(view.html(),/data-chart="LineChart"/);
+  view.dispose();assert.equal(disconnected,1);
+});
+
+test('reports keep monthly operational balance and annual net balance distinct without tables or exports',(t)=>{
+  const monthly=renderer(t,MonthlyReportContent,{report:{...emptyReport,ingresos:1000,gastos:100,ahorro:50,inversiones:20,balance_operativo:900,disponible_luego_ahorro:850}});
+  assert.match(monthly.html(),/saldo acumulado se consulta en Inicio/);assert.match(monthly.html(),/\$\s900,00/);assert.match(monthly.html(),/\$\s850,00/);
+  assert.match(monthly.html(),/No hay metas activas/);assert.doesNotMatch(monthly.html(),/<table|Exportar|Balance proyectado/);
+  const annual=require('../services/data/financeAnalytics.ts').buildAnnualStatistics(2026,[{mes:10,ingresos:1000,gastos:100,ahorros:50,inversiones:20,movimientos:4}],[]);
+  const view=renderer(t,AnnualReportContent,{report:annual});assert.match(view.html(),/Balance anual/);assert.match(view.html(),/\$\s830,00/);assert.doesNotMatch(view.html(),/<table/);
+});
+test('report tabs fetch monthly and annual separately, with empty/error states and free metadata',(t)=>{
+  const old=analytics;t.after(()=>{analytics=old;});analytics={...old,data:{monthly:emptyReport,annual:emptyAnnual}};
+  const view=renderer(t,MobileReport);assert.match(view.html(),/Reporte mensual/);
+  view.find(n=>n.type==='button'&&n.props.children==='Anual')[0].props.onClick();assert.match(view.html(),/Año del reporte anual/);assert.match(view.html(),/No hay datos suficientes/);assert.doesNotMatch(view.html(),/Top categorías/);
+  analytics={...analytics,error:'Falló la lectura',loading:false,data:null};assert.match(view.html(),/role="alert"/);assert.match(view.html(),/Reintentar/);
+  for(const href of ['/estadisticas','/reporte'])assert.equal(mobileSections.find(s=>s.href===href).premium,false);
+});
+test('analytics routes disable unrelated base reads instead of mounting all financial modules',async(t)=>{
+  let reads=0;const view=financeHook(t,{listCategorias:async()=>{reads++;}},false);view.html();view.effects();await flush();view.html();assert.equal(reads,0);assert.equal(view.value().loading,false);
+});
+function analyticsHook(t,repository,input){
+  const p=path.join(root,'components/mobile/useMobileAnalytics.ts'),rp=path.join(root,'services/data/financeRepository.ts'),old=require.cache[p],oldRepo=require.cache[rp];
+  stub('./services/data/financeRepository.ts',{getFinanceRepository:async()=>repository});delete require.cache[p];const {useMobileAnalytics}=require(p);
+  t.after(()=>{require.cache[p]=old;if(oldRepo)require.cache[rp]=oldRepo;else delete require.cache[rp];});let value;
+  function Probe(){value=useMobileAnalytics(input.kind,input.period);return React.createElement('div');}
+  return {...renderer(t,Probe,{},false),value:()=>value};
+}
+test('analytics ignore stale periods, load only selected report and refetch once on explicit retry',async(t)=>{
+  const first=deferred(),input={kind:'monthly',period:{year:2026,month:12}};let monthly=0,annual=0,stats=0;
+  const view=analyticsHook(t,{getMonthlyReport:async p=>{monthly++;return monthly===1?first.promise:{...emptyReport,month:p.month};},getAnnualStatistics:async()=>{annual++;return emptyAnnual;},getStatistics:async()=>{stats++;return emptyStatistics;}},input);
+  view.html();view.effects();await flush();input.period={year:2027,month:1};view.html();view.effects();await flush();view.html();assert.equal(view.value().data.monthly.month,1);
+  first.resolve({...emptyReport,month:12});await flush();view.html();assert.equal(view.value().data.monthly.month,1);view.html();view.effects();await flush();assert.equal(monthly,2);
+  input.kind='annual';view.html();view.effects();await flush();view.html();assert.equal(annual,1);assert.equal(stats,0);assert.equal(monthly,2);
+  view.value().reload();view.html();view.effects();await flush();view.html();assert.equal(annual,2);
+});
+
+
+test("settings show real version and Premium features from the drawer metadata", (t) => {
+  pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  selectSettings(view, 'Acerca de');
+  assert.match(view.html(), new RegExp(`Versión ${require("../package.json").version}`));
+  const { mobileSections } = require("../components/mobile/MobileSidebar.tsx");
+  const expected = mobileSections.filter(section => section.premium).map(section => section.label);
+  selectSettings(view, 'ScisoNomics Premium');
+  assert.deepEqual(view.find(node => node.type === "li").map(node => node.props.children), expected);
+  assert.deepEqual(mobileSections.filter(section => section.premium).map(section => section.feature).sort(), ["budgets", "fixed_expenses", "planning", "saving_goals"]);
+});
+
+test("local settings have no cloud pull action, checkout or Windows updater", (t) => {
+  pathname = "/configuracion"; const view = renderer(t, MobileApp);
+  view.html(); assert.equal(financeEnabled, false);
+  assert.equal(view.find(node => node.type === 'details').length, 0);
+  assert.equal(view.find(node => node.type === 'button' && node.props.children === 'Volver a mostrar guías').length, 0);
+  assert.equal(view.find(node => node.type === "input" || node.type === "form" || node.type === "table").length, 0);
+  assert.doesNotMatch(view.html(), /Buscar actualizaciones|Contratar|Crear backup|Continuar con Google|localhost/);
+  selectSettings(view, 'Legal y privacidad');
+  assert.match(view.html(), /scisoftwareco@gmail.com/);
+  assert.deepEqual(view.find(node => node.type === "a").map(node => node.props.href), ["/legal#terminos", "/legal#privacidad", "/legal#aceptacion"]);
+});
+
+function selectSettings(view, label) {
+  if (!view.find(n => n.props['data-settings-row']).length) {
+    const back = view.find(n => n.type === 'button' && Array.isArray(n.props.children) && n.props.children.includes('Volver a Configuración'))[0];
+    assert.ok(back); back.props.onClick();
+  }
+  const titles = {'Acerca de':'Acerca de ScisoNomics','ScisoNomics Premium':'Premium','General':'Preferencias generales'};
+  const button = view.find(n => n.props['data-settings-row'] && n.props.children[0]?.props?.children[0]?.props?.children === (titles[label] || label))[0];
+  assert.ok(button, `Missing section ${label}`); button.props.onClick();
+}
+
+test('shared numeric field formats typing, paste and empty deletion; movement saves its numeric value', async t => {
+  let saved;
+  const view=renderer(t,MobileMovementForm,{categories:[{id:1,nombre:'Ingreso QA',tipo:'ingreso'}],initialKind:'ingreso',busy:false,error:'',onSave:async value=>{saved=value;return true;},onClose(){}});
+  const amount=()=>view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];
+  amount().props.onChange({target:{value:'1000',selectionStart:4},nativeEvent:{inputType:'insertText',data:'0'}});
+  assert.equal(amount().props.value,'1.000');
+  amount().props.onChange({target:{value:'1.0000',selectionStart:6},nativeEvent:{inputType:'insertText',data:'0'}});
+  assert.equal(amount().props.value,'10.000');
+  amount().props.onChange({target:{value:'10.000,',selectionStart:7},nativeEvent:{inputType:'insertText',data:','}});
+  assert.equal(amount().props.value,'10.000,');
+  amount().props.onChange({target:{value:'',selectionStart:0},nativeEvent:{inputType:'deleteContentBackward',data:null}});
+  assert.equal(amount().props.value,'');
+  let prevented=false;amount().props.onPaste({clipboardData:{getData:()=> '1,234.56'},preventDefault:()=>{prevented=true;},currentTarget:{value:'',selectionStart:0,selectionEnd:0}});
+  assert(prevented);assert.equal(amount().props.value,'1.234,56');
+  view.find(n=>n.type==='select'&&n.props.children[0]?.props?.children==='Elegí una categoría')[0].props.onChange({target:{value:'1'}});
+  await view.find(n=>n.type==='form')[0].props.onSubmit({preventDefault(){}});
+  assert.equal(saved.monto,1234.56);assert.equal(typeof saved.monto,'number');
+});
+
+test('settings root groups stay compact; Android shortcuts are gated and detail/back preserves the route', async t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const platform = require('../services/platform.ts'), quick = require('../services/mobileQuickEntry.ts');
+  let runtime = 'android', info = 0, added = 0;
+  t.mock.method(platform, 'getRuntimePlatformSync', () => runtime);
+  t.mock.method(quick, 'quickEntryInfo', async () => { info++; return {sdk:33}; });
+  t.mock.method(quick, 'requestQuickEntryTile', async () => { added++; return 'Agregado'; });
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.deepEqual(view.find(n => n.type === 'h2').map(n => n.props.children), ['General','Cuenta y seguridad','Sincronización','Premium y facturación','Información']);
+  assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 1);
+  assert.doesNotMatch(view.html(), /<form|<input|Agregar tile|Restaurar compras|Cerrar sesión|Volver a mostrar guías|<details/);
+  assert.equal(info, 0); assert.equal(added, 0);
+  selectSettings(view, 'Accesos rápidos de Android'); view.html(); view.effects(); await flush();
+  assert.equal(info, 1); assert.equal(added, 0);
+  assert.equal(view.find(n => n.type === 'h2' && n.props.children === 'Accesos rápidos de Android').length, 1);
+  assert.equal(view.find(n => n.type === 'h3').length, 0);
+  assert.equal(view.find(n => n.props['data-settings-row']).length, 0);
+  assert.match(view.html(), /Agregar tile de ingreso/);
+  view.find(n => n.type === 'button' && n.props.children.includes?.('Volver a Configuración'))[0].props.onClick();
+  assert.equal(window.location.search, ''); assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 1);
+  for (runtime of ['ios','browser','desktop']) assert.equal(view.find(n => n.props['data-settings-row'] === 'quick-entry').length, 0);
+  assert.equal(added, 0);
+  const { mobileSettingsFromUrl } = require('../components/mobile/configuracion/MobileSettingsNavigation.tsx');
+  assert.equal(mobileSettingsFromUrl('?section=quick-entry', false), null);
+  assert.equal(mobileSettingsFromUrl('', true), null);
+  assert.equal(mobileSettingsFromUrl('?section=invalid', true), null);
+});
+
+test('settings summaries use internal owner and existing state without login, purchase or cloud sync side effects', async t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const owner = 'internal-qa-owner', account = {user:{id:owner,email:'private@example.test'}};
+  mobileAccountState = {...previous,financialContext:{ownerId:owner,isCurrent:()=>true},financialAccount:account,session:account};
+  const entitlements = require('../services/entitlements.ts'), flags = require('../services/mobileRecoveryState.ts');
+  const pull = require('../services/data/mobileCloudPull.ts'), push = require('../services/data/mobileCloudPush.ts');
+  let plan = 'premium', blocked = false, pending = [], remote = 0, auth = 0, purchase = 0, reads = [];
+  t.mock.method(entitlements, 'getCachedEntitlements', id => { assert.equal(id,owner); return {...mobilePremium,plan}; });
+  t.mock.method(entitlements, 'loadEntitlements', async () => { remote++; });
+  t.mock.method(flags, 'isMobileRecoveryBlocked', () => blocked);
+  t.mock.method(pull, 'getMobilePullCursor', async id => { reads.push(id); return '42'; });
+  t.mock.method(push, 'getMobileCloudPending', async id => { assert.equal(id,owner); return {categorias:pending,movimientos:[]}; });
+  t.mock.method(pull, 'pullMobileCloudNow', async () => { remote++; });
+  t.mock.method(push, 'pushMobileCloudNow', async () => { remote++; });
+  t.mock.method(require('../services/supabaseCloudAuth.ts'), 'signOut', async () => { auth++; });
+  t.mock.method(require('../services/googlePlayBilling.ts'), 'restorePlayPurchases', async () => { purchase++; });
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.match(view.html(), /Sesión iniciada/); assert.doesNotMatch(view.html(), /private@example.test|internal-qa-owner|Sincronizado/);
+  const rowText = id => renderToStaticMarkup(view.find(n => n.props['data-settings-row'] === id)[0]);
+  assert.match(rowText('sync'), /Sin pendientes locales/); assert.match(rowText('suscripcion'), /Activo/);
+  pending = [{sync_error_code:null}]; window.dispatchEvent(new Event(flags.MOBILE_RECOVERY_CHANGED)); view.html(); view.effects(); await flush();
+  assert.match(rowText('sync'), /Pendiente/);
+  pending = [{sync_error_code:'conflict'}]; window.dispatchEvent(new Event(flags.MOBILE_RECOVERY_CHANGED)); view.html(); view.effects(); await flush();
+  assert.match(rowText('sync'), /Requiere atención/);
+  plan = 'free'; blocked = true; window.dispatchEvent(new Event(entitlements.ENTITLEMENTS_CHANGED_EVENT)); view.html(); view.effects(); await flush();
+  assert.match(rowText('suscripcion'), /No activo/); assert.match(rowText('recovery'), /Pendiente/);
+  for (const title of ['Datos y backups','General','Acerca de']) { selectSettings(view,title); view.html(); view.effects(); await flush(); }
+  assert.deepEqual([remote,auth,purchase],[0,0,0]); assert(reads.length > 0);
+  assert.equal(mobileAccountState.session, account);
+});
+
+test('settings keeps saved-session, checking and offline labels separate from active-session claims', async t => {
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  mobileAccountState = {...previous,session:null,financialAccount:{user:{id:'qa'}},financialContext:{ownerId:'qa',isCurrent:()=>true}};
+  const view = renderer(t, MobileSettings); view.html(); view.effects(); await flush();
+  assert.match(view.html(), /Cuenta guardada/); assert.doesNotMatch(view.html(), /Sesión iniciada/);
+  mobileAccountState = {...mobileAccountState,checking:true}; assert.match(view.html(), /Comprobando cuenta/);
+  const old = global.navigator;
+  Object.defineProperty(global,'navigator',{value:{onLine:false},configurable:true});
+  t.after(() => Object.defineProperty(global,'navigator',{value:old,configurable:true}));
+  window.dispatchEvent(new Event('offline')); assert.match(view.html(), /Sin conexión/);
+});
+
+test('late local sync metadata cannot leak another owner into the settings summary', async t => {
+  const previous = mobileAccountState; t.after(() => { mobileAccountState = previous; });
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const late = deferred(); let current = true;
+  mobileAccountState = {...previous,financialAccount:{user:{id:'old-owner'}},financialContext:{ownerId:'old-owner',isCurrent:()=>current}};
+  t.mock.method(require('../services/data/mobileCloudPull.ts'),'getMobilePullCursor',id => id === 'old-owner' ? late.promise : Promise.resolve(null));
+  const view = renderer(t,MobileSettings); view.html(); view.effects();
+  current = false; mobileAccountState = {...previous,financialAccount:{user:{id:'new-owner'}},financialContext:{ownerId:'new-owner',isCurrent:()=>true}};
+  view.html(); view.effects(); await flush(); assert.match(view.html(), /Sincronización manual/);
+  late.resolve('42'); await flush(); assert.doesNotMatch(view.html(), /Sin pendientes locales/);
+});
+
+test('settings recovery detail requests the single global review host without making recovery decisions', async t => {
+  const {MobileSettings} = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const recovery = require('../components/mobile/account/MobileAccountRecovery.tsx');
+  const service = require('../services/data/mobileAccountRecovery.ts'), flags = require('../services/mobileRecoveryState.ts');
+  let reviews = 0, decisions = 0;
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true); t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{reviews++;});
+  t.mock.method(service,'migrateMobileAccount',async()=>{decisions++;});
+  t.mock.method(service,'keepMobileRecoverySeparate',async()=>{decisions++;});
+  function Screen() { return React.createElement(React.Fragment,{},React.createElement(recovery.MobileAccountRecovery),React.createElement(MobileSettings)); }
+  const view = renderer(t,Screen); view.html(); view.effects(); await flush(); assert.equal(reviews,1);
+  selectSettings(view,'Recuperación de cuenta'); view.html(); view.effects(); await flush(); assert.equal(reviews,1);
+  assert.equal(view.find(n=>n.type==='dialog').length,0);
+  // The global pending warning remains; only the detail's action is selected.
+  const action = view.find(n=>n.type==='button'&&n.props.children==='Revisar datos anteriores').find(n=>n.props.className.includes('w-full'));
+  action.props.onClick(); view.html(); view.effects(); await flush(); assert.equal(reviews,2); assert.equal(decisions,0);
+});
+
+test('recovery UI waits for authorized session, shows only counts and needs explicit consent before migrating',async t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  const flags=require('../services/mobileRecoveryState.ts'),service=require('../services/data/mobileAccountRecovery.ts');
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true);t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{});let migrated=0;
+  t.mock.method(service,'findMobileRecovery',async()=>({sourceOwner:'source-internal-uuid',targetOwner:'target-internal-uuid',categories:2,movements:3,blocked:false}));
+  t.mock.method(service,'migrateMobileAccount',async(source,target)=>{assert.equal(source,'source-internal-uuid');assert.equal(target,'target-internal-uuid');migrated++;return{migrated:true};});
+  const {MobileAccountRecovery}=require('../components/mobile/account/MobileAccountRecovery.tsx');
+  mobileAccountState={...previous,session:null,checking:true};const view=renderer(t,MobileAccountRecovery,{},false);view.html();view.effects();await flush();assert.doesNotMatch(view.html(),/Conservar en mi cuenta actual/);
+  mobileAccountState={...previous,session:{user:{id:'target-internal-uuid'}},checking:false};view.html();view.effects();await flush();
+  assert.match(view.html(),/2 categorías.*3 movimientos/);assert.doesNotMatch(view.html(),/source-internal-uuid|target-internal-uuid/);assert.equal(migrated,0);
+  view.find(n=>n.type==='button'&&n.props.children==='Conservar en mi cuenta actual')[0].props.onClick();await flush();assert.equal(migrated,1);assert.match(view.html(),/sincronizarlos manualmente/);
+});
+
+test('recovery UI with a populated destination never offers merge and preserves the separate decision',async t=>{
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});mobileAccountState={...previous,session:{user:{id:'target'}},checking:false};
+  const flags=require('../services/mobileRecoveryState.ts'),service=require('../services/data/mobileAccountRecovery.ts');
+  t.mock.method(flags,'mobileRecoveryEnabled',()=>true);t.mock.method(flags,'isMobileRecoveryBlocked',()=>true);
+  t.mock.method(service,'evaluateRecoveryInventory',async()=>{});t.mock.method(service,'findMobileRecovery',async()=>({sourceOwner:'source',targetOwner:'target',categories:1,movements:2,blocked:true}));
+  let separate=0;t.mock.method(service,'keepMobileRecoverySeparate',async()=>separate++);
+  const {MobileAccountRecovery}=require('../components/mobile/account/MobileAccountRecovery.tsx'),view=renderer(t,MobileAccountRecovery,{},false);
+  view.html();view.effects();await flush();assert.match(view.html(),/revisión manual/);assert.doesNotMatch(view.html(),/Conservar en mi cuenta actual/);
+  view.find(n=>n.type==='button'&&n.props.children==='Mantener por separado, sin transferir')[0].props.onClick();await flush();assert.equal(separate,1);
+});
+
+test('settings groups and old deep links select one pane, without duplicate device or sync controls', t => {
+  const { MobileSettings } = require('../components/mobile/configuracion/MobileSettings.tsx');
+  const { settingsSectionFromUrl } = require('../lib/settings.ts');
+  for (const id of ['general','cuenta','sync','datos','diagnostico','actualizaciones','acerca','suscripcion','dispositivos']) assert.equal(settingsSectionFromUrl('?section='+id), id);
+  assert.equal(settingsSectionFromUrl('?panel=cuenta'), 'cuenta');
+  assert.equal(settingsSectionFromUrl('?section=invalid'), 'general');
+  const view = renderer(t, MobileSettings); window.location.search = '?panel=cuenta'; view.html(); view.effects();
+  assert.match(view.html(), /Iniciar sesión o crear cuenta/);
+  assert.doesNotMatch(view.html(), /Descargar cambios cloud|<section>Dispositivos/);
+  assert.equal(view.find(n=>n.type==='summary').length, 0);
+  selectSettings(view, 'Datos y backups'); assert.match(window.location.search, /section=datos/);
+  assert.match(view.html(), /Desinstalar la app/); assert.doesNotMatch(view.html(), /Iniciar sesión o crear cuenta/);
+  selectSettings(view, 'General'); view.find(n=>n.type==='button'&&n.props.children==='Volver a mostrar guías')[0].props.onClick();
+  assert.match(view.html(), /Guía de ScisoNomics/);
+});
+
+test('mobile sidebar opens actual shared login directly, closes drawer and keeps OTP host across owner switch', t => {
+  const service = require('../services/supabaseCloudAuth.ts');
+  t.mock.method(service, 'isSupabaseCloudAuthConfigured', ()=>true);
+  const view = renderer(t, MobileApp, {}, false); pathname='/dashboard';
+  view.html(); window.navigator = {userAgent:'Android'}; window.__TAURI_INTERNALS__={}; view.effects();
+  view.find(n=>n.props['aria-label']==='Abrir menú')[0].props.onClick({currentTarget:{focus(){}}}); view.html();
+  view.find(n=>n.type==='button'&&Array.isArray(n.props.children)&&n.props.children.includes('Iniciar sesión'))[0].props.onClick();
+  assert.equal(pathname, '/dashboard'); assert.match(view.html(), /autocomplete="current-password"/i);
+  assert.match(view.html(), /¿Olvidaste tu contraseña/); assert.doesNotMatch(view.html(), /Cambiar cuenta/);
+  assert.match(view.html(), /Continuar con Google/);
+  const previous = mobileAccountState; t.after(()=>{mobileAccountState=previous;});
+  mobileAccountState={...previous,financialContext:{ownerId:'internal-owner',isCurrent:()=>true},financialReady:false};
+  assert.match(view.html(), /autocomplete="current-password"/i);
+});
+
+test('mobile sidebar distinguishes switching internal owner, adding and managing accounts', t => {
+  const cloud=require('../services/cloudAuth.ts'),{MobileSidebarAccount}=require('../components/mobile/account/MobileSidebarAccount.tsx');
+  const previous=mobileAccountState;t.after(()=>{mobileAccountState=previous;});
+  const accounts=[{user:{id:'internal-one',email:'one@example.test',display_name:'QA uno'}},{user:{id:'internal-two',email:'two@example.test'}}];
+  mobileAccountState={...previous,session:accounts[0],financialAccount:accounts[0]};
+  t.mock.method(cloud,'getStoredAccounts',()=>accounts);let switched,closed=0;
+  t.mock.method(cloud,'switchActiveOwner',id=>{switched=id;});
+  const view=renderer(t,MobileSidebarAccount,{onClose:()=>closed++});view.html();let action;
+  window.addEventListener('scisonomics:open-add-account-modal',event=>{action=event.detail.action;});
+  const select=view.find(n=>n.type==='select')[0];assert.equal(select.props.value,'internal-one');
+  assert.deepEqual(view.find(n=>n.type==='option').map(n=>n.props.value),['local','internal-one','internal-two']);
+  select.props.onChange({target:{value:'internal-two'}});assert.equal(switched,'internal-two');
+  view.find(n=>n.type==='button')[0].props.onClick();assert.equal(action,'add');assert.equal(closed,2);
+  assert.match(view.html(), /QA uno/);assert.match(view.html(), /configuracion\?panel=cuenta/);assert.doesNotMatch(view.html(), /Iniciar sesión/);
+});
+
+test('desktop guest sidebar opens shared login immediately rather than settings', t => {
+  const auth=require('../services/supabaseCloudAuth.ts');t.mock.method(auth,'isSupabaseCloudAuthConfigured',()=>true);
+  const motionId=require.resolve('framer-motion'),originalMotion=require.cache[motionId];
+  stub('framer-motion',{motion:{div:({children})=>React.createElement('div',{},children)}});
+  t.after(()=>{require.cache[motionId]=originalMotion;});
+  const modal=require('../components/ui/Modal.tsx');
+  t.mock.method(modal,'Modal',({open,title,children})=>open?React.createElement('section',{'aria-label':title},children):null);
+  const {Sidebar}=require('../components/layout/Sidebar.tsx');
+  pathname='/dashboard';const view=renderer(t,Sidebar,{collapsed:false,onToggle(){}},false);
+  const button=view.find(n=>n.type==='button'&&n.props['aria-label']==='Iniciar sesión')[0];
+  assert.equal(button.props['aria-haspopup'],'dialog');button.props.onClick();
+  assert.equal(pathname,'/dashboard');assert.match(view.html(),/autocomplete="current-password"/i);
+  assert.doesNotMatch(view.html(),/role="menu"/);assert.equal(button.props['aria-expanded'],false);
+});
+
+test('Spanish dates retain ISO values, clamp month/year changes and allow clearing an optional date', t => {
+  const {SpanishDateInput}=require('../components/ui/SpanishDateInput.tsx');let value='2028-01-31';
+  function DateField(){return React.createElement(SpanishDateInput,{value,onChange:next=>value=next});}
+  const view=renderer(t,DateField);
+  const names=require('../lib/format.ts').monthName;
+  assert.deepEqual(view.find(n=>n.type==='select')[1].props.children.flat().filter(React.isValidElement).map(n=>n.props.children),Array.from({length:12},(_,i)=>names(i+1)));
+  view.find(n=>n.props['aria-label']==='Fecha: mes')[0].props.onChange({target:{value:'2'}});assert.equal(value,'2028-02-29');
+  view.find(n=>n.type==='input')[0].props.onChange({target:{value:'2027'}});assert.equal(value,'2027-02-28');
+  view.find(n=>n.type==='input')[0].props.onChange({target:{value:'20'}});assert.equal(value,'2027-02-28');
+  view.find(n=>n.type==='button')[0].props.onClick();assert.equal(value,'');
+  assert.doesNotMatch(view.html(), /type="date"|January|February/);
+});
+
+test('Spanish month picker retains numeric period and formatters always request es-AR', t=>{
+  const {SpanishMonthInput}=require('../components/ui/SpanishDateInput.tsx');let value='2026-12';
+  function MonthField(){return React.createElement(SpanishMonthInput,{value,onChange:next=>value=next});}
+  const view=renderer(t,MonthField);view.find(n=>n.type==='input')[0].props.onChange({target:{value:'2027'}});
+  view.find(n=>n.type==='select')[0].props.onChange({target:{value:'1'}});assert.equal(value,'2027-01');
+  const {formatDate,formatDateTime}=require('../lib/format.ts');assert.match(formatDate('2026-10-01'),/octubre/);assert.match(formatDateTime('2026-10-01T12:00:00Z'),/oct/);
+  const real=Intl.DateTimeFormat,locales=[];t.mock.method(Intl,'DateTimeFormat',function(locale,options){locales.push(locale);return new real(locale,options);});
+  formatDate('2026-01-01');formatDateTime('2026-01-01T12:00:00Z');assert.deepEqual(locales,['es-AR','es-AR']);
+  assert.equal(formatDate('invalid'),'Fecha no disponible');
+});
+
+test("legal route keeps mobile shell and renders the existing single legal source verbatim", (t) => {
+  const LegalPage = require("../app/legal/page.tsx").default;
+  const legal = renderer(t, LegalPage);
+  const content = legal.find(node => node.type === "pre").map(node => node.props.children).join("");
+  assert.equal(content, fs.readFileSync(path.join(root, "src-tauri/LICENSE.txt"), "utf8"));
+  assert.deepEqual(legal.find(node => node.type === "pre").map(node => node.props.id), ["introduccion", "terminos", "privacidad", "aceptacion"]);
+  pathname = "/legal"; const view = renderer(t, MobileApp, { legalContent: React.createElement(LegalPage) });
+  assert.match(view.html(), /Documento legal de ScisoNomics/);
+  assert.equal(financeEnabled, false);
+  assert.match(view.html(), /<h1[^>]*>Legal<\/h1>/);
+  view.effects(); assert.equal(pathname, "/legal");
+  assert.doesNotMatch(view.html(), /Resumen financiero|Listado de movimientos/);
+});
+
+
+test("device OTP dialog opens accessibly, submits in memory and cancels to local", async t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");
+  let code, canceled=0;
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:0,expiresAt:Date.now()+600000}));
+  t.mock.method(auth,"verifyNewDeviceCode",async value=>{code=value;});
+  t.mock.method(auth,"cancelDeviceVerification",async()=>{canceled++;});
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  const html=view.html();
+  assert.match(html,/Verificá este dispositivo/);
+  assert.match(html,/aria-modal="true"/);
+  assert.match(html,/autocomplete="one-time-code"/i);
+  view.effects();assert.equal(view.counts().shown,1);
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"12x3456"}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  assert.equal(code,"123456");
+  view.find(n=>n.type==="button"&&n.props.children==="Continuar en modo local")[0].props.onClick();
+  await flush();assert.equal(canceled,1);
+});
+
+test("device OTP error and resend do not display code, token or native error details",async t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");let resent=0;
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:0,expiresAt:Date.now()+600000}));
+  t.mock.method(auth,"verifyNewDeviceCode",async()=>{throw new Error("Código vencido. Pedí uno nuevo.");});
+  t.mock.method(auth,"resendDeviceVerification",async()=>{resent++;});
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"123456"}});
+  await view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  assert.match(view.html(),/Código vencido/);
+  assert.doesNotMatch(view.html(),/value="123456"|private_key|access_token|refresh_token/);
+  view.find(n=>n.type==="button"&&n.props.children==="Reenviar código")[0].props.onClick();
+  await flush();assert.equal(resent,1);assert.match(view.html(),/El anterior ya no es válido/);
+});
+
+test("device resend is disabled during its cooldown",t=>{
+  const auth=require("../services/supabaseCloudAuth.ts");
+  t.mock.method(auth,"getPendingDeviceState",()=>({required:true,resendAt:Date.now()+60000,expiresAt:Date.now()+600000}));
+  const {DeviceVerificationDialog}=require("../components/account/DeviceVerificationDialog.tsx");
+  const view=renderer(t,DeviceVerificationDialog);
+  assert.equal(view.find(n=>n.type==="button"&&String(n.props.children).startsWith("Reenviar en"))[0].props.disabled,true);
+});
+
+test("account devices list metadata, rename and require confirmation before current revocation",async t=>{
+  const api=require("../services/deviceAuthorization.ts"), cloud=require("../services/cloudAuth.ts"),auth=require("../services/supabaseCloudAuth.ts");
+  const fixture={device_id:"public-test-device",device_name:"Mi teléfono",platform:"android",status:"trusted",last_seen_at:"2026-01-01",current:true};
+  t.mock.method(cloud,"getValidAccessToken",async()=>({token:"test-grant"}));
+  t.mock.method(api,"listAccountDevices",async()=>[fixture]);
+  let calls=[],logout;
+  t.mock.method(api,"manageAccountDevice",async(...args)=>{calls.push(args);return {ok:true,currentRevoked:args[3]==="device_revoke"};});
+  t.mock.method(auth,"signOut",async owner=>{logout=owner;return {ok:true};});
+  delete require.cache[path.join(root,"components/account/AccountDevices.tsx")];
+  const {AccountDevices}=require("../components/account/AccountDevices.tsx");
+  const view=renderer(t,AccountDevices,{ownerId:"internal-owner"});
+  view.html();view.effects();await flush();
+  assert.match(view.html(),/Este dispositivo/);assert.match(view.html(),/Android/);assert.match(view.html(),/Autorizado/);
+  assert.doesNotMatch(view.html(),/public-test-device|test-grant|private_key/);
+  view.find(n=>n.type==="button"&&n.props.children==="Renombrar")[0].props.onClick();
+  view.find(n=>n.type==="input")[0].props.onChange({target:{value:"Teléfono personal"}});
+  view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  await flush();assert.equal(calls[0][3],"device_rename");assert.equal(calls[0][4],"Teléfono personal");
+  view.html();view.effects();await flush();
+  view.find(n=>n.type==="button"&&n.props.children==="Revocar")[0].props.onClick();
+  assert.equal(calls.length,1,"Opening confirmation never revokes");
+  assert.match(view.html(),/Se cerrará tu sesión/);
+  view.find(n=>n.type==="form")[0].props.onSubmit({preventDefault(){}});
+  await flush();assert.equal(calls[1][3],"device_revoke");assert.equal(calls[1][5],true);assert.equal(logout,"internal-owner");
+});
+
+test('manual cloud download has status, persists read-only preview, and no automatic pull', async t => {
+  const { MobileCloudPull } = require('../components/mobile/account/MobileCloudPull.tsx');
+  pullState.calls=[];pullState.failure=null;pullState.snapshot={cursor:null,categories:[],movements:[]};
+  const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+  view.html();view.effects();await flush();assert.equal(pullState.calls.length,0);
+  assert.match(view.html(),/Todavía no descargaste/);
+  pullState.snapshot={cursor:'2026-10-05T12:00:00Z',categories:[{nombre:'Cloud',tipo:'gasto'}],movements:[{sync_id:'cloud-id',fecha:'2026-10-05',tipo:'gasto',categoria:'Cloud',descripcion:'prueba m8',monto:1234}]};
+  const button=view.find(n=>n.type==='button'&&n.props.children==='Sincronizar ahora')[0];button.props.onClick();
+  assert.match(view.html(),/Sincronizando/);assert.equal(view.find(n=>n.type==='button')[0].props.disabled,true);
+  button.props.onClick();await flush();
+  assert.deepEqual(pullState.calls,['internal-owner']);assert.match(view.html(),/Descarga completada/);assert.match(view.html(),/prueba m8/);
+  assert.equal(view.find(n=>n.type==='input'||n.type==='form').length,0);
+});
+test('manual pull displays sanitized error and keeps previously downloaded rows',async t=>{
+  const { MobileCloudPull }=require('../components/mobile/account/MobileCloudPull.tsx');
+  pullState.failure=new MockMobilePullError('El dispositivo no está autorizado.');
+  const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);view.html();view.effects();await flush();
+  view.find(n=>n.type==='button')[0].props.onClick();await flush();
+  assert.match(view.html(),/dispositivo no está autorizado/);assert.match(view.html(),/prueba m8/);assert.equal(view.find(n=>n.type==='button')[0].props.disabled,false);
+  pullState.failure=null;
+});
+
+test('cloud manual upload displays confirmation and conflict counts without automatic download',async t=>{
+ const push=require('../services/data/mobileCloudPush.ts');let uploads=0;
+ t.mock.method(push,'pushMobileCloudNow',async owner=>{assert.equal(owner,'internal-owner');uploads++;return{uploaded:2,rejected:1,conflicts:1,stillPending:1};});
+ const {MobileCloudPull}=require('../components/mobile/account/MobileCloudPull.tsx');const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+ view.html();view.effects();await flush();const before=pullState.calls.length;
+ view.find(n=>n.type==='button'&&n.props.children==='Subir cambios')[0].props.onClick();await flush();
+ assert.equal(uploads,1);assert.equal(pullState.calls.length,before);assert.match(view.html(),/2 cambios confirmados/);assert.match(view.html(),/1 conflictos/);assert.match(view.html(),/Se conservaron para revisi/);
+});
+test('cloud creation reuses movement form and scoped repository, with no note or goal controls',async t=>{
+ const financeModule=require('../services/data/mobileFinanceRepository.ts');let received;
+ t.mock.method(financeModule,'mobileAccountEntityRepository',owner=>{assert.equal(owner,'internal-owner');return{createMovimiento:async input=>{received=input;}};});
+ pullState.snapshot={cursor:'present',categories:[{id:1,nombre:'Cloud',tipo:'gasto'}],movements:[]};
+ const {MobileCloudPull}=require('../components/mobile/account/MobileCloudPull.tsx');const view=renderer(t,MobileCloudPull,{ownerId:'internal-owner'},false);
+ view.html();view.effects();await flush();view.find(n=>n.type==='button'&&n.props.children==='Crear movimiento cloud')[0].props.onClick();
+ assert.doesNotMatch(view.html(),/Nota \(opcional\)|Meta de ahorro/);
+ const inputs=view.find(n=>n.type==='input'),select=view.find(n=>n.type==='select').at(-1);
+ inputs.find(n=>n.props.placeholder==='0,00')?.props.onChange({target:{value:'1234'}});
+ // Find fields by their stable HTML constraints, as in the existing form tests.
+ const amount=view.find(n=>n.type==='input'&&n.props.inputMode==='decimal')[0];amount.props.onChange({target:{value:'1234'}});
+ select.props.onChange({target:{value:'1'}});view.find(n=>n.type==='form')[0].props.onSubmit({preventDefault(){}});await flush();
+ assert.equal(received.categoria_id,1);assert.equal(received.nota,'');assert.equal(received.meta_id,null);assert.match(view.html(),/Cambio guardado/);
+});
+
+async function premiumView(t, initialStatus='none') {
+ const previous=mobilePremium;mobilePremium={plan:'free',status:'active',features:{budgets:false,saving_goals:false,fixed_expenses:false,planning:false},expires_at:null};
+ t.after(()=>{mobilePremium=previous;});
+ const cloud=require('../services/cloudAuth.ts'),play=require('../services/googlePlayBilling.ts');
+ const state={owner:'internal-play-owner',status:initialStatus,calls:[],result:{pending:true},failure:null};
+ t.mock.method(cloud,'getActiveOwnerId',()=>state.owner);
+ t.mock.method(play,'playCatalog',async()=>({context:{productIds:['premium-from-server']},offers:[{formattedPrice:'Precio real de Play'}]}));
+ t.mock.method(play,'playSubscription',async()=>({status:state.status,expiresAt:'2030-01-01T00:00:00Z',acknowledged:true,autoRenew:state.status==='active'}));
+ t.mock.method(play,'watchPlayPurchases',async()=>({unregister:async()=>{}}));
+ t.mock.method(play,'refreshPlayPremiumScreen',async()=>{});
+ t.mock.method(play,'buyPlayPremium',async owner=>{state.calls.push(['buy',owner]);if(state.failure)throw new Error(state.failure);return state.result;});
+ t.mock.method(play,'restorePlayPurchases',async owner=>{state.calls.push(['restore',owner]);return {pending:false};});
+ t.mock.method(play,'managePlaySubscription',async(owner,product)=>{state.calls.push(['manage',owner,product]);});
+ const {MobilePremium}=require('../components/mobile/billing/MobilePremium.tsx');
+ const previousWindow=global.window;global.window=new EventTarget();
+ const view=renderer(t,MobilePremium,{},false);view.html();view.effects();await flush();
+ t.after(()=>{view.dispose();global.window=previousWindow;});
+ return {state,view,button:label=>view.find(n=>n.type==='button'&&n.props.children===label)[0]};
+}
+test('Android Premium shows Play price, pending purchase and backend errors without granting locally',async t=>{
+ const {state,view,button}=await premiumView(t);
+ assert.match(view.html(),/Precio real de Play/);assert.doesNotMatch(view.html(),/Mercado Pago/);
+ button('Suscribirme con Google Play').props.onClick();await flush();assert.match(view.html(),/Compra pendiente/);assert.match(view.html(),/Plan Free/);
+ state.failure='No pudimos verificar la compra.';button('Suscribirme con Google Play').props.onClick();await flush();
+ assert.match(view.html(),/role="alert"/);assert.match(view.html(),/No pudimos verificar/);assert.match(view.html(),/Plan Free/);
+ assert.doesNotMatch(view.html(),/internal-play-owner|premium-from-server|purchaseToken/);
+});
+test('Android restore and management actions stay in Play and require the current internal owner',async t=>{
+ const {state,view,button}=await premiumView(t,'canceled');assert.match(view.html(),/está cancelada/);
+ button('Restaurar compras').props.onClick();await flush();assert.deepEqual(state.calls[0],['restore','internal-play-owner']);
+ assert.match(view.html(),/Verificación completada/);assert.match(view.html(),/Plan Free/);
+ button('Administrar suscripción').props.onClick();await flush();assert.deepEqual(state.calls[1],['manage','internal-play-owner','premium-from-server']);
+ state.owner='local';view.html();view.effects();await flush();assert.match(view.html(),/Iniciá sesión/);
+ assert.equal(view.find(n=>n.type==='button').length,0);
+});
+test('Android displays Play grace and hold states while access remains governed by verified entitlement',async t=>{
+ const {state,view}=await premiumView(t,'grace');assert.match(view.html(),/intentando recuperar el pago/);assert.match(view.html(),/Plan Free/);
+ state.status='hold';view.find(n=>n.type==='button'&&n.props.children==='Restaurar compras')[0].props.onClick();await flush();
+ assert.match(view.html(),/pago está suspendido/);assert.match(view.html(),/Plan Free/);
+});

@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { formatNumericInput } from "../../lib/numericInput";
+import { NumericInput } from "../ui/NumericInput";
 import { useMemo, useState } from "react";
 
 import { money, parseCurrencyInput } from "../../lib/format";
@@ -85,7 +87,7 @@ export function GastosFijosView({
 
   function openEdit(row: GastoFijo) {
     setSelected(row);
-    setForm({ categoria_id: row.categoria_id, descripcion: row.descripcion, monto: String(row.monto), dia_vencimiento: String(row.dia_vencimiento), activo: row.activo });
+    setForm({ categoria_id: row.categoria_id, descripcion: row.descripcion, monto: formatNumericInput(row.monto), dia_vencimiento: String(row.dia_vencimiento), activo: row.activo });
     setOpen(true);
   }
 
@@ -149,7 +151,7 @@ export function GastosFijosView({
           <label className="text-xs text-slate-400">Descripcion</label>
           <input className="input" placeholder="Descripcion" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} required />
           <label className="text-xs text-slate-400">Monto</label>
-          <input className="input" type="text" inputMode="decimal" placeholder="Ej: 500.000,50" value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} required />
+          <NumericInput className="input" placeholder="Ej: 500.000,50" value={form.monto} onValueChange={(value) => setForm({ ...form, monto: value })} required />
           <label className="text-xs text-slate-400">Dia de vencimiento</label>
           <input className="input" type="text" inputMode="numeric" pattern="[0-9]*" placeholder="Dia (1-31)" value={form.dia_vencimiento} onChange={(e) => setForm({ ...form, dia_vencimiento: e.target.value.replace(/\D/g, "") })} required />
           <p className="text-xs text-slate-400">Si el dia no existe en un mes (por ejemplo 31), se usa el ultimo dia de ese mes.</p>

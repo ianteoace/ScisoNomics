@@ -1,0 +1,38 @@
+"use client";
+
+import { NumericInput } from "../../ui/NumericInput";
+import { SpanishDateInput } from "../../ui/SpanishDateInput";
+import { useState } from "react";
+import type { FormEvent } from "react";
+import type { MetaAhorro } from "../../../types/domain";
+import type { CreateMeta } from "../../../services/data/financeRepositoryTypes";
+import { validateMeta } from "../../../services/data/mobilePlanningRepository";
+import { parseCurrencyInput } from "../../../lib/format";
+import { PlanningForm } from "../MobilePlanningUI";
+
+export function MobileGoalForm({ row, busy, error, onClose, onSave }: {
+  row?: MetaAhorro; busy: boolean; error: string; onClose: () => void; onSave: (input: CreateMeta) => Promise<boolean>;
+}) {
+  const [name, setName] = useState(row?.nombre ?? "");
+  const [target, setTarget] = useState(row ? String(row.monto_objetivo).replace(".", ",") : "");
+  const [initial, setInitial] = useState(row ? String(row.monto_inicial).replace(".", ",") : "");
+  const [date, setDate] = useState(row?.fecha_objetivo ?? "");
+  const [description, setDescription] = useState(row?.descripcion ?? "");
+  const [state, setState] = useState<MetaAhorro["estado"]>(row?.estado ?? "activa");
+  const [validationError, setValidationError] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (busy) return; setValidationError("");
+    try {
+      if (await onSave(validateMeta({ nombre: name, monto_objetivo: parseCurrencyInput(target), monto_inicial: initial.trim() ? parseCurrencyInput(initial) : 0,
+        fecha_objetivo: date || null, descripcion: description, estado: state }))) onClose();
+    } catch (e) { setValidationError(e instanceof Error ? e.message : "Revisá los campos de la meta."); }
+  }
+  return <PlanningForm title={row ? "Editar meta" : "Crear meta"} busy={busy} error={validationError || error} onClose={onClose} onSubmit={submit} saveLabel="Guardar meta">
+    <label className="grid gap-1.5 text-sm">Nombre<input className="input min-h-11" autoFocus required maxLength={160} value={name} onChange={(e) => setName(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Monto objetivo<NumericInput className="input min-h-11" required placeholder="0,00" value={target} onValueChange={setTarget} /></label>
+    <label className="grid gap-1.5 text-sm">Monto inicial (opcional)<NumericInput className="input min-h-11" placeholder="0,00" value={initial} onValueChange={setInitial} /></label>
+    <div className="grid gap-1.5 text-sm"><p>Fecha objetivo (opcional)</p><SpanishDateInput label="Fecha objetivo" className="input min-h-11" value={date} onChange={setDate} /></div>
+    <label className="grid gap-1.5 text-sm">Descripción (opcional)<textarea className="input min-h-20" maxLength={2000} value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+    <label className="grid gap-1.5 text-sm">Estado<select className="input min-h-11" value={state} onChange={(e) => setState(e.target.value as MetaAhorro["estado"])}><option value="activa">Activa</option><option value="pausada">Pausada</option><option value="completada">Completada</option></select></label>
+  </PlanningForm>;
+}

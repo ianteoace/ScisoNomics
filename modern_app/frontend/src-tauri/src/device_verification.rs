@@ -262,6 +262,40 @@ pub(crate) fn sign_proof(
   })
 }
 
+// Separate domain: the frozen 237-byte Device Proof V1 and its purposes stay intact.
+pub(crate) fn account_delete_message(
+  identity: &StoredIdentity, account_binding: &str, challenge: &ProofChallengeInput,
+) -> Result<Vec<u8>, String> {
+  let ttl = challenge.expires_at.checked_sub(challenge.issued_at)
+    .ok_or_else(|| "invalid_delete_ttl".to_string())?;
+  if ttl == 0 || ttl > MAX_TTL_SECONDS || challenge.target_device_id.is_some() {
+    return Err("invalid_delete_fields".into());
+  }
+  let public = public_identity(identity)?;
+  let mut output = b"SCISONOMICS-ACCOUNT-DELETE-V1\0".to_vec();
+  output.extend_from_slice(&validate_account_binding(account_binding)?);
+  output.extend_from_slice(&parse_uuid(&identity.device_id)?);
+  output.extend_from_slice(&decode_array::<32>(&public.public_key_hash)?);
+  output.extend_from_slice(&parse_uuid(&challenge.challenge_id)?);
+  output.extend_from_slice(&decode_array::<32>(&challenge.nonce)?);
+  output.extend_from_slice(&challenge.issued_at.to_be_bytes());
+  output.extend_from_slice(&challenge.expires_at.to_be_bytes());
+  output.extend_from_slice(&parse_uuid(challenge.family_id.as_deref().ok_or("delete_family_required")?)?);
+  output.extend_from_slice(&decode_array::<32>(challenge.request_hash.as_deref().ok_or("delete_request_required")?)?);
+  Ok(output)
+}
+
+pub(crate) fn sign_account_delete(
+  identity: &StoredIdentity, account_binding: &str, challenge: &ProofChallengeInput,
+) -> Result<SignedProof, String> {
+  let message = account_delete_message(identity, account_binding, challenge)?;
+  let signature = signing_key(identity)?.sign(&message).to_bytes();
+  let public = public_identity(identity)?;
+  Ok(SignedProof { format_version: public.format_version, device_id: public.device_id,
+    public_key: public.public_key, public_key_hash: public.public_key_hash,
+    signature: URL_SAFE_NO_PAD.encode(signature) })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -277,6 +311,31 @@ mod tests {
   fn uuid_from_hex(value: &str) -> String {
     let bytes: [u8; 16] = hex_decode(value).try_into().unwrap();
     format_uuid(&bytes)
+  }
+
+  #[test]
+  fn account_delete_matches_python_vector_and_has_separate_domain() {
+    let vector: Value = serde_json::from_str(include_str!("../../../../docs/account-delete-proof-v1.json")).unwrap();
+    let old: Value = serde_json::from_str(FIXTURE).unwrap();
+    let identity = StoredIdentity { version: FORMAT_VERSION,
+      device_id: vector["identity"]["deviceId"].as_str().unwrap().to_string(),
+      private_key_seed: URL_SAFE_NO_PAD.encode(hex_decode(old["test_key"]["private_key_seed_hex"].as_str().unwrap())) };
+    let challenge: ProofChallengeInput = serde_json::from_value(vector["challenge"].clone()).unwrap();
+    let binding = vector["accountBinding"].as_str().unwrap();
+    let message = account_delete_message(&identity, binding, &challenge).unwrap();
+    assert_eq!(message.len(), 222);
+    assert_eq!(message, hex_decode(vector["messageHex"].as_str().unwrap()));
+    assert_eq!(sign_account_delete(&identity, binding, &challenge).unwrap().signature, vector["signature"].as_str().unwrap());
+    assert!(!message.starts_with(MAGIC));
+    let mut wrong: ProofChallengeInput = serde_json::from_value(vector["challenge"].clone()).unwrap();
+    wrong.family_id = None;
+    assert!(account_delete_message(&identity, binding, &wrong).is_err());
+    wrong.family_id = challenge.family_id;
+    wrong.target_device_id = Some(identity.device_id.clone());
+    assert!(account_delete_message(&identity, binding, &wrong).is_err());
+    wrong.target_device_id = None;
+    wrong.expires_at = wrong.issued_at + 121;
+    assert!(account_delete_message(&identity, binding, &wrong).is_err());
   }
 
   #[test]
@@ -336,5 +395,32 @@ mod tests {
       validate_account_binding(&URL_SAFE_NO_PAD.encode([0u8; 32])).unwrap_err(),
       "invalid_account_binding"
     );
+  }
+
+  #[test]
+  fn android_storage_key_is_canonical_base64url_sha256() {
+    for raw in [[1u8; 32], [128u8; 32], [255u8; 32]] {
+      let binding = URL_SAFE_NO_PAD.encode(raw);
+      let key = storage_account_key(&binding).unwrap();
+      assert_eq!(key.len(), 43);
+      assert!(key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+      assert_eq!(URL_SAFE_NO_PAD.decode(&key).unwrap(), Sha256::digest(raw).as_slice());
+    }
+    assert_ne!(storage_account_key(&URL_SAFE_NO_PAD.encode([1u8; 32])).unwrap(),
+      storage_account_key(&URL_SAFE_NO_PAD.encode([2u8; 32])).unwrap());
+  }
+
+  #[test]
+  fn encoded_identity_fits_android_encrypted_record_and_roundtrips() {
+    let identity = generate_identity();
+    let encoded = encode_identity(&identity).unwrap();
+    assert!(!encoded.is_empty() && encoded.len() <= 4096);
+    assert!(!encoded.chars().any(char::is_whitespace));
+    // Header (2), GCM IV (12) and authentication tag (16) keep the encrypted
+    // compact JSON inside Android's 30..8192 byte record contract.
+    assert!((30..=8192).contains(&(encoded.len() + 30)));
+    let decoded = decode_identity(&encoded).unwrap();
+    assert_eq!(public_identity(&identity).unwrap().public_key_hash,
+      public_identity(&decoded).unwrap().public_key_hash);
   }
 }

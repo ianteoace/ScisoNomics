@@ -1,0 +1,4 @@
+# Tauri/Gradle generated files; keep native plugin sources and permissions.
+/android/.tauri/
+/android/.gradle/
+/android/build/

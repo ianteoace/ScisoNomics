@@ -1,5 +1,8 @@
 ﻿"use client";
 
+import { formatNumericInput } from "../../lib/numericInput";
+import { NumericInput } from "../ui/NumericInput";
+import { SpanishDateInput } from "../ui/SpanishDateInput";
 import { useMemo, useState } from "react";
 
 import { getLocalDateInputValue } from "../../lib/date";
@@ -69,7 +72,7 @@ export function PlanificacionView({
 
   function openEdit(row: GastoProgramado) {
     setSelected(row);
-    setForm({ descripcion: row.descripcion, categoria_id: row.categoria_id, monto_estimado: String(row.monto_estimado), fecha_vencimiento: row.fecha_vencimiento, estado: row.estado, es_recurrente: row.es_recurrente, frecuencia: (row.frecuencia || "mensual") as any });
+    setForm({ descripcion: row.descripcion, categoria_id: row.categoria_id, monto_estimado: formatNumericInput(row.monto_estimado), fecha_vencimiento: row.fecha_vencimiento, estado: row.estado, es_recurrente: row.es_recurrente, frecuencia: (row.frecuencia || "mensual") as any });
     setOpen(true);
   }
 
@@ -128,9 +131,9 @@ export function PlanificacionView({
           <label className="text-xs text-slate-400">Categoria</label>
           <select className="input" value={form.categoria_id} onChange={(e) => setForm({ ...form, categoria_id: Number(e.target.value) })} required><option value={0}>Categoria</option>{gastoCategories.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select>
           <label className="text-xs text-slate-400">Monto estimado</label>
-          <input className="input" type="text" inputMode="decimal" value={form.monto_estimado} placeholder="Ej: 500.000,50" onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} required />
+          <NumericInput className="input" value={form.monto_estimado} placeholder="Ej: 500.000,50" onValueChange={(value) => setForm({ ...form, monto_estimado: value })} required />
           <label className="text-xs text-slate-400">Fecha de vencimiento</label>
-          <input className="input" type="date" value={form.fecha_vencimiento} onChange={(e) => setForm({ ...form, fecha_vencimiento: e.target.value })} required />
+          <SpanishDateInput label="Fecha de vencimiento" value={form.fecha_vencimiento} onChange={fecha_vencimiento => setForm({ ...form, fecha_vencimiento })} required />
           <label className="text-xs text-slate-400">Estado</label>
           <select className="input" value={form.estado} onChange={(e) => setForm({ ...form, estado: e.target.value })}><option value="pendiente">Pendiente</option><option value="pagado">Pagado</option><option value="cancelado">Cancelado</option></select>
           <label className="flex items-center gap-2 text-xs"><span>Recurrente</span><input type="checkbox" checked={!!form.es_recurrente} onChange={(e) => setForm({ ...form, es_recurrente: e.target.checked ? 1 : 0 })} /></label>

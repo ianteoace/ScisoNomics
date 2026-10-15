@@ -199,12 +199,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <BackendStartupGate>
         <AutoSyncProvider>
           <PremiumAutoRefreshProvider />
-          <div className={`min-h-screen lg:grid ${collapsed ? "lg:grid-cols-[84px_1fr]" : "lg:grid-cols-[250px_1fr]"}`}>
+          <div className={`desktop-shell grid min-h-screen grid-cols-[84px_minmax(0,1fr)] ${collapsed ? "" : "lg:grid-cols-[250px_minmax(0,1fr)]"}`}>
             <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
-            <div className="p-4 lg:p-6">
+            <div className="desktop-content min-w-0 p-4 lg:p-6">
               <Topbar />
               <AppUpdateBanner />
-              <div className="relative">
+              <div className="relative min-w-0">
                 <div
                   key={`${activeOwnerId}:${currentPathname}`}
                   className={`transition-all duration-200 ease-out ${ownerSwitching ? "translate-y-1 opacity-0 blur-[1px]" : "translate-y-0 opacity-100 blur-0"}`}

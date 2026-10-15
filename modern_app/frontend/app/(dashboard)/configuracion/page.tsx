@@ -1,6 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { SettingsNavigation } from "../../../components/layout/SettingsNavigation";
+import { AccountDevices } from "../../../components/account/AccountDevices";
+import { SETTINGS_SECTIONS, isSettingsSection, type SettingsSectionId } from "../../../lib/settings";
+import { formatDateTime } from "../../../lib/format";
+
 import { useEffect, useState } from "react";
 
 import { AccountPanel } from "../../../components/account/AccountPanel";
@@ -52,18 +57,6 @@ const ONBOARDING_SECTION_KEYS = [
   "scisonomics_onboarding_configuracion_seen",
 ] as const;
 
-const SETTINGS_SECTIONS = [
-  { id: "general", label: "General", hint: "Estado y accesos" },
-  { id: "cuenta", label: "Cuenta", hint: "Multicuentas" },
-  { id: "sync", label: "Sincronización", hint: "Manual y automática" },
-  { id: "datos", label: "Datos y backups", hint: "Datos locales y copias" },
-  { id: "diagnostico", label: "Datos y seguridad", hint: "Integridad y backups" },
-  { id: "actualizaciones", label: "Actualizaciones", hint: "Buscar e instalar" },
-  { id: "acerca", label: "Acerca de", hint: "Versión y novedades" },
-] as const;
-
-type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
-
 type AppDiagnostics = {
   ok: boolean;
   version: string;
@@ -95,9 +88,7 @@ function areVersionsCompatible(appVersion?: string | null, backendVersion?: stri
   return versionMajorMinor(appVersion) === versionMajorMinor(backendVersion);
 }
 
-function isSettingsSection(value: string | null): value is SettingsSectionId {
-  return SETTINGS_SECTIONS.some((section) => section.id === value);
-}
+
 
 function StatusPill({ value }: { value: string }) {
   return (
@@ -553,10 +544,47 @@ export default function ConfiguracionPage() {
     : autoSyncEnabled
       ? "Sincronización durante el uso activada"
       : "Sincronización al abrir y cerrar";
-  const lastSyncLabel = syncOverview?.last_success?.finished_at || getLastAutoSyncAt() || getLastManualSyncAt() || "Sin sincronizaciones registradas";
-  const selectedSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) || SETTINGS_SECTIONS[0];
+  const lastSyncDate = syncOverview?.last_success?.finished_at || getLastAutoSyncAt() || getLastManualSyncAt();
+  const lastSyncLabel = lastSyncDate ? formatDateTime(lastSyncDate) : "Sin sincronizaciones registradas";
+  const selectedSection = SETTINGS_SECTIONS.find((section) => section.id === activeSection) || SETTINGS_SECTIONS.find(section => section.id === "general")!;
 
   function renderGeneralSection() {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h3 className="text-2xl font-black">General</h3>
+          <p className="mt-1 text-sm text-slate-400">Estado general y accesos rápidos.</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
+            <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
+            <p className="text-sm text-slate-400">Versión {APP_VERSION}</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado</p>
+            <p className="mt-2 text-lg font-semibold">{backendLabel}</p>
+            <p className="text-sm text-slate-400">Base de datos: {databaseLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Compatibilidad local</p>
+            <p className="mt-2 text-lg font-semibold">{backendCompatibilityLabel}</p>
+            <p className="text-sm text-slate-400">Backend {backendVersion}</p>
+          </div>
+        </div>
+        <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
+          <p className="font-semibold">Accesos rápidos</p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <Link className="btn" href="/movimientos">Registrar movimiento</Link>
+            <button className="btn-secondary" type="button" onClick={handleReopenOnboarding}>Volver a mostrar guías</button>
+            <button className="btn-secondary" type="button" onClick={() => selectSection("datos")}>Ver datos locales</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderSubscriptionSection() {
     const planLabel = entitlements?.plan === "premium" ? "Premium" : "Free";
     const premiumActive = entitlements?.plan === "premium" && ["active", "trialing"].includes(entitlements?.status || "");
     const subscriptionLabel = entitlements?.status === "trialing"
@@ -576,34 +604,7 @@ export default function ConfiguracionPage() {
       { key: "fixed_expenses", label: "Gastos fijos" },
       { key: "planning", label: "Planificación" },
     ].filter((item) => entitlements?.features?.[item.key as keyof BillingEntitlements["features"]]);
-    return (
-      <div className="space-y-5">
-        <div>
-          <h3 className="text-2xl font-black">General</h3>
-          <p className="mt-1 text-sm text-slate-400">Estado general y accesos rápidos.</p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-4">
-          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">App</p>
-            <p className="mt-2 text-lg font-semibold">ScisoNomics</p>
-            <p className="text-sm text-slate-400">Versión {APP_VERSION}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Estado</p>
-            <p className="mt-2 text-lg font-semibold">{backendLabel}</p>
-            <p className="text-sm text-slate-400">Base de datos: {databaseLabel}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Compatibilidad local</p>
-            <p className="mt-2 text-lg font-semibold">{backendCompatibilityLabel}</p>
-            <p className="text-sm text-slate-400">Backend {backendVersion}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
-            <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Plan</p>
-            <p className="mt-2 text-lg font-semibold">{planLabel}</p>
-            <p className="text-sm text-slate-400">Estado: {subscriptionLabel}</p>
-          </div>
-        </div>
+    return <div className="space-y-5"><h3 className="text-2xl font-black">Suscripción</h3><p>Plan: {planLabel} · Estado: {subscriptionLabel}</p>
         <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
@@ -632,17 +633,7 @@ export default function ConfiguracionPage() {
           {premiumSubscription?.paid_until ? <p className="mt-2 text-sm text-slate-300">Vigencia pagada verificada hasta: {new Date(premiumSubscription.paid_until).toLocaleDateString("es-AR")}</p> : null}
           {premiumMessage ? <p className="mt-3 text-sm text-slate-300" role="status">{premiumMessage}</p> : null}
         </div>
-        <div className="rounded-2xl border border-line bg-slate-950/30 p-4">
-          <p className="font-semibold">Accesos rápidos</p>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            <Link className="btn" href="/movimientos">Registrar movimiento</Link>
-            <button className="btn-secondary" type="button" onClick={() => selectSection("datos")}>Ver datos locales</button>
-            <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
-            <button className="btn-secondary" type="button" onClick={() => window.dispatchEvent(new Event("scisonomics:open-add-account-modal"))}>Agregar cuenta</button>
-          </div>
-        </div>
-      </div>
-    );
+    </div>;
   }
 
   function renderCuentaSection() {
@@ -654,7 +645,7 @@ export default function ConfiguracionPage() {
             Administrá el modo local, tus cuentas y el acceso con Google en este dispositivo.
           </p>
         </div>
-        <AccountPanel showHeader={false} hideSyncCenter />
+        <AccountPanel showHeader={false} hideSyncCenter hideDevices />
       </div>
     );
   }
@@ -778,8 +769,8 @@ export default function ConfiguracionPage() {
         </p>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <button className="btn" onClick={() => setEncryptedBackupOpen(true)}>Crear copia cifrada (recomendada)</button>
-          <button className="btn-secondary" onClick={handleCreateSecurityCopy}>Crear copia sin cifrar</button>
-          <button className="btn-secondary" onClick={() => setWindowsProtectionOpen(true)}>Proteger datos con Windows</button>
+          <button className="btn-secondary" onClick={handleCreateSecurityCopy}>Exportar copia sin cifrar</button>
+          <button className="btn-secondary" onClick={handleCreateLocalBackup} disabled={creatingLocalBackup}>{creatingLocalBackup ? "Creando backup..." : "Guardar backup en la carpeta local"}</button>
           <button className="btn-secondary" onClick={handlePickRestoreFile}>Restaurar copia de seguridad</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(dataPath, "datos")}>Abrir carpeta de datos</button>
           <button className="btn-secondary" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
@@ -838,7 +829,7 @@ export default function ConfiguracionPage() {
           </div>
           <div className="rounded-2xl border border-line bg-slate-950/40 p-4">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Último backup</p>
-            <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at || "Todavía no creaste un backup"}</p>
+            <p className="mt-2 text-lg font-semibold">{backupState?.last_backup?.modified_at ? formatDateTime(backupState.last_backup.modified_at) : "Todavía no creaste un backup"}</p>
             <p className="mt-1 text-sm text-slate-400">Tus backups se guardan localmente. Las copias sin cifrar contienen tus datos financieros: guardalas solo en un lugar seguro.</p>
           </div>
         </div>
@@ -856,15 +847,12 @@ export default function ConfiguracionPage() {
           <button className="btn" type="button" onClick={handleReviewLocalData} disabled={checkingLocalIntegrity}>
             {checkingLocalIntegrity ? "Revisando..." : "Revisar datos locales"}
           </button>
-          <button className="btn-secondary" type="button" onClick={handleCreateLocalBackup} disabled={creatingLocalBackup}>
-            {creatingLocalBackup ? "Creando backup..." : "Crear backup"}
-          </button>
+          <button className="btn-secondary" type="button" onClick={() => setWindowsProtectionOpen(true)}>Proteger datos con Windows</button>
           {(localIntegrity && localIntegrity.status !== "healthy") || repairModeActive ? (
             <button className="btn-secondary" type="button" onClick={handleRepairLocalData} disabled={repairingLocalDb}>
               {repairingLocalDb ? "Reparando..." : "Reparar datos locales"}
             </button>
           ) : null}
-          <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(backupsPath, "backups")}>Abrir carpeta de backups</button>
           <button className="btn-secondary" type="button" onClick={() => handleOpenFolder(logsPath, "logs")}>Abrir carpeta de logs</button>
         </div>
       </div>
@@ -936,6 +924,8 @@ export default function ConfiguracionPage() {
   }
 
   function renderActiveSection() {
+    if (activeSection === "suscripcion") return renderSubscriptionSection();
+    if (activeSection === "dispositivos") return activeOwner !== "local" ? <AccountDevices key={activeOwner} ownerId={activeOwner} /> : <p>Iniciá sesión para administrar tus dispositivos confiables.</p>;
     if (activeSection === "cuenta") return renderCuentaSection();
     if (activeSection === "sync") return renderSyncSection();
     if (activeSection === "datos") return renderDatosSection();
@@ -966,34 +956,15 @@ export default function ConfiguracionPage() {
       {loading && !info ? <LoadingSkeleton rows={5} /> : null}
       {loadError ? <ErrorState title="No se pudieron cargar los datos de configuración." description={loadError} onRetry={load} /> : null}
 
-      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="card h-fit p-3">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="card h-fit min-w-0 p-3">
           <div className="mb-3 px-2">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Secciones</p>
           </div>
-          <nav className="flex gap-2 overflow-x-auto lg:block lg:space-y-1 lg:overflow-visible" aria-label="Secciones de configuración">
-            {SETTINGS_SECTIONS.map((section) => {
-              const active = section.id === activeSection;
-              return (
-                <button
-                  key={section.id}
-                  type="button"
-                  className={`min-w-44 rounded-2xl border px-3 py-2 text-left transition lg:w-full ${
-                    active
-                      ? "border-cyan-400/30 bg-cyan-400/10 text-cyan-100"
-                      : "border-transparent text-slate-400 hover:border-line hover:bg-slate-950/40 hover:text-slate-100"
-                  }`}
-                  onClick={() => selectSection(section.id)}
-                >
-                  <span className="block text-sm font-semibold">{section.label}</span>
-                  <span className="mt-0.5 block text-xs opacity-70">{section.hint}</span>
-                </button>
-              );
-            })}
-          </nav>
+          <SettingsNavigation active={activeSection} onSelect={selectSection} />
         </aside>
 
-        <main className="card min-h-[520px] p-5">
+        <main className="card min-h-[520px] min-w-0 p-5">
           <div className="mb-5 border-b border-line pb-4">
             <div>
               <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Sección activa</p>

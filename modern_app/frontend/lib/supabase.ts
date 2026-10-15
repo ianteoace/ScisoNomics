@@ -34,7 +34,7 @@ export function createSupabaseAuthClient(oauthStorage?: SupportedStorage, oauthS
     url: `${supabaseUrl!.replace(/\/$/, "")}/auth/v1`,
     headers: { apikey: supabasePublishableKey! },
     // The OAuth adapter is memory-only. The SDK needs persistSession=true to
-    // honor a custom adapter; only its pending PKCE snapshot goes to WinCred.
+    // honor a custom adapter; only its pending PKCE snapshot goes to native secure storage.
     persistSession: Boolean(oauthStorage),
     storage: oauthStorage,
     flowType: "pkce",

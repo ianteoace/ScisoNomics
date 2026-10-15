@@ -1,5 +1,6 @@
 ﻿"use client";
 
+import { SpanishDateInput } from "../../../components/ui/SpanishDateInput";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { invoke } from "@tauri-apps/api/core";
@@ -10,6 +11,7 @@ import { MovimientosView } from "../../../components/views/MovimientosView";
 import { useDashboardUi } from "../../../hooks/useDashboardUi";
 import { useToast } from "../../../hooks/useToast";
 import { parseCurrencyInput } from "../../../lib/format";
+import { NumericInput } from "../../../components/ui/NumericInput";
 import { api } from "../../../services/api";
 import type { Categoria, MetaAhorro, Movimiento, MovimientosResponse } from "../../../types/domain";
 
@@ -174,19 +176,19 @@ export default function MovimientosPage() {
       <div className="panel grid gap-2 p-3 md:grid-cols-12">
         <div className="space-y-1 md:col-span-3">
           <label className="text-xs text-slate-500 dark:text-slate-400">Desde</label>
-          <input className="input" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+          <SpanishDateInput label="Desde" value={desde} onChange={setDesde} />
         </div>
         <div className="space-y-1 md:col-span-3">
           <label className="text-xs text-slate-500 dark:text-slate-400">Hasta</label>
-          <input className="input" type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+          <SpanishDateInput label="Hasta" value={hasta} onChange={setHasta} />
         </div>
         <select className="input md:col-span-3 md:self-end" value={tipo} onChange={(e) => setTipo(e.target.value)}><option value="todos">Todos</option><option value="ingreso">Ingresos</option><option value="gasto">Gastos</option><option value="ahorro">Ahorro</option><option value="inversion">Inversión</option></select>
         <select className="input md:col-span-3 md:self-end" value={categoria} onChange={(e) => setCategoria(e.target.value)}>
           <option value="">Todas las categorias</option>
           {filteredCategories.map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
         </select>
-        <input className="input md:col-span-3" placeholder="Monto mínimo" value={minMonto} onChange={(e) => setMinMonto(e.target.value)} />
-        <input className="input md:col-span-3" placeholder="Monto máximo" value={maxMonto} onChange={(e) => setMaxMonto(e.target.value)} />
+        <NumericInput className="input md:col-span-3" placeholder="Monto mínimo" value={minMonto} onValueChange={setMinMonto} />
+        <NumericInput className="input md:col-span-3" placeholder="Monto máximo" value={maxMonto} onValueChange={setMaxMonto} />
         <select className="input md:col-span-3" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
           <option value="recientes">Más recientes</option>
           <option value="antiguos">Más antiguos</option>

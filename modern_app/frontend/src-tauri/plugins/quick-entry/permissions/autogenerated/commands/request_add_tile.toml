@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-request-add-tile"
+description = "Enables the request_add_tile command without any pre-configured scope."
+commands.allow = ["request_add_tile"]
+
+[[permission]]
+identifier = "deny-request-add-tile"
+description = "Denies the request_add_tile command without any pre-configured scope."
+commands.deny = ["request_add_tile"]

@@ -1,9 +1,13 @@
 import { getSupabaseProjectUrl } from "../lib/supabase";
 import { CloudAuthRequestError } from "./cloudAuth";
+import { getSecureTokenStorage } from "./secureTokenStorage";
+import { getRuntimePlatformSync } from "./platform";
+import { isDesktopAuthRuntime, logDesktopAuthDiagnostic } from "./desktopAuthDiagnostics";
 const operations = new Map<string, Promise<unknown>>();
 
 export function isSupabaseSecureStorageAvailable() {
   if (typeof window === "undefined") return false;
+  if (getRuntimePlatformSync() === "ios") return false;
   const runtime = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown; isTauri?: boolean };
   return Boolean(runtime.__TAURI_INTERNALS__ || runtime.__TAURI__ || runtime.isTauri);
 }
@@ -18,13 +22,19 @@ async function storageKey(ownerId: string) {
 }
 
 async function invokeCommand<T>(name: string, ownerId: string, extra = {}): Promise<T> {
+  const operation = name.startsWith("save_") ? "save" : name.startsWith("load_") ? "load" : "delete";
+  logDesktopAuthDiagnostic("storage_availability", { secureStorageAvailable: isSupabaseSecureStorageAvailable() });
   if (!isSupabaseSecureStorageAvailable()) throw new CloudAuthRequestError(
-    "El almacenamiento seguro requiere la app de escritorio. Usá una sesión temporal.", { code: "supabase_secure_unavailable" });
+    "El almacenamiento seguro no está disponible en este entorno. Podés seguir en modo local.", { code: "supabase_secure_unavailable" });
   try {
     const accountId = await storageKey(ownerId);
-    const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<T>(name, { accountId, ...extra });
+    logDesktopAuthDiagnostic(`${operation}_start`, { ownerId, project_tag: accountId.slice(0, 12) });
+    const storage = getSecureTokenStorage();
+    const token = (extra as { token?: string }).token;
+    return await (name.startsWith("save_") ? storage.save(accountId, token!)
+      : name.startsWith("load_") ? storage.load(accountId) : storage.delete(accountId)) as T;
   } catch (error) {
+    logDesktopAuthDiagnostic(`${operation}_end`, { ownerId, success: false, errorCode: "supabase_secure_storage_failed" });
     if (error instanceof CloudAuthRequestError) throw error;
     throw new CloudAuthRequestError("No pudimos acceder al almacenamiento seguro. Intentá nuevamente.", { code: "supabase_secure_storage_failed" });
   }
@@ -42,20 +52,26 @@ function command<T>(name: string, ownerId: string, extra = {}): Promise<T> {
 
 export async function saveSupabaseRefreshToken(ownerId: string, token: string) {
   const result = await command<{ ok: boolean; roundtrip: boolean }>("save_persistent_supabase_refresh_token", ownerId, { token });
+  logDesktopAuthDiagnostic("save_end", { ownerId, success: Boolean(result?.ok && result.roundtrip), errorCode: result?.ok && result.roundtrip ? "none" : "supabase_secure_storage_failed" });
   if (!result?.ok || !result.roundtrip) throw new CloudAuthRequestError(
     "No pudimos verificar el guardado seguro de la sesión.", { code: "supabase_secure_storage_failed" });
 }
 
 export async function loadSupabaseRefreshToken(ownerId: string): Promise<string | null> {
   const result = await command<{ found: boolean; token: string | null; error_code?: string | null }>("load_persistent_supabase_refresh_token", ownerId);
+  const malformed = !result || typeof result.found !== "boolean" || (result.found && (typeof result.token !== "string" || !result.token));
+  logDesktopAuthDiagnostic("load_end", { ownerId, found: Boolean(result?.found && result.token), success: Boolean(!malformed && !result?.error_code), errorCode: malformed || result?.error_code ? "supabase_secure_storage_failed" : "none" });
+  if (isDesktopAuthRuntime() && malformed) throw new CloudAuthRequestError("No pudimos leer la sesión guardada.", { code: "supabase_secure_storage_failed" });
   if (result?.error_code) throw new CloudAuthRequestError("No pudimos leer la sesión guardada.", { code: "supabase_secure_storage_failed" });
   return result?.found && result.token ? result.token : null;
 }
 
-export async function deleteSupabaseRefreshToken(ownerId: string) {
+export async function deleteSupabaseRefreshToken(ownerId: string, reason: "temporary_login" | "logout_or_remove" | "auth_rejected" = "logout_or_remove") {
+  logDesktopAuthDiagnostic("delete_start", { ownerId, reason });
   if (!isSupabaseSecureStorageAvailable()) return { ok: true };
   try {
     const result = await command<{ ok: boolean }>("delete_persistent_supabase_refresh_token", ownerId);
+    logDesktopAuthDiagnostic("delete_end", { ownerId, reason, success: result?.ok === true });
     return { ok: result?.ok === true };
   } catch { return { ok: false }; }
 }

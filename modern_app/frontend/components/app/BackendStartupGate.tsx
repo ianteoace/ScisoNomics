@@ -4,6 +4,11 @@ import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { API_URL } from "../../services/http";
+import { getRuntimePlatformSync } from "../../services/platform";
+import { getMobileDatabase } from "../../services/data/mobileDatabase";
+import { MobileApp } from "../mobile/MobileApp";
+import { MobileAccountProvider } from "../mobile/account/MobileAccountProvider";
+import { SupabaseOAuthListener } from "../account/SupabaseOAuthListener";
 import packageJson from "../../package.json";
 
 type HealthResponse = {
@@ -51,7 +56,48 @@ function isCompatibleAppVersion(frontendVersion?: string | null, backendVersion?
   return versionMajorMinor(frontendVersion) === versionMajorMinor(backendVersion);
 }
 
+export function StartupScreen({ title, description = "", children }: { title: string; description?: string; children?: React.ReactNode }) {
+  return (
+    <div className="grid min-h-screen place-items-center p-6">
+      <div className="card w-full max-w-xl p-8 text-center" role="status" aria-live="polite">
+        <h1 className="text-2xl font-bold" suppressHydrationWarning ref={(heading) => {
+          // Static HTML cannot know the native platform. Update its one title
+          // at hydration so mobile preparation is visible immediately.
+          if (heading && heading.textContent !== title) heading.textContent = title;
+        }}>{title}</h1>
+        <p className="mt-3 text-sm text-slate-300">{description}</p>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export function MobileStartupGate({ children }: { children?: React.ReactNode } = {}) {
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setReady(false); setFailed(false);
+    getMobileDatabase().then(() => { if (active) setReady(true); })
+      .catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [attempt]);
+
+  if (ready) return <MobileAccountProvider><SupabaseOAuthListener /><MobileApp legalContent={children} /></MobileAccountProvider>;
+  return <StartupScreen
+    title={failed ? "No se pudo abrir ScisoNomics Mobile" : "Preparando ScisoNomics Mobile"}
+    description={failed ? "No se pudo abrir el almacenamiento local. Reintentá sin borrar los datos de la app." : ""}
+  >{failed ? <button className="btn mt-5 min-h-11" onClick={() => { setFailed(false); setAttempt((value) => value + 1); }}>Reintentar</button> : null}</StartupScreen>;
+}
+
 export function BackendStartupGate({ children }: { children: React.ReactNode }) {
+  const platform = getRuntimePlatformSync();
+  if (platform === "android" || platform === "ios") return <MobileStartupGate />;
+  return <DesktopBackendStartupGate>{children}</DesktopBackendStartupGate>;
+}
+
+function DesktopBackendStartupGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [ready, setReady] = useState(false);

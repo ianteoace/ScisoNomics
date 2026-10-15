@@ -118,8 +118,13 @@ jobs:
         run: cargo +1.88.0 install cargo-audit --version 0.22.2 --locked
       - name: Audit Rust dependencies
         working-directory: modern_app/frontend/src-tauri
-        # Vulnerabilities block CI; warnings remain visible and are reviewed periodically.
-        run: cargo +1.88.0 audit --file Cargo.lock
+        # RUSTSEC-2023-0071 is currently pulled only by the inactive sqlx-mysql
+        # resolution in Cargo.lock. ScisoNomics enables sqlx with
+        # default-features=false and sqlite/runtime-tokio only, and
+        # cargo tree --workspace --all-features --target all confirms that
+        # neither sqlx-mysql nor rsa are reachable from the application graph.
+        # No fixed rsa release is available for this advisory.
+        run: cargo +1.88.0 audit --file Cargo.lock --ignore RUSTSEC-2023-0071
       - name: Check Tauri Windows target
         working-directory: modern_app/frontend/src-tauri
         run: cargo +1.88.0 check --locked --target x86_64-pc-windows-msvc
@@ -143,7 +148,13 @@ jobs:
           python -m pip install --disable-pip-version-check -r modern_app/backend/requirements.txt -r modern_app/cloud_backend/requirements.txt
           python -m pip install pip-audit
       - name: Python security tests
-        run: python -m unittest modern_app.cloud_backend.test_security -v
+        run: >-
+          python -m unittest
+          modern_app.cloud_backend.test_security
+          modern_app.cloud_backend.test_device_sessions
+          modern_app.cloud_backend.test_account_deletion
+          modern_app.cloud_backend.test_google_play_billing
+          -v
       - name: Smoke import local backend from clean checkout
         env:
           # Import-time logs stay in temporary storage; no server or real app data.

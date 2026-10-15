@@ -1,0 +1,38 @@
+.dialog { color: #e2e8f0; background: #111c30; border: 1px solid #334155; border-radius: 1rem; padding: 0; width: calc(100% - 1.5rem); max-width: 32rem; max-height: calc(100dvh - 1.5rem); overflow-y: auto; }
+.dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.mobile {
+  position: fixed;
+  inset-inline: 0;
+  inset-block-start: calc(var(--mobile-viewport-top, 0px) + env(safe-area-inset-top, 0px) + .5rem);
+  inset-block-end: auto;
+  margin-block: 0;
+  margin-inline: auto;
+  width: calc(100% - 1rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  max-width: 26rem;
+  min-width: 0;
+  max-height: calc(var(--mobile-viewport-height, 100dvh) - 1rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.mobile .content { min-width: 0; padding: .75rem; }
+.mobile .header { position: sticky; top: 0; z-index: 1; background: #111c30; }
+.mobile .header h2 { font-size: 1.125rem; line-height: 1.5rem; }
+.drawer { margin: 0; width: min(20rem, calc(100% - 2.5rem)); max-width: none; height: 100dvh; max-height: 100dvh; border-radius: 0 1rem 1rem 0; }
+.drawer[open] { animation: slide-in 180ms ease-out; }
+.mobile.drawer {
+  inset-inline-start: env(safe-area-inset-left, 0px);
+  inset-inline-end: auto;
+  inset-block-start: var(--mobile-viewport-top, 0px);
+  margin: 0;
+  width: min(18rem, calc(100% - 2rem - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  height: var(--mobile-viewport-height, 100dvh);
+  max-height: var(--mobile-viewport-height, 100dvh);
+}
+.mobile.drawer .content {
+  padding-top: calc(.5rem + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(.75rem + env(safe-area-inset-bottom, 0px));
+}
+@keyframes slide-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) { .drawer[open] { animation: none; } }

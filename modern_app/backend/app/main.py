@@ -68,7 +68,7 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # expondria superficie interna innecesaria aunque los endpoints tengan token.
 app = FastAPI(
     title="Registro Finanzas API",
-    version="3.3.1",
+    version="3.3.4",
     docs_url=None if _IS_FROZEN else "/docs",
     redoc_url=None if _IS_FROZEN else "/redoc",
     openapi_url=None if _IS_FROZEN else "/openapi.json",
@@ -110,6 +110,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1",
         "http://localhost:3000",
+        # Opt-in local dev only; no arbitrary origin or production CORS expansion.
+        *(["http://localhost:3001"] if os.getenv("SCISONOMICS_DESKTOP_CONCURRENT_DEV") == "1" else []),
         "http://localhost",
         "http://tauri.localhost",
         "https://tauri.localhost",
@@ -126,7 +128,7 @@ class PremiumRequiredError(Exception):
     def __init__(self, feature: str):
         self.feature = feature
         self.code = "premium_required"
-        self.message = "Esta función está disponible en ScisoNomics Premium."
+        self.message = "Esta funciÃ³n estÃ¡ disponible en ScisoNomics Premium."
         super().__init__(self.message)
 
 
@@ -169,11 +171,11 @@ def _require_local_token(request: Request) -> None:
         return
     if not _LOCAL_TOKEN:
         if _ALLOW_DEV_TOKEN_BYPASS:
-            raise HTTPException(status_code=401, detail="No se pudo validar la conexión local de ScisoNomics.")
+            raise HTTPException(status_code=401, detail="No se pudo validar la conexiÃ³n local de ScisoNomics.")
         raise HTTPException(status_code=503, detail="El servicio local no tiene token de seguridad configurado.")
     provided = request.headers.get(_LOCAL_TOKEN_HEADER, "")
     if not provided or not hmac.compare_digest(provided, _LOCAL_TOKEN):
-        raise HTTPException(status_code=401, detail="No se pudo validar la conexión local de ScisoNomics.")
+        raise HTTPException(status_code=401, detail="No se pudo validar la conexiÃ³n local de ScisoNomics.")
 
 
 def _require_debug_endpoints_enabled() -> None:
@@ -380,7 +382,7 @@ def _verified_entitlement_allows(entitlements: dict[str, Any], *, owner: str, fe
 
 def _fetch_cloud_entitlements_verified(access_token: str) -> dict[str, Any]:
     if not access_token.strip():
-        raise HTTPException(status_code=401, detail="No hay una sesión cloud válida para verificar permisos Premium.")
+        raise HTTPException(status_code=401, detail="No hay una sesiÃ³n cloud vÃ¡lida para verificar permisos Premium.")
     endpoint = f"{_configured_cloud_api_url()}/billing/entitlements"
     request = UrlRequest(
         endpoint,
@@ -395,12 +397,12 @@ def _fetch_cloud_entitlements_verified(access_token: str) -> dict[str, Any]:
             body = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         if exc.code in {401, 403}:
-            raise HTTPException(status_code=401, detail="No se pudo verificar la suscripción Premium con la sesión cloud actual.") from exc
-        raise HTTPException(status_code=502, detail="El servicio cloud no respondió correctamente al verificar permisos Premium.") from exc
+            raise HTTPException(status_code=401, detail="No se pudo verificar la suscripciÃ³n Premium con la sesiÃ³n cloud actual.") from exc
+        raise HTTPException(status_code=502, detail="El servicio cloud no respondiÃ³ correctamente al verificar permisos Premium.") from exc
     except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        raise HTTPException(status_code=502, detail="No se pudo verificar la suscripción Premium con el servicio cloud.") from exc
+        raise HTTPException(status_code=502, detail="No se pudo verificar la suscripciÃ³n Premium con el servicio cloud.") from exc
     if not isinstance(body, dict):
-        raise HTTPException(status_code=502, detail="El servicio cloud devolvió un formato inválido al verificar permisos Premium.")
+        raise HTTPException(status_code=502, detail="El servicio cloud devolviÃ³ un formato invÃ¡lido al verificar permisos Premium.")
     return _normalize_entitlements_payload(
         body,
         source_override="cloud_verified",
@@ -526,7 +528,7 @@ def _cleanup_stale_temp_snapshots(max_age_seconds: int = 600) -> None:
 
 def _exit_process_after_response() -> None:
     # El endpoint responde antes de terminar el proceso. os._exit es deliberado:
-    # también cierra el runtime frozen si Windows no entrega SIGTERM a uvicorn.
+    # tambiÃ©n cierra el runtime frozen si Windows no entrega SIGTERM a uvicorn.
     time.sleep(0.15)
     os._exit(0)
 
@@ -609,8 +611,8 @@ def ready():
 
 @app.post("/internal/shutdown")
 def shutdown_backend(request: Request):
-    # El middleware ya protege rutas privadas; validar de nuevo deja explícito
-    # que este endpoint nunca puede usarse sin el token local efímero de Tauri.
+    # El middleware ya protege rutas privadas; validar de nuevo deja explÃ­cito
+    # que este endpoint nunca puede usarse sin el token local efÃ­mero de Tauri.
     _require_local_token(request)
     _logger.info("Shutdown solicitado para backend local.")
     threading.Thread(target=_exit_process_after_response, daemon=True).start()
@@ -816,9 +818,9 @@ def delete_categoria(categoria_id: int, service: FinanceService = Depends(get_se
         if "no existe o no pertenece a la cuenta activa" in message.lower():
             raise _service_value_error(exc, "La categoria") from exc
         if "movimientos asociados" in message.lower():
-            raise HTTPException(status_code=409, detail="No se puede eliminar esta categoría porque tiene movimientos asociados.") from exc
-        if "no se encontro la categoria" in message.lower() or "no se encontró la categoria" in message.lower():
-            raise HTTPException(status_code=404, detail="No se encontró la categoría.") from exc
+            raise HTTPException(status_code=409, detail="No se puede eliminar esta categorÃ­a porque tiene movimientos asociados.") from exc
+        if "no se encontro la categoria" in message.lower() or "no se encontrÃ³ la categoria" in message.lower():
+            raise HTTPException(status_code=404, detail="No se encontrÃ³ la categorÃ­a.") from exc
         raise HTTPException(status_code=400, detail=message) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1513,10 +1515,10 @@ async def cache_local_billing_entitlements(request: Request, service: FinanceSer
     BillingEntitlementsCacheIn(**(await request.json()))
     owner = _current_owner()
     if owner == LOCAL_OWNER_ID:
-        raise HTTPException(status_code=400, detail="Iniciá sesión con una cuenta cloud para verificar permisos Premium.")
+        raise HTTPException(status_code=400, detail="IniciÃ¡ sesiÃ³n con una cuenta cloud para verificar permisos Premium.")
     authorization = request.headers.get("Authorization", "").strip()
     if not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="No hay una sesión cloud válida para verificar permisos Premium.")
+        raise HTTPException(status_code=401, detail="No hay una sesiÃ³n cloud vÃ¡lida para verificar permisos Premium.")
     access_token = authorization.split(" ", 1)[1].strip()
     verified = _fetch_cloud_entitlements_verified(access_token)
     cloud_user_id = str(verified.get("user_id") or "").strip()
@@ -1559,7 +1561,7 @@ async def claim_local_data(request: Request, service: FinanceService = Depends(g
     payload = await request.json()
     owner = normalize_owner_id(str(payload.get("target_owner_user_id") or payload.get("owner_user_id") or _current_owner()))
     if not owner or owner == LOCAL_OWNER_ID:
-        raise HTTPException(status_code=400, detail="Iniciá sesión para asociar datos locales a una cuenta.")
+        raise HTTPException(status_code=400, detail="IniciÃ¡ sesiÃ³n para asociar datos locales a una cuenta.")
     active_cloud_owner = _require_cloud_owner()
     # El destino no puede venir libremente del body: debe coincidir con el owner
     # activo del request para impedir asociaciones accidentales entre cuentas.
@@ -1858,9 +1860,9 @@ async def sync_history_create(request: Request, service: FinanceService = Depend
     mode = str(payload.get("mode") or "manual")
     status = str(payload.get("status") or "success")
     if mode not in {"manual", "auto"}:
-        raise HTTPException(status_code=400, detail="Modo de sincronización inválido.")
+        raise HTTPException(status_code=400, detail="Modo de sincronizaciÃ³n invÃ¡lido.")
     if status not in {"success", "error", "skipped"}:
-        raise HTTPException(status_code=400, detail="Estado de sincronización inválido.")
+        raise HTTPException(status_code=400, detail="Estado de sincronizaciÃ³n invÃ¡lido.")
 
     details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
     started_at = str(payload.get("started_at") or datetime.now().isoformat(timespec="seconds"))
@@ -3580,7 +3582,7 @@ async def sync_cursor_set(request: Request, service: FinanceService = Depends(ge
     cursor = str(payload.get("cursor") or "").strip() if isinstance(payload, dict) else ""
     normalized_cursor = _serialize_sync_datetime(cursor)
     if not normalized_cursor:
-        raise HTTPException(status_code=422, detail="Cursor de sincronización inválido.")
+        raise HTTPException(status_code=422, detail="Cursor de sincronizaciÃ³n invÃ¡lido.")
     with service.db.connect() as conn:
         _config_set(conn, f"sync_pull_cursor:{owner}", normalized_cursor)
     return {"ok": True, "cursor": normalized_cursor}
@@ -4389,7 +4391,7 @@ def export_excel(
                 from_dt = datetime.strptime(desde, "%Y-%m-%d")
                 to_dt = datetime.strptime(hasta, "%Y-%m-%d")
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usa YYYY-MM-DD.") from exc
+                raise HTTPException(status_code=400, detail="Formato de fecha invÃ¡lido. Usa YYYY-MM-DD.") from exc
             if from_dt > to_dt:
                 raise HTTPException(status_code=400, detail="La fecha 'desde' no puede ser mayor que 'hasta'.")
             export_date_range_report(service, desde, hasta, output)
@@ -4618,4 +4620,5 @@ async def import_preview(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Formato no soportado. Usa .csv o .xlsx")
     return {"rows_read": len(rows), "preview": rows[:50]}
+
 

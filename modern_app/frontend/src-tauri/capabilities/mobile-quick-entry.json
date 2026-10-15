@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile-quick-entry",
+  "description": "Accesos rápidos Android: navegación y solicitud explícita de tiles.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "quick-entry:allow-peek-pending",
+    "quick-entry:allow-consume-pending",
+    "quick-entry:allow-request-add-tile",
+    "quick-entry:allow-get-info",
+    "quick-entry:allow-registerListener",
+    "quick-entry:allow-remove-listener"
+  ]
+}

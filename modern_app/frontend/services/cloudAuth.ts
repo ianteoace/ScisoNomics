@@ -1,3 +1,7 @@
+import { getRuntimePlatformSync } from "./platform";
+import { isDesktopAuthRuntime, logDesktopAuthDiagnostic } from "./desktopAuthDiagnostics";
+import { assertMobileRecoveryMetadataWritable, blockMobileRecoveryStorage, currentCloudEnvironment, quarantineMobileAccounts } from "./mobileRecoveryState";
+
 export type CloudUser = {
   id: string;
   email: string;
@@ -28,6 +32,7 @@ export type CloudAuthRegisterOrLoginResponse = CloudAuthResponse | EmailVerifica
 
 export type StoredCloudAccount = {
   authProvider?: "legacy" | "supabase";
+  authEnvironment?: string;
   user: CloudUser;
   addedAt: string;
   lastUsedAt: string;
@@ -412,6 +417,7 @@ function readJsonState(storage: Storage, key: string): StoredAuthState | null {
             .map((account) => ({
               user: account.user,
               authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
+              authEnvironment: typeof account.authEnvironment === "string" ? account.authEnvironment : undefined,
               storage: account.storage === "session" ? "session" : "persistent",
               addedAt: account.addedAt || nowIso(),
               lastUsedAt: account.lastUsedAt || account.addedAt || nowIso(),
@@ -439,6 +445,7 @@ function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
     accounts: state.accounts.map((account) => ({
       user: account.user,
       authProvider: account.authProvider === "supabase" ? "supabase" : "legacy",
+      authEnvironment: account.authEnvironment,
       storage: account.storage,
       addedAt: account.addedAt,
       lastUsedAt: account.lastUsedAt,
@@ -449,6 +456,7 @@ function writeJsonState(storage: Storage, key: string, state: StoredAuthState) {
 
 function readRuntimeTokenState(): StoredRuntimeTokenState {
   if (typeof window === "undefined") return {};
+  if (["android", "ios"].includes(getRuntimePlatformSync())) return {};
   try {
     const raw = window.sessionStorage.getItem(ACCESS_TOKEN_STATE_SESSION_KEY);
     if (!raw) return {};
@@ -470,6 +478,10 @@ function readRuntimeTokenState(): StoredRuntimeTokenState {
 
 function persistRuntimeTokenState() {
   if (typeof window === "undefined") return;
+  if (["android", "ios"].includes(getRuntimePlatformSync())) {
+    try { window.sessionStorage.removeItem(ACCESS_TOKEN_STATE_SESSION_KEY); } catch { /* Memory only on Mobile. */ }
+    return;
+  }
   try {
     const entries = Object.fromEntries(runtimeAccessTokenCache.entries());
     if (Object.keys(entries).length) {
@@ -566,7 +578,8 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
   if (value == null) return value;
   if (typeof value === "string") {
     const normalized = value.toLowerCase();
-    if (normalized.includes("bearer ") || normalized.includes("authorization") || normalized.includes("jwt")) return "[redacted]";
+    if (normalized.includes("bearer ") || normalized.includes("authorization") || normalized.includes("jwt")
+      || normalized.includes("://") || normalized.includes("code=")) return "[redacted]";
     return value;
   }
   if (typeof value !== "object") return value;
@@ -580,7 +593,11 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
       || normalizedKey === "refreshtoken"
       || normalizedKey === "authorization"
       || normalizedKey === "jwt"
-      || normalizedKey === "bearer";
+      || normalizedKey === "bearer"
+      || ["userid", "accountid", "ownerid", "email"].some(part => normalizedKey.includes(part))
+      || ["id", "userid", "accountid", "ownerid", "owneruserid", "email", "projecturl", "supabaseurl",
+        "publishablekey", "headers", "body", "response", "message", "stack", "state", "fingerprint",
+        "codeverifier", "codechallenge", "password", "signature"].includes(normalizedKey);
     if (isSensitiveKey) return [key, "[redacted]"];
     return [key, sanitizeAuthLogValue(nestedValue, keyPath ? `${keyPath}.${key}` : key)];
   });
@@ -588,6 +605,7 @@ function sanitizeAuthLogValue(value: unknown, keyPath = ""): unknown {
 }
 
 function logAuthLifecycle(stage: string, details?: Record<string, unknown>) {
+  if (process.env.NODE_ENV !== "development") return;
   const safeDetails = sanitizeAuthLogValue(details || {}) as Record<string, unknown>;
   const payload = JSON.stringify(safeDetails);
   if (stage === "auth metadata loaded") {
@@ -679,6 +697,17 @@ function setAccountRuntimeAuthState(accountId: string, state: AccountRuntimeAuth
   const normalized = normalizePersistentAccountId(accountId);
   if (!normalized) return;
   accountRuntimeAuthStateCache.set(normalized, state);
+}
+
+// Desktop Supabase hydration reports the same outcomes as an explicit refresh;
+// reading metadata must never turn a storage error into an expired session.
+export function recordDesktopSupabaseRefresh(ownerId: string, outcome: {
+  availability: AccountRuntimeAuthState["availability"]; refreshTokenFound: boolean; refreshSuccess: boolean;
+  rotatedRefresh: boolean; errorCode: string | null;
+}) {
+  if (!isDesktopAuthRuntime() || !getStoredAccounts().some(account => account.user.id === ownerId && account.authProvider === "supabase")) return;
+  setAccountAuthStatus(ownerId, { lastAuthErrorCode: outcome.errorCode, lastRefreshSuccess: outcome.refreshSuccess, lastRotatedRefresh: outcome.rotatedRefresh });
+  setAccountRuntimeAuthState(ownerId, { availability: outcome.availability, refreshTokenFound: outcome.refreshTokenFound, accessTokenValid: outcome.availability === "active" });
 }
 
 function clearAccountRuntimeAuthState(accountId: string) {
@@ -792,7 +821,9 @@ function readStoredAuthStateSnapshot(): StoredAuthState {
   const localState = readJsonState(window.localStorage, AUTH_STATE_KEY) || emptyAuthState();
   const sessionState = readJsonState(window.sessionStorage, AUTH_STATE_SESSION_KEY) || emptyAuthState();
   const preferredActive = sessionState.activeOwnerId !== LOCAL_OWNER_ID ? sessionState.activeOwnerId : localState.activeOwnerId;
-  const merged = normalizeState({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] });
+  let merged: StoredAuthState;
+  try { merged = normalizeState(quarantineMobileAccounts({ activeOwnerId: preferredActive, accounts: [...sessionState.accounts, ...localState.accounts] })); }
+  catch { blockMobileRecoveryStorage(); return emptyAuthState(); } // Preserve originals; recovery fails closed.
   const originalCount = (sessionState.accounts.length || 0) + (localState.accounts.length || 0);
   if (merged.activeOwnerId !== preferredActive || merged.accounts.length !== originalCount) saveSplitState(merged);
   const metadataDetails = {
@@ -831,6 +862,7 @@ async function hydratePersistentTokens() {
     }
     const state = readStoredAuthStateSnapshot();
     const persistentAccounts = state.accounts.filter((account) => account.storage === "persistent");
+    logDesktopAuthDiagnostic("hydration_start", { persistentAccounts: persistentAccounts.length });
     isHydratingSecureTokens = true;
     logAuthLifecycle("secure token hydrate start", {
       loadedAny: false,
@@ -852,11 +884,18 @@ async function hydratePersistentTokens() {
       }
     }
     if (persistentAccounts.some((account) => account.authProvider === "supabase")) {
-      loadedAny = await (await import("./supabaseCloudAuth")).hydrateStoredSessions() || loadedAny;
+      const external = await import("./supabaseCloudAuth");
+      loadedAny = await external.hydrateStoredSessions(isDesktopAuthRuntime()
+        ? owner => {
+          const account = getStoredAccounts().find(item => item.user.id === owner && item.authProvider === "supabase");
+          return account ? refreshAccessTokenForAccount(account) : Promise.resolve(null);
+        } : undefined) || loadedAny;
     }
     if (loadedAny) notifyAccountSessionChanged();
     hasHydratedSecureTokensThisBoot = true;
     lastHydratedAuthStateRevision = authStateRevision;
+    logDesktopAuthDiagnostic("hydration_end", { persistentAccounts: persistentAccounts.length, success: true, found: loadedAny });
+    if (isDesktopAuthRuntime()) notifyAccountSessionChanged();
     const hydrateReason = loadedAny
       ? "hydrated_refresh_tokens"
       : accountsChecked > 0
@@ -969,6 +1008,7 @@ export function getCloudAuthHydrationState(): CloudAuthHydrationState {
 }
 
 export function saveStoredAuthState(state: StoredAuthState, options: { notify?: boolean } = {}) {
+  assertMobileRecoveryMetadataWritable();
   const normalized = normalizeState(state);
   saveSplitState(normalized);
   authStateRevision += 1;
@@ -1234,7 +1274,7 @@ export async function deleteCloudToken(accountId: string) {
 async function resolveCloudSessionForAccount(account: StoredCloudAccount | null): Promise<{ session: StoredCloudSession | null; tokenSource: CloudTokenSource }> {
   if (!account) return { session: null, tokenSource: "missing" };
   const runtime = mergeTokenIntoAccount(account);
-  if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt)) {
+  if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt) && !(isDesktopAuthRuntime() && account.authProvider === "supabase" && account.storage === "persistent")) {
     return { session: runtime, tokenSource: account.storage === "session" ? "session" : "secure" };
   }
   const refreshed = await getValidAccessToken(account.user.id);
@@ -1273,7 +1313,8 @@ function isAuthSubsystemErrorCode(code: string | null) {
 function isPersistenceFailureCode(code: string | null) {
   return code === "secure_storage_unavailable"
     || code === "secure_refresh_save_failed"
-    || code === "keyring_roundtrip_failed";
+    || code === "keyring_roundtrip_failed"
+    || code === "secure_refresh_load_failed";
 }
 
 function resolvePersistenceStatus(
@@ -1337,20 +1378,20 @@ async function refreshAccessTokenForAccount(account: StoredCloudAccount): Promis
       const retryable = error instanceof CloudAuthRequestError && error.kind !== "auth";
       if (retryable) {
         if (error.code === "supabase_secure_storage_failed" || error.code === "supabase_secure_unavailable") {
-          setAccountAuthStatus(account.user.id, { lastAuthErrorCode: "secure_refresh_save_failed", lastRefreshSuccess: false });
+          if (!isDesktopAuthRuntime()) setAccountAuthStatus(account.user.id, { lastAuthErrorCode: "secure_refresh_save_failed", lastRefreshSuccess: false });
         }
-        setAccountRuntimeAuthState(account.user.id, { availability: "refresh_failed", refreshTokenFound: false, accessTokenValid: false });
+        if (!isDesktopAuthRuntime()) setAccountRuntimeAuthState(account.user.id, { availability: "refresh_failed", refreshTokenFound: false, accessTokenValid: false });
         const runtime = mergeTokenIntoAccount(account);
         return runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0) ? runtime : null;
       }
       (await import("./supabaseCloudAuth")).forgetSession(account.user.id);
-      await (await import("./supabaseCloudAuth")).deleteSavedSession(account.user.id);
+      await (await import("./supabaseCloudAuth")).deleteSavedSession(account.user.id, "auth_rejected");
       setRuntimeAccessToken(account.user.id, null);
     }
     const runtime = mergeTokenIntoAccount(account);
     if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt, 0)) return runtime;
     setRuntimeAccessToken(account.user.id, null);
-    setAccountRuntimeAuthState(account.user.id, { availability: "session_expired", refreshTokenFound: false, accessTokenValid: false });
+    setAccountRuntimeAuthState(account.user.id, { availability: isDesktopAuthRuntime() && account.storage === "persistent" && getAccountAuthStatus(account.user.id).lastAuthErrorCode !== "refresh_rejected" ? "saved_without_token" : "session_expired", refreshTokenFound: false, accessTokenValid: false });
     return null;
   }
   if (account.storage !== "persistent") return mergeTokenIntoAccount(account);
@@ -1549,6 +1590,15 @@ export async function getValidAccessToken(ownerId?: string): Promise<StoredCloud
     });
     return null;
   }
+  if (isDesktopAuthRuntime() && account.authProvider === "supabase" && account.storage === "persistent" && getCloudAuthHydrationState().pending) {
+    await hydratePersistentTokens();
+    if (!getStoredAccounts().some(item => item.user.id === account.user.id && item.authProvider === "supabase")) return null;
+    // Hydration already attempted this refresh. Preserve its diagnostic outcome;
+    // a later explicit request can retry a transient failure.
+    const outcome = getAccountRuntimeAuthState(account.user.id);
+    if (outcome && outcome.availability !== "active") return null;
+  }
+  if (isDesktopAuthRuntime() && account.authProvider === "supabase" && getAccountAuthStatus(account.user.id).lastAuthErrorCode === "refresh_rejected") return null;
   const runtime = mergeTokenIntoAccount(account);
   const accessTokenValidBefore = Boolean(runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt));
   if (runtime && !isTokenExpiredOrNearExpiry(runtime.expiresAt)) {
@@ -1669,6 +1719,7 @@ export async function getActiveCloudAuthState(): Promise<ActiveCloudAuthState> {
   const persistenceStatus = resolvePersistenceStatus(account, { authStatus, refreshTokenFound });
   const persistentStorageError = persistenceStatus === "failed";
   const requiresRelogin = availability !== "active" || persistentStorageError;
+  logDesktopAuthDiagnostic("auth_state", { ownerId: account.user.id, availability, persistenceStatus, persistentStorageError, lastAuthErrorCode: authStatus.lastAuthErrorCode, secureStorageAvailable });
   logAuthLifecycle("active cloud auth state", {
     accountId: shortAccountId(account.user.id),
     storage: account.storage,
@@ -1763,6 +1814,7 @@ export async function addOrUpdateAccount(session: { user: CloudUser; tokens: Clo
   const storage: "persistent" | "session" = requestedStorage;
   const account: StoredCloudAccount = {
     authProvider: options.authProvider || "legacy",
+    authEnvironment: options.authProvider === "supabase" ? currentCloudEnvironment() || undefined : undefined,
     user: session.user,
     storage,
     addedAt: existing?.addedAt || nowIso(),
@@ -1911,7 +1963,16 @@ export function subscribeAuthChanges(listener: () => void) {
   return () => window.removeEventListener(ACCOUNT_SESSION_CHANGED_EVENT, listener);
 }
 
-async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
+export async function handleDeletedAccountResponse(authorization: string) {
+  const token = /^Bearer /i.test(authorization) ? authorization.slice(7).trim() : "";
+  const owner = token ? getStoredAccounts().find(account => getRuntimeAccessToken(account.user.id)?.accessToken === token)?.user.id : undefined;
+  if (owner) {
+    try { await (await import("./accountDeletion")).forgetDeletedAccount(owner); }
+    catch { /* A closed server account cannot regain access through cleanup failure. */ }
+  }
+}
+
+export async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutMs = CLOUD_AUTH_TIMEOUT_MS): Promise<T> {
   if (!isCloudAuthConfigured()) throw new CloudAuthRequestError("El servicio de cuenta no está configurado en este entorno.", { kind: "unknown" });
   let response: Response;
   const controller = new AbortController();
@@ -1927,7 +1988,9 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutM
     console.error("Cloud auth request failed", { path, errorType: error instanceof Error ? error.name : typeof error });
     const isTimeout = error instanceof Error && error.name === "AbortError";
     throw new CloudAuthRequestError(
-      isTimeout
+      path.startsWith("/account/delete/")
+        ? "No pudimos confirmar el resultado. Reintentá la misma solicitud; no iniciés otra eliminación."
+        : isTimeout
         ? "No pudimos verificar la cuenta por un problema de conexión. La cuenta no fue eliminada."
         : "No se pudo conectar con el servicio de cuenta.",
       { kind: isTimeout ? "timeout" : "network" },
@@ -1939,6 +2002,11 @@ async function cloudRequest<T>(path: string, options: RequestInit = {}, timeoutM
     const body = await response.json().catch(() => null);
     const detail = body?.detail;
     const detailCode = typeof detail?.code === "string" ? detail.code : null;
+    if (detailCode === "account_deleted") {
+      // A delayed denial from account A must never disconnect account B.
+      // Match only the exact device grant used by this request.
+      await handleDeletedAccountResponse(new Headers(options.headers).get("Authorization") || "");
+    }
     const verification = detail?.verification;
     const recovery =
       verification?.status === "verification_required" &&
@@ -2099,7 +2167,7 @@ export async function verifyStoredSession(ownerId?: string): Promise<StoredCloud
       setRuntimeAccessToken(session.user.id, null);
       if (session.storage === "persistent") {
         const refreshTokenFound = session.authProvider === "supabase" ? false : Boolean(persistentRefreshTokenCache.get(session.user.id) || (await loadCloudToken(session.user.id)));
-        if (session.authProvider === "supabase") await (await import("./supabaseCloudAuth")).deleteSavedSession(session.user.id);
+        if (session.authProvider === "supabase") await (await import("./supabaseCloudAuth")).deleteSavedSession(session.user.id, "auth_rejected");
         setAccountAuthStatus(session.user.id, {
           lastAuthErrorCode: error.statusCode ? `verify_http_${error.statusCode}` : "verify_auth",
           lastRefreshSuccess: false,

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { isMobileRecoveryBlocked } from "../../services/mobileRecoveryState";
 
 import { ACCOUNT_SESSION_CHANGED_EVENT, getActiveCloudAuthState, getActiveCloudSessionAsync, getActiveOwnerId, getCloudAuthHydrationState } from "../../services/cloudAuth";
 import {
@@ -45,6 +46,7 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (isMobileRecoveryBlocked()) return;
 
     const clearTimer = () => {
       if (timerRef.current) {
@@ -69,8 +71,10 @@ export function AutoSyncProvider({ children }: { children: React.ReactNode }) {
     };
 
     const executeSync = async (reason: AutoSyncReason, force = false): Promise<ExecuteSyncOutcome> => {
+      if (isMobileRecoveryBlocked()) return "skipped_disabled";
       if (!force && !isAutoSyncEnabled()) return "skipped_disabled";
       const session = await getActiveCloudSessionAsync();
+      if (isMobileRecoveryBlocked()) return "skipped_disabled";
       if (!session?.token || !session.user?.id) return "skipped_no_session";
       if (isSyncInFlight()) {
         pendingAfterCurrentRef.current = reason;
