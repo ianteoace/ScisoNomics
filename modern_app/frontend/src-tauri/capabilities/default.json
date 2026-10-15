@@ -34,9 +34,6 @@
                                               "url":  "http://localhost:9000/**"
                                           }
                                       ]
-                        },
-                        "updater:allow-check",
-                        "updater:allow-download",
-                        "updater:allow-install"
+                        }
                     ]
 }
