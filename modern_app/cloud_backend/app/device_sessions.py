@@ -68,6 +68,19 @@ def digest(value: str) -> str:
     return hashlib.sha256(value.encode("ascii")).hexdigest()
 
 
+def is_play_review_user(user_id: str) -> bool:
+    """Private account exception for login OTP only; authorization is unchanged."""
+    configured = os.getenv("SCISONOMICS_PLAY_REVIEW_USER_ID", "").strip()
+    if not configured:
+        return False
+    try:
+        uid(configured)  # Canonical, nonzero UUID; never accept aliases.
+    except ValueError:
+        _logger.warning("[device-auth] invalid_play_review_user_configuration")
+        return False
+    return configured == user_id
+
+
 def code_hash(user_id, challenge_id, code):
     return hmac.new(get_jwt_secret().encode(), f"device-otp-v1:{user_id}:{challenge_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
@@ -310,6 +323,25 @@ def register_routes(app, identity_user, current_user, send_email):
                 raise error("device_key_conflict","La clave de este dispositivo cambió. Requiere una identidad nueva.",409)
             if device and device["status"] == "trusted":
                 return {"status":"trusted","challenge":proof_challenge(conn,user.id,payload.identity,"device_authentication",device=device)}
+            if is_play_review_user(user.id):
+                created = stamp()
+                if device:
+                    conn.execute("""UPDATE trusted_devices SET status = 'trusted', trust_source = 'play_review',
+                        device_name = ?, platform = ?, trusted_at = ?, last_seen_at = ?, updated_at = ?,
+                        revoked_at = NULL, revocation_reason = NULL WHERE id = ? AND user_id = ?""",
+                        (name,payload.platform,created,created,created,device["id"],user.id))
+                else:
+                    conn.execute("""INSERT INTO trusted_devices
+                        (id,user_id,device_id,public_key,public_key_hash,device_name,status,trust_source,
+                         first_seen_at,last_seen_at,trusted_at,created_at,updated_at,platform)
+                        VALUES (?,?,?,?,?,?,'trusted','play_review',?,?,?,?,?,?)""",
+                        (str(uuid4()),user.id,payload.identity.deviceId,key,hashlib.sha256(key).digest(),name,
+                         created,created,created,created,created,payload.platform))
+                device = conn.execute("SELECT * FROM trusted_devices WHERE user_id = ? AND device_id = ?",
+                    (user.id,payload.identity.deviceId)).fetchone()
+                result = grant(conn,user,device)
+                _logger.info("[device-auth] play_review_auto_enrolled user=%s device=%s", user.id[:8], device["device_id"][:8])
+                return result
             response,code = create_otp(conn,user,payload.identity,name,payload.platform)
         return deliver(user,response,code)
 

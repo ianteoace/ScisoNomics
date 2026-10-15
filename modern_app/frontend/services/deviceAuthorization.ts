@@ -65,10 +65,11 @@ export async function beginDeviceLogin(token: string, user: CloudUser): Promise<
   const { identity } = await native<{ identity: Identity }>("get_or_create_account_device_identity", { accountBinding: server.accountBinding });
   const context = { userId: user.id, accountBinding: server.accountBinding, identity };
   const platform = getRuntimePlatformSync();
-  const result = await deviceRequest<Enrollment | { status: "trusted"; challenge: Challenge }>(token, "/login", {
+  const result = await deviceRequest<DeviceGrant | Enrollment | { status: "trusted"; challenge: Challenge }>(token, "/login", {
     identity, platform: platform === "desktop" ? "windows" : platform,
     name: platform === "android" ? "ScisoNomics Android" : "ScisoNomics Desktop",
   });
+  if ("access_token" in result) return { context, grant: validGrant(result, context) };
   if (result.status === "pending_verification") return { context, enrollment: result };
   const proof = await native<Proof>("sign_device_authentication_proof", { accountBinding: context.accountBinding, challenge: result.challenge });
   return { context, grant: validGrant(await deviceRequest<DeviceGrant>(token, "/authentication/complete", { challenge: result.challenge, proof }), context) };

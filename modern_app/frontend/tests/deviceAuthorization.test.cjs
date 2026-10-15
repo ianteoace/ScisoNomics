@@ -32,7 +32,7 @@ function setup(t,platform="android") {
   stub("services/cloudAuth.ts",{CloudAuthRequestError:RequestError,cloudRequest:async (route,options)=>{
     const body=options.body?JSON.parse(options.body):null;calls.push({route,body,headers:options.headers});
     if(route.endsWith("/context"))return {userId:user.id,accountBinding:"test-binding",mode:ctx.mode};
-    if(route.endsWith("/login"))return ctx.trusted?{status:"trusted",challenge}:{status:"pending_verification",verificationId:"otp-id",verificationToken:"memory-continuation",expiresIn:600,resendAvailableIn:60};
+    if(route.endsWith("/login"))return ctx.directGrant?{...grant(),...ctx.grantOverride}:ctx.trusted?{status:"trusted",challenge}:{status:"pending_verification",verificationId:"otp-id",verificationToken:"memory-continuation",expiresIn:600,resendAvailableIn:60};
     if(route.endsWith("/enrollment/challenge"))return challenge;
     if(route.endsWith("/resend"))return {status:"pending_verification",verificationId:"replacement-id",verificationToken:"replacement-continuation",expiresIn:600,resendAvailableIn:60};
     if(route.endsWith("/refresh/challenge")) { if(ctx.revoked)throw new RequestError("Revoked",{code:"device_revoked",kind:"auth"});return {...challenge,familyId:body.familyId}; }
@@ -64,6 +64,21 @@ for(const platform of ["desktop","android"])test(`${platform} unknown device ret
   assert.equal(ctx.calls.at(-1).body.platform,platform==="desktop"?"windows":"android");
   assert.equal(ctx.native.length,1);assert.equal(ctx.native[0].command,"get_or_create_account_device_identity");
   assert.ok(ctx.calls.every(c=>!c.body?.userId&&!c.body?.ownerId));
+});
+
+test("direct login grant uses the same account/device validation without OTP or a second request",async t=>{
+  const ctx=setup(t);ctx.directGrant=true;
+  const result=await ctx.api.beginDeviceLogin("primary-token",user);
+  assert.equal(result.grant.user.id,user.id);
+  assert.equal(result.grant.deviceId,identity.deviceId);
+  assert.equal(result.enrollment,undefined);
+  assert.deepEqual(ctx.calls.map(c=>c.route),["/auth/devices/context","/auth/devices/login"]);
+  assert.equal(ctx.native.length,1);
+  assert.equal(ctx.store.size,0);
+  for(const override of [{user:{...user,id:"another-owner"}},{deviceId:"another-device"},{accountBinding:"another-binding"},{familyId:""},{access_token:""}]) {
+    ctx.grantOverride=override;
+    await assert.rejects(ctx.api.beginDeviceLogin("primary-token",user),e=>e.code==="internal_identity_mismatch");
+  }
 });
 
 test("trusted login requires native DeviceAuthentication proof, without an OTP",async t=>{
